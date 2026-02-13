@@ -15,7 +15,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Search, Plus, FileText, Eye, Clock, AlertTriangle, CheckCircle2, Send } from "lucide-react";
+import { Search, Plus, FileText, Eye, Clock, AlertTriangle, CheckCircle2, Send, Building2, Users } from "lucide-react";
 import type { Envelope, Signer } from "@shared/schema";
 import { format } from "date-fns";
 
@@ -30,7 +30,9 @@ const statusConfig: Record<string, { label: string; variant: "default" | "second
 
 export default function Dashboard() {
   const [, navigate] = useLocation();
-  const [searchTerm, setSearchTerm] = useState("");
+  const [projectSearch, setProjectSearch] = useState("");
+  const [partnerSearch, setPartnerSearch] = useState("");
+  const [generalSearch, setGeneralSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
 
   const { data: envelopes, isLoading } = useQuery<(Envelope & { signers: Signer[] })[]>({
@@ -38,16 +40,37 @@ export default function Dashboard() {
   });
 
   const filtered = envelopes?.filter((env) => {
-    const matchesSearch =
-      !searchTerm ||
-      env.subject.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      env.externalRef?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    const matchesProject =
+      !projectSearch ||
+      env.subject.toLowerCase().includes(projectSearch.toLowerCase()) ||
+      env.externalRef?.toLowerCase().includes(projectSearch.toLowerCase());
+
+    const matchesPartner =
+      !partnerSearch ||
       env.signers?.some(s =>
-        s.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        s.email.toLowerCase().includes(searchTerm.toLowerCase())
+        s.fullName.toLowerCase().includes(partnerSearch.toLowerCase()) ||
+        s.email.toLowerCase().includes(partnerSearch.toLowerCase())
       );
-    const matchesStatus = statusFilter === "all" || env.status === statusFilter;
-    return matchesSearch && matchesStatus;
+
+    const matchesGeneral =
+      !generalSearch ||
+      env.subject.toLowerCase().includes(generalSearch.toLowerCase()) ||
+      env.externalRef?.toLowerCase().includes(generalSearch.toLowerCase()) ||
+      env.message?.toLowerCase().includes(generalSearch.toLowerCase()) ||
+      env.signers?.some(s =>
+        s.fullName.toLowerCase().includes(generalSearch.toLowerCase()) ||
+        s.email.toLowerCase().includes(generalSearch.toLowerCase())
+      );
+
+    let matchesStatus = false;
+    if (statusFilter === "all") {
+      matchesStatus = true;
+    } else if (statusFilter === "awaiting") {
+      matchesStatus = env.status === "sent" || env.status === "viewed";
+    } else {
+      matchesStatus = env.status === statusFilter;
+    }
+    return matchesProject && matchesPartner && matchesGeneral && matchesStatus;
   });
 
   const stats = {
@@ -56,6 +79,13 @@ export default function Dashboard() {
     queried: envelopes?.filter(e => e.status === "queried").length || 0,
     signed: envelopes?.filter(e => e.status === "signed").length || 0,
   };
+
+  function handleStatCardClick(filterValue: string) {
+    setStatusFilter(prev => prev === filterValue ? "all" : filterValue);
+    setProjectSearch("");
+    setPartnerSearch("");
+    setGeneralSearch("");
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -73,22 +103,57 @@ export default function Dashboard() {
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <StatCard label="Total Envelopes" value={stats.total} icon={FileText} borderColor="border-primary" />
-          <StatCard label="Awaiting Signature" value={stats.pending} icon={Clock} borderColor="border-destructive" />
-          <StatCard label="Queries Raised" value={stats.queried} icon={AlertTriangle} highlight borderColor="border-chart-4" />
+          <StatCard
+            label="Awaiting Signature"
+            value={stats.pending}
+            icon={Clock}
+            borderColor="border-destructive"
+            onClick={() => handleStatCardClick("awaiting")}
+            active={statusFilter === "awaiting"}
+          />
+          <StatCard
+            label="Queries Raised"
+            value={stats.queried}
+            icon={AlertTriangle}
+            highlight
+            borderColor="border-chart-4"
+            onClick={() => handleStatCardClick("queried")}
+            active={statusFilter === "queried"}
+          />
           <StatCard label="Completed" value={stats.signed} icon={CheckCircle2} borderColor="border-chart-3" />
         </div>
 
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center gap-3 flex-wrap">
-              <div className="relative flex-1 min-w-[200px]">
+              <div className="relative flex-1 min-w-[160px]">
+                <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search by project..."
+                  value={projectSearch}
+                  onChange={(e) => setProjectSearch(e.target.value)}
+                  className="pl-9"
+                  data-testid="input-search-project"
+                />
+              </div>
+              <div className="relative flex-1 min-w-[160px]">
+                <Users className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search by partner..."
+                  value={partnerSearch}
+                  onChange={(e) => setPartnerSearch(e.target.value)}
+                  className="pl-9"
+                  data-testid="input-search-partner"
+                />
+              </div>
+              <div className="relative flex-1 min-w-[160px]">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="Search by subject, client, or reference..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="General search..."
+                  value={generalSearch}
+                  onChange={(e) => setGeneralSearch(e.target.value)}
                   className="pl-9"
-                  data-testid="input-search"
+                  data-testid="input-search-general"
                 />
               </div>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -102,6 +167,7 @@ export default function Dashboard() {
                   <SelectItem value="viewed">Viewed</SelectItem>
                   <SelectItem value="queried">Queried</SelectItem>
                   <SelectItem value="signed">Signed</SelectItem>
+                  <SelectItem value="awaiting">Awaiting Signature</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -197,9 +263,22 @@ export default function Dashboard() {
   );
 }
 
-function StatCard({ label, value, icon: Icon, highlight, borderColor }: { label: string; value: number; icon: any; highlight?: boolean; borderColor?: string }) {
+function StatCard({ label, value, icon: Icon, highlight, borderColor, onClick, active }: {
+  label: string;
+  value: number;
+  icon: any;
+  highlight?: boolean;
+  borderColor?: string;
+  onClick?: () => void;
+  active?: boolean;
+}) {
+  const clickable = !!onClick;
   return (
-    <Card className={`border-2 ${borderColor || "border-border"}`} data-testid={`card-stat-${label.toLowerCase().replace(/\s/g, '-')}`}>
+    <Card
+      className={`border-[3px] ${borderColor || "border-border"} ${clickable ? "cursor-pointer hover-elevate" : ""} ${active ? "ring-2 ring-ring ring-offset-2" : ""}`}
+      onClick={onClick}
+      data-testid={`card-stat-${label.toLowerCase().replace(/\s/g, '-')}`}
+    >
       <CardContent className="p-4">
         <div className="flex items-center justify-between gap-2">
           <div>
