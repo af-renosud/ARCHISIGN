@@ -1,0 +1,108 @@
+## ARCHISIGN — APPLICATION AUDIT (Pre-Deployment)
+
+Run a full application code and security audit on the Archisign e-signature platform before deployment.
+
+### 1. Build Verification
+- Run `npm run build` and confirm it completes without errors
+- Check TypeScript compilation (`npm run check`) for type errors
+- Verify the production entry point `dist/index.cjs` is generated correctly
+- Confirm Vite frontend build produces valid output in `dist/public/`
+
+### 2. API Route Integrity (27 endpoints)
+- Verify all API routes in `server/routes.ts` are reachable and return proper status codes:
+  - **Envelope CRUD**: GET `/api/envelopes` (list active), POST `/api/envelopes` (create with multipart/form-data PDF upload), GET `/api/envelopes/:id` (detail with signers, logs, events)
+  - **Envelope Actions**: POST `/api/envelopes/:id/send` (send invitations), POST `/api/envelopes/:id/reply` (reply to query)
+  - **Soft-Delete**: GET `/api/envelopes/deleted`, POST `/api/envelopes/:id/soft-delete`, POST `/api/envelopes/:id/restore`
+  - **Signer Flow**: GET `/api/sign/:token/info`, POST `/api/sign/:token/request-otp`, POST `/api/sign/:token/verify-otp`, GET `/api/sign/:token/document`, POST `/api/sign/:token/initial`, POST `/api/sign/:token/query`, POST `/api/sign/:token/sign`
+  - **ArchiDoc API**: POST `/api/v1/envelopes/create` — service-to-service envelope creation with `X-API-KEY` header auth validated against `ARCHIDOC_API_KEY` secret. Accepts `pdfBase64` (base64-encoded PDF, decoded and saved to `uploads/`, page count extracted via pdf-lib). Supports `signers` array `[{email, fullName}]` for multi-signer envelopes, with backward-compatible legacy `signerEmail`/`signerName` fields. Validated by `createApiEnvelopeRequestSchema` Zod schema with `.refine()` ensuring at least one signer source is provided.
+  - **Settings**: GET `/api/settings` (all), GET `/api/settings/:key` (single), PUT `/api/settings` (bulk upsert array)
+  - **Rollback Versions**: GET `/api/rollback-versions`, POST `/api/rollback-versions`, PATCH `/api/rollback-versions/:id`, DELETE `/api/rollback-versions/:id`
+  - **Backups**: GET `/api/backups`, POST `/api/backups` (create JSON backup), GET `/api/backups/:id/download`, DELETE `/api/backups/:id`
+  - **Static Files**: GET `/uploads/*` (path-traversal-protected file serving)
+- Verify proper error handling (400/404/500 responses) on each route
+- Check that input-accepting routes validate via Zod schemas: `createEnvelopeRequestSchema`, `createSignerRequestSchema`, `createApiEnvelopeRequestSchema` (with `.refine()`), `insertRollbackVersionSchema`
+
+### 3. Authentication & Authorization
+- Verify Replit Auth OIDC is configured (`ISSUER_URL` env var auto-set by Replit)
+- Verify `setupAuth()` and `registerAuthRoutes()` are called in `registerRoutes()` before admin middleware
+- Verify admin middleware (`isAdminAuthorized`) protects all `/api/*` routes except:
+  - `/api/sign/:token/*` — public signer flow (bypassed)
+  - `/api/v1/*` — ArchiDoc API (authenticated via `X-API-KEY` header)
+  - `/api/login`, `/api/logout`, `/api/callback`, `/api/auth/*` — OIDC auth flow routes
+  - `/uploads` — static file serving
+- Verify `ADMIN_EMAILS` allowlist enforcement: when set (comma-separated), only listed emails can access admin `/api/*` routes; unauthorized attempts return 403
+- Verify unauthorized admin access attempts create `audit_events` with null `envelopeId`, event type "Unauthorized admin access attempt", actor email, IP, and path/method metadata
+- Verify API key validation on `/api/v1/*` routes: `X-API-KEY` header checked against `ARCHIDOC_API_KEY` secret; returns 401 if invalid; logs warning if `ARCHIDOC_API_KEY` is not configured
+- Verify session storage uses PostgreSQL via `connect-pg-simple` (`sessions` table with `sid`, `sess`, `expire` columns)
+- Verify user profiles are upserted into `users` table on OIDC login
+
+### 4. Security Checks
+- Confirm no secrets (DATABASE_URL, Gmail tokens, `ARCHIDOC_API_KEY`) are hardcoded in source code
+- Verify signing tokens generated with `crypto.randomBytes(32).toString("hex")` (64-char hex, cryptographically secure)
+- Verify OTP generation uses `crypto.randomInt(100000, 1000000)` (6-digit, uniform distribution)
+- Verify OTPs are SHA-256 hashed via `createHash("sha256")` before DB storage — raw OTP never persisted
+- Verify OTP codes expire after 10 minutes (`Date.now() + 10 * 60 * 1000`) and otp_code + otp_expires_at are cleared to NULL after successful verification
+- Check that signer document/initial/sign/query endpoints all require `otpVerified === true` (403 if not)
+- Verify log redaction in `server/index.ts`: SENSITIVE_KEYS set includes accessToken, access_token, otpCode, otp_code, otpExpiresAt, otp_expires_at, token, password, secret, authorization — all redacted to "[REDACTED]" in response logs
+- Verify file upload: multer configured with PDF-only MIME filter and 50MB size limit
+- Verify path traversal protection on `/uploads` route: `path.resolve()` + prefix check against uploads directory
+- Verify `/api/sign/:token/sign` endpoint checks `signer.signedAt` to reject already-signed requests
+- Verify JSON body limit is set to 25MB in `server/index.ts` (`express.json({ limit: "25mb" })`) to support large `pdfBase64` payloads from ArchiDoc
+
+### 5. Transaction Safety (ACID)
+- Verify envelope creation (POST `/api/envelopes`): envelope + signers + audit event wrapped in `db.transaction()`
+- Verify ArchiDoc API (POST `/api/v1/envelopes/create`): envelope + signers + audit event wrapped in `db.transaction()`; if transaction fails after PDF file was saved from `pdfBase64`, the orphan file is deleted via `fsPromises.unlink()` in catch block
+- Verify signing flow (POST `/api/sign/:token/sign`): atomicClaimSign + signature annotation + status update + audit event wrapped in `db.transaction()`
+- Confirm `atomicClaimSign()` uses conditional UPDATE with `WHERE signedAt IS NULL` to prevent double-sign race conditions
+- Verify PDF file generation (pdf-lib) happens AFTER transaction commit — no orphan files on rollback
+- Confirm storage methods accept optional `DbExecutor` parameter for transaction participation
+
+### 6. Gmail Integration
+- Verify Gmail connector in `server/gmail.ts` uses Replit Google Mail connector (`REPLIT_CONNECTORS_HOSTNAME`) for OAuth token management
+- Confirm token refresh: `getAccessToken()` checks `expires_at` and re-fetches from connector API when expired
+- Verify `sendEmail()` supports plain HTML, threading (`threadId` parameter), and MIME attachments
+- Confirm email-failure-safe send flow: if ALL emails fail on send, envelope stays in 'draft' status and returns 502 with failure details
+- Verify partial failure handling: if some emails succeed and some fail, envelope is marked 'sent' with failure metadata in audit event
+- Check that all 5 email templates use configurable settings loaded from DB via `loadEmailSettings()`: firmName, registrationLine, footerText, invitationBody, otpBody, completionBody, subjectPrefix
+- Verify Gmail thread IDs are stored in `envelopes.gmail_thread_id` and reused for reply/query/completion emails
+
+### 7. PDF Processing
+- Verify pdf-lib is dynamically imported (`await import("pdf-lib")`) in both envelope creation (page count) and signing (annotation embedding)
+- Confirm page count is extracted on upload and stored in `envelopes.total_pages`
+- Verify ArchiDoc API `pdfBase64` handling: base64 string is decoded to Buffer, loaded via `PDFDocument.load()` for page count, saved to `uploads/` as `api_${timestamp}_${random}.pdf`; if the subsequent DB transaction fails, the saved file is cleaned up (deleted)
+- Verify signed PDF generation embeds all signer annotations (initials + signatures) at correct x_pos/y_pos positions using `StandardFonts.Helvetica`
+- Check that original PDFs are preserved — signed PDFs are saved as new files (`signed_${timestamp}.pdf`)
+- Verify the `uploads/` directory is created on startup via `fsPromises.mkdir("uploads", { recursive: true })`
+
+### 8. Webhook Reliability
+- Verify `sendWebhook()` uses `AbortSignal.timeout(10000)` for 10-second timeout
+- Verify webhook is called on 3 events: `envelope.sent`, `envelope.queried` (includes queryFrom + queryMessage), `envelope.signed`
+- Confirm webhook payloads include: event, envelopeId, externalRef, status
+- Check that webhook failures are caught with try/catch and logged — never block or rollback the primary operation
+
+### 9. Graceful Shutdown
+- Verify `server/index.ts` registers handlers for both SIGTERM and SIGINT signals
+- Confirm shutdown sequence: close HTTP server → close DB pool (`pool.end()`)
+- Verify 10-second forced-exit timeout (`setTimeout` with `.unref()`) prevents hanging
+- Confirm `shuttingDown` flag prevents duplicate shutdown attempts
+
+### 10. Frontend Pages (11 pages)
+- Verify all pages are registered in `client/src/App.tsx`:
+  - Dashboard (`/`), New Envelope (`/envelopes/new`), Envelope Detail (`/envelopes/:id`)
+  - Signer Verify (`/sign/:token`), Signer Document (`/sign/:token/document`)
+  - Settings (`/settings`), Pre-Deployment (`/pre-deployment`)
+  - Data Recovery (`/data-recovery`), Rollback Ledger (`/rollback-ledger`)
+  - Login (`/login` — rendered at root for unauthenticated users via `AuthenticatedAdmin` component)
+  - Not Found (fallback)
+- Verify sidebar navigation links match registered routes
+- Check that all interactive elements have `data-testid` attributes
+
+### 11. Error Handling
+- Verify all route handlers have try/catch with proper JSON error responses
+- Check that database errors don't leak internal details to the client
+- Confirm all file system operations use async `fs/promises` (no synchronous I/O)
+- Verify multer error handling for invalid file types
+
+### Output Format
+For each check, report: PASS, WARN (with explanation), or FAIL (with remediation steps).
+End with: **GO** (ready for deployment) or **NO-GO** (with blocking issues listed).
