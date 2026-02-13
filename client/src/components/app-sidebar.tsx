@@ -59,20 +59,6 @@ export function AppSidebar() {
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel className="flex items-center justify-between gap-2 text-[#7D7E82]">
-            <span>Status Overview</span>
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <div className="space-y-1 px-2">
-              <StatusRow label="Draft" count={envelopes?.filter(e => e.status === "draft").length || 0} />
-              <StatusRow label="Sent" count={envelopes?.filter(e => e.status === "sent").length || 0} />
-              <StatusRow label="Viewed" count={envelopes?.filter(e => e.status === "viewed").length || 0} />
-              <StatusRow label="Queried" count={queriedCount} highlight />
-              <StatusRow label="Signed" count={envelopes?.filter(e => e.status === "signed").length || 0} />
-            </div>
-          </SidebarGroupContent>
-        </SidebarGroup>
-        <SidebarGroup>
           <SidebarGroupLabel className="text-[#7D7E82]">Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
