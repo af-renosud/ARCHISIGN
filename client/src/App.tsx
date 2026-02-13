@@ -3,14 +3,47 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ThemeProvider } from "@/lib/theme-provider";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { AppSidebar } from "@/components/app-sidebar";
 import NotFound from "@/pages/not-found";
+import Dashboard from "@/pages/dashboard";
+import EnvelopeNew from "@/pages/envelope-new";
+import EnvelopeDetail from "@/pages/envelope-detail";
+import SignerVerify from "@/pages/signer-verify";
+import SignerDocument from "@/pages/signer-document";
 
-function Router() {
+function AdminLayout({ children }: { children: React.ReactNode }) {
+  const style = {
+    "--sidebar-width": "17rem",
+    "--sidebar-width-icon": "3.5rem",
+  };
+
+  return (
+    <SidebarProvider style={style as React.CSSProperties}>
+      <div className="flex h-screen w-full">
+        <AppSidebar />
+        <div className="flex flex-col flex-1 min-w-0">
+          <header className="flex items-center justify-between gap-2 p-2 border-b sticky top-0 z-40 bg-background/95 backdrop-blur-sm">
+            <SidebarTrigger data-testid="button-sidebar-toggle" />
+            <ThemeToggle />
+          </header>
+          <main className="flex-1 overflow-hidden">
+            {children}
+          </main>
+        </div>
+      </div>
+    </SidebarProvider>
+  );
+}
+
+function AdminRouter() {
   return (
     <Switch>
-      {/* Add pages below */}
-      {/* <Route path="/" component={Home}/> */}
-      {/* Fallback to 404 */}
+      <Route path="/" component={Dashboard} />
+      <Route path="/envelopes/new" component={EnvelopeNew} />
+      <Route path="/envelopes/:id" component={EnvelopeDetail} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -18,12 +51,22 @@ function Router() {
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Router />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Switch>
+            <Route path="/sign/:token" component={SignerVerify} />
+            <Route path="/sign/:token/document" component={SignerDocument} />
+            <Route>
+              <AdminLayout>
+                <AdminRouter />
+              </AdminLayout>
+            </Route>
+          </Switch>
+          <Toaster />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
   );
 }
 
