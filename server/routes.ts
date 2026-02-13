@@ -3,7 +3,8 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
 import { sendEmail, getGmailProfile } from "./gmail";
-import { insertRollbackVersionSchema, insertBackupSchema } from "@shared/schema";
+import { insertRollbackVersionSchema, insertBackupSchema, createEnvelopeRequestSchema, createSignerRequestSchema, createApiEnvelopeRequestSchema } from "@shared/schema";
+import { z } from "zod";
 import { randomBytes, randomInt, createHash } from "crypto";
 import multer from "multer";
 import path from "path";
@@ -121,17 +122,28 @@ export async function registerRoutes(
 
   app.post("/api/envelopes", upload.single("pdf"), async (req, res) => {
     try {
-      const { subject, externalRef, webhookUrl, message } = req.body;
-      if (!subject) return res.status(400).json({ message: "Subject is required" });
+      const envelopeParsed = createEnvelopeRequestSchema.safeParse(req.body);
+      if (!envelopeParsed.success) {
+        return res.status(400).json({ message: "Invalid envelope data", errors: envelopeParsed.error.flatten().fieldErrors });
+      }
+      const { subject, externalRef, webhookUrl, message } = envelopeParsed.data;
 
-      let signersData;
+      let rawSigners: unknown[];
       try {
-        signersData = JSON.parse(req.body.signers || "[]");
+        rawSigners = JSON.parse(req.body.signers || "[]");
       } catch {
-        return res.status(400).json({ message: "Invalid signers data" });
+        return res.status(400).json({ message: "Invalid signers JSON" });
       }
 
-      if (!signersData.length) return res.status(400).json({ message: "At least one signer is required" });
+      if (!Array.isArray(rawSigners) || rawSigners.length === 0) {
+        return res.status(400).json({ message: "At least one signer is required" });
+      }
+
+      const signersParsed = z.array(createSignerRequestSchema).safeParse(rawSigners);
+      if (!signersParsed.success) {
+        return res.status(400).json({ message: "Invalid signer data", errors: signersParsed.error.flatten().fieldErrors });
+      }
+      const signersData = signersParsed.data;
 
       let pdfUrl: string | undefined;
       let totalPages = 1;
@@ -202,6 +214,8 @@ export async function registerRoutes(
       const firmEmail = await getGmailProfile();
       const emailCfg = await loadEmailSettings();
 
+      const emailResults: { email: string; success: boolean; error?: string }[] = [];
+
       for (const signer of envelope.signers) {
         const baseUrl = `${req.protocol}://${req.get("host")}`;
         const signingUrl = `${baseUrl}/sign/${signer.accessToken}`;
@@ -226,12 +240,30 @@ export async function registerRoutes(
             htmlBody
           );
 
+          emailResults.push({ email: signer.email, success: true });
+
           if (result.threadId && !envelope.gmailThreadId) {
             await storage.updateEnvelope(id, { gmailThreadId: result.threadId });
           }
-        } catch (err) {
+        } catch (err: any) {
           console.error(`Failed to send email to ${signer.email}:`, err);
+          emailResults.push({ email: signer.email, success: false, error: err.message });
         }
+      }
+
+      const allFailed = emailResults.every(r => !r.success);
+      if (allFailed) {
+        await storage.createAuditEvent({
+          envelopeId: id,
+          eventType: "Envelope send failed - all emails failed",
+          actorEmail: firmEmail || null,
+          ipAddress: req.ip || null,
+          metadata: JSON.stringify(emailResults),
+        });
+        return res.status(502).json({
+          message: "Failed to send emails to all signers. Envelope remains in draft.",
+          failures: emailResults,
+        });
       }
 
       await storage.updateEnvelope(id, { status: "sent" });
@@ -240,16 +272,20 @@ export async function registerRoutes(
         eventType: "Envelope sent for signing",
         actorEmail: firmEmail || null,
         ipAddress: req.ip || null,
-        metadata: null,
+        metadata: emailResults.some(r => !r.success) ? JSON.stringify(emailResults) : null,
       });
 
-      if (envelope.webhookUrl) {
-        sendWebhook(envelope.webhookUrl, {
-          event: "envelope.sent",
-          envelopeId: id,
-          externalRef: envelope.externalRef,
-          status: "sent",
-        });
+      try {
+        if (envelope.webhookUrl) {
+          await sendWebhook(envelope.webhookUrl, {
+            event: "envelope.sent",
+            envelopeId: id,
+            externalRef: envelope.externalRef,
+            status: "sent",
+          });
+        }
+      } catch (err: any) {
+        console.error(`Webhook delivery failed for envelope ${id}:`, err.message);
       }
 
       const updated = await storage.getEnvelope(id);
@@ -567,14 +603,18 @@ export async function registerRoutes(
       });
 
       if (envelope.webhookUrl) {
-        sendWebhook(envelope.webhookUrl, {
-          event: "envelope.queried",
-          envelopeId: envelope.id,
-          externalRef: envelope.externalRef,
-          status: "queried",
-          queryFrom: signer.email,
-          queryMessage: message,
-        });
+        try {
+          await sendWebhook(envelope.webhookUrl, {
+            event: "envelope.queried",
+            envelopeId: envelope.id,
+            externalRef: envelope.externalRef,
+            status: "queried",
+            queryFrom: signer.email,
+            queryMessage: message,
+          });
+        } catch (err: any) {
+          console.error(`Webhook delivery failed for envelope ${envelope.id}:`, err.message);
+        }
       }
 
       res.json({ success: true });
@@ -728,12 +768,16 @@ export async function registerRoutes(
         }
 
         if (envelope.webhookUrl) {
-          sendWebhook(envelope.webhookUrl, {
-            event: "envelope.signed",
-            envelopeId: envelope.id,
-            externalRef: envelope.externalRef,
-            status: "signed",
-          });
+          try {
+            await sendWebhook(envelope.webhookUrl, {
+              event: "envelope.signed",
+              envelopeId: envelope.id,
+              externalRef: envelope.externalRef,
+              status: "signed",
+            });
+          } catch (err: any) {
+            console.error(`Webhook delivery failed for envelope ${envelope.id}:`, err.message);
+          }
         }
       }
 
@@ -745,11 +789,11 @@ export async function registerRoutes(
 
   app.post("/api/v1/envelopes/create", async (req, res) => {
     try {
-      const { subject, signerEmail, signerName, externalRef, pdfUrl, webhookUrl } = req.body;
-
-      if (!subject || !signerEmail) {
-        return res.status(400).json({ message: "subject and signerEmail are required" });
+      const parsed = createApiEnvelopeRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Invalid request data", errors: parsed.error.flatten().fieldErrors });
       }
+      const { subject, signerEmail, signerName, externalRef, pdfUrl, webhookUrl } = parsed.data;
 
       const envelope = await db.transaction(async (tx) => {
         const env = await storage.createEnvelope({
@@ -991,12 +1035,14 @@ export async function registerRoutes(
   return httpServer;
 }
 
-function sendWebhook(url: string, payload: any) {
-  fetch(url, {
+async function sendWebhook(url: string, payload: any): Promise<void> {
+  const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-  }).catch((err) => {
-    console.error("Webhook delivery failed:", err.message);
+    signal: AbortSignal.timeout(10000),
   });
+  if (!response.ok) {
+    throw new Error(`Webhook returned ${response.status}: ${response.statusText}`);
+  }
 }

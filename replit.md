@@ -73,7 +73,13 @@ shared/
 - **Clean Transaction Boundaries**: PDF file generation happens after transaction commit to avoid orphan files on rollback
 - Storage methods accept optional DbExecutor parameter for transaction participation
 
+### Phase 3 – Robustness & Industrialization (Completed)
+- **Schema Validation**: All input-accepting routes use Zod schemas (createEnvelopeRequestSchema, createSignerRequestSchema, createApiEnvelopeRequestSchema) instead of manual if-checks. Invalid requests are rejected immediately with field-level error details.
+- **Graceful Shutdown**: server/index.ts listens for SIGTERM and SIGINT, closes HTTP server and DB pool cleanly, with a 10-second forced-exit timeout.
+- **Error Handling**: Email send failures in the send flow now prevent the envelope from being marked as 'sent'. If all emails fail, the envelope stays in 'draft' and returns 502. Webhook calls are properly awaited with try/catch and a 10-second timeout. All external call errors are logged with context.
+
 ## Recent Changes
+- 2026-02-13: Phase 3 robustness (Zod schema validation, graceful shutdown, email-failure-safe send flow)
 - 2026-02-13: Phase 2 data integrity hardening (ACID transactions, N+1 fix, atomic double-sign prevention)
 - 2026-02-13: Phase 1 security hardening (path traversal, OTP hashing, async I/O, log redaction)
 - 2026-02-13: Added Rollback Ledger page (version tracking with ACTIVE/SUPERSEDED statuses, CRUD operations)

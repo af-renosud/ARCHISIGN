@@ -140,6 +140,27 @@ export const insertAnnotationSchema = createInsertSchema(annotations).omit({ id:
 export const insertCommunicationLogSchema = createInsertSchema(communicationLogs).omit({ id: true, timestamp: true });
 export const insertAuditEventSchema = createInsertSchema(auditEvents).omit({ id: true, timestamp: true });
 
+export const createEnvelopeRequestSchema = z.object({
+  subject: z.string().min(1, "Subject is required"),
+  externalRef: z.string().nullish(),
+  message: z.string().nullish(),
+  webhookUrl: z.string().url("Invalid webhook URL").nullish().or(z.literal("")),
+});
+
+export const createSignerRequestSchema = z.object({
+  email: z.string().email("Invalid signer email"),
+  fullName: z.string().min(1, "Signer name is required"),
+});
+
+export const createApiEnvelopeRequestSchema = z.object({
+  subject: z.string().min(1, "Subject is required"),
+  signerEmail: z.string().email("Invalid signer email"),
+  signerName: z.string().optional(),
+  externalRef: z.string().nullish(),
+  pdfUrl: z.string().nullish(),
+  webhookUrl: z.string().url("Invalid webhook URL").nullish().or(z.literal("")),
+});
+
 export type Envelope = typeof envelopes.$inferSelect;
 export type InsertEnvelope = z.infer<typeof insertEnvelopeSchema>;
 export type Signer = typeof signers.$inferSelect;

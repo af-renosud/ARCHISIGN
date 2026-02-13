@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
+import { pool } from "./db";
 
 const app = express();
 const httpServer = createServer(app);
@@ -117,10 +118,6 @@ app.use((req, res, next) => {
     await setupVite(httpServer, app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
   httpServer.listen(
     {
@@ -132,4 +129,30 @@ app.use((req, res, next) => {
       log(`serving on port ${port}`);
     },
   );
+
+  let shuttingDown = false;
+  async function gracefulShutdown(signal: string) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`${signal} received – shutting down gracefully`);
+
+    httpServer.close(() => {
+      log("HTTP server closed");
+    });
+
+    try {
+      await pool.end();
+      log("Database pool closed");
+    } catch (err) {
+      console.error("Error closing database pool:", err);
+    }
+
+    setTimeout(() => {
+      console.error("Forced shutdown after timeout");
+      process.exit(1);
+    }, 10000).unref();
+  }
+
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 })();
