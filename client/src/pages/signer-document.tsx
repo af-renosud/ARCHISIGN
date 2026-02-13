@@ -208,19 +208,25 @@ export default function SignerDocument() {
         <Card>
           <CardContent className="p-0">
             <div className="relative bg-muted rounded-md overflow-hidden" style={{ minHeight: "600px" }}>
-              <div className="flex items-center justify-center h-full min-h-[600px] p-8">
-                <div className="text-center space-y-4">
-                  <FileText className="h-16 w-16 text-muted-foreground/20 mx-auto" />
-                  <div>
-                    <p className="text-sm font-medium text-muted-foreground">Page {currentPage}</p>
-                    <p className="text-xs text-muted-foreground/60 mt-1">
-                      {docInfo.envelope.originalPdfUrl
-                        ? "Document page preview"
-                        : "PDF preview will be displayed here"}
-                    </p>
+              {docInfo.envelope.originalPdfUrl ? (
+                <iframe
+                  src={`${docInfo.envelope.originalPdfUrl}#page=${currentPage}`}
+                  className="w-full border-0 rounded-md"
+                  style={{ height: "700px" }}
+                  title={`Document page ${currentPage}`}
+                  data-testid="pdf-viewer"
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full min-h-[600px] p-8">
+                  <div className="text-center space-y-4">
+                    <FileText className="h-16 w-16 text-muted-foreground/20 mx-auto" />
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">Page {currentPage}</p>
+                      <p className="text-xs text-muted-foreground/60 mt-1">No PDF document attached</p>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               <div className="absolute bottom-4 right-4">
                 {isCurrentPageInitialed ? (

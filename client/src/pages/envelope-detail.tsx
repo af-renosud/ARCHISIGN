@@ -181,7 +181,7 @@ export default function EnvelopeDetail() {
             </div>
             {envelope.originalPdfUrl && (
               <Card>
-                <CardContent className="p-5">
+                <CardContent className="p-5 space-y-3">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2">
                       <FileText className="h-4 w-4 text-muted-foreground" />
@@ -190,10 +190,42 @@ export default function EnvelopeDetail() {
                     <a href={envelope.originalPdfUrl} target="_blank" rel="noopener noreferrer">
                       <Button variant="outline" size="sm" data-testid="button-view-original-pdf">
                         <ExternalLink className="h-3 w-3 mr-1.5" />
-                        View PDF
+                        Open in New Tab
                       </Button>
                     </a>
                   </div>
+                  <iframe
+                    src={envelope.originalPdfUrl}
+                    className="w-full border rounded-md"
+                    style={{ height: "500px" }}
+                    title="Document preview"
+                    data-testid="pdf-preview"
+                  />
+                </CardContent>
+              </Card>
+            )}
+            {envelope.signedPdfUrl && (
+              <Card>
+                <CardContent className="p-5 space-y-3">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+                      <span className="text-sm font-medium">Signed PDF</span>
+                    </div>
+                    <a href={envelope.signedPdfUrl} target="_blank" rel="noopener noreferrer">
+                      <Button variant="outline" size="sm" data-testid="button-view-signed-pdf">
+                        <ExternalLink className="h-3 w-3 mr-1.5" />
+                        Open in New Tab
+                      </Button>
+                    </a>
+                  </div>
+                  <iframe
+                    src={envelope.signedPdfUrl}
+                    className="w-full border rounded-md"
+                    style={{ height: "500px" }}
+                    title="Signed document preview"
+                    data-testid="signed-pdf-preview"
+                  />
                 </CardContent>
               </Card>
             )}
