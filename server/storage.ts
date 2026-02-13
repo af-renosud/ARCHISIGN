@@ -11,26 +11,29 @@ import {
   type Backup, type InsertBackup,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, sql, isNull, isNotNull } from "drizzle-orm";
+import { eq, desc, and, sql, isNull, isNotNull, inArray } from "drizzle-orm";
+
+export type DbExecutor = typeof db;
 
 export interface IStorage {
   getEnvelopes(): Promise<(Envelope & { signers: Signer[] })[]>;
   getEnvelope(id: number): Promise<(Envelope & { signers: Signer[]; communicationLogs: CommunicationLog[]; auditEvents: AuditEvent[] }) | undefined>;
-  createEnvelope(data: InsertEnvelope): Promise<Envelope>;
-  updateEnvelope(id: number, data: Partial<Envelope>): Promise<Envelope | undefined>;
+  createEnvelope(data: InsertEnvelope, executor?: DbExecutor): Promise<Envelope>;
+  updateEnvelope(id: number, data: Partial<Envelope>, executor?: DbExecutor): Promise<Envelope | undefined>;
 
-  createSigner(data: InsertSigner): Promise<Signer>;
+  createSigner(data: InsertSigner, executor?: DbExecutor): Promise<Signer>;
   getSignerByToken(token: string): Promise<Signer | undefined>;
-  getSignersByEnvelope(envelopeId: number): Promise<Signer[]>;
-  updateSigner(id: number, data: Partial<Signer>): Promise<Signer | undefined>;
+  getSignersByEnvelope(envelopeId: number, executor?: DbExecutor): Promise<Signer[]>;
+  updateSigner(id: number, data: Partial<Signer>, executor?: DbExecutor): Promise<Signer | undefined>;
+  atomicClaimSign(signerId: number, executor?: DbExecutor): Promise<Signer | undefined>;
 
-  createAnnotation(data: InsertAnnotation): Promise<Annotation>;
-  getAnnotationsByEnvelopeAndSigner(envelopeId: number, signerId: number): Promise<Annotation[]>;
+  createAnnotation(data: InsertAnnotation, executor?: DbExecutor): Promise<Annotation>;
+  getAnnotationsByEnvelopeAndSigner(envelopeId: number, signerId: number, executor?: DbExecutor): Promise<Annotation[]>;
 
   createCommunicationLog(data: InsertCommunicationLog): Promise<CommunicationLog>;
   getCommunicationLogs(envelopeId: number): Promise<CommunicationLog[]>;
 
-  createAuditEvent(data: InsertAuditEvent): Promise<AuditEvent>;
+  createAuditEvent(data: InsertAuditEvent, executor?: DbExecutor): Promise<AuditEvent>;
   getAuditEvents(envelopeId: number): Promise<AuditEvent[]>;
 
   getAllSettings(): Promise<Setting[]>;
@@ -55,35 +58,44 @@ export interface IStorage {
 export class DatabaseStorage implements IStorage {
   async getEnvelopes(): Promise<(Envelope & { signers: Signer[] })[]> {
     const allEnvelopes = await db.select().from(envelopes).where(isNull(envelopes.deletedAt)).orderBy(desc(envelopes.createdAt));
-    const result = [];
-    for (const env of allEnvelopes) {
-      const envSigners = await db.select().from(signers).where(eq(signers.envelopeId, env.id));
-      result.push({ ...env, signers: envSigners });
+    if (allEnvelopes.length === 0) return [];
+    const envelopeIds = allEnvelopes.map(e => e.id);
+    const allSigners = await db.select().from(signers).where(inArray(signers.envelopeId, envelopeIds));
+    const signersByEnvelopeId = new Map<number, Signer[]>();
+    for (const s of allSigners) {
+      const list = signersByEnvelopeId.get(s.envelopeId) || [];
+      list.push(s);
+      signersByEnvelopeId.set(s.envelopeId, list);
     }
-    return result;
+    return allEnvelopes.map(env => ({
+      ...env,
+      signers: signersByEnvelopeId.get(env.id) || [],
+    }));
   }
 
   async getEnvelope(id: number) {
     const [envelope] = await db.select().from(envelopes).where(eq(envelopes.id, id));
     if (!envelope) return undefined;
-    const envSigners = await db.select().from(signers).where(eq(signers.envelopeId, id));
-    const logs = await db.select().from(communicationLogs).where(eq(communicationLogs.envelopeId, id)).orderBy(desc(communicationLogs.timestamp));
-    const events = await db.select().from(auditEvents).where(eq(auditEvents.envelopeId, id)).orderBy(desc(auditEvents.timestamp));
+    const [envSigners, logs, events] = await Promise.all([
+      db.select().from(signers).where(eq(signers.envelopeId, id)),
+      db.select().from(communicationLogs).where(eq(communicationLogs.envelopeId, id)).orderBy(desc(communicationLogs.timestamp)),
+      db.select().from(auditEvents).where(eq(auditEvents.envelopeId, id)).orderBy(desc(auditEvents.timestamp)),
+    ]);
     return { ...envelope, signers: envSigners, communicationLogs: logs, auditEvents: events };
   }
 
-  async createEnvelope(data: InsertEnvelope): Promise<Envelope> {
-    const [envelope] = await db.insert(envelopes).values(data).returning();
+  async createEnvelope(data: InsertEnvelope, executor: DbExecutor = db): Promise<Envelope> {
+    const [envelope] = await executor.insert(envelopes).values(data).returning();
     return envelope;
   }
 
-  async updateEnvelope(id: number, data: Partial<Envelope>): Promise<Envelope | undefined> {
-    const [updated] = await db.update(envelopes).set({ ...data, updatedAt: new Date() }).where(eq(envelopes.id, id)).returning();
+  async updateEnvelope(id: number, data: Partial<Envelope>, executor: DbExecutor = db): Promise<Envelope | undefined> {
+    const [updated] = await executor.update(envelopes).set({ ...data, updatedAt: new Date() }).where(eq(envelopes.id, id)).returning();
     return updated;
   }
 
-  async createSigner(data: InsertSigner): Promise<Signer> {
-    const [signer] = await db.insert(signers).values(data).returning();
+  async createSigner(data: InsertSigner, executor: DbExecutor = db): Promise<Signer> {
+    const [signer] = await executor.insert(signers).values(data).returning();
     return signer;
   }
 
@@ -92,22 +104,31 @@ export class DatabaseStorage implements IStorage {
     return signer;
   }
 
-  async getSignersByEnvelope(envelopeId: number): Promise<Signer[]> {
-    return db.select().from(signers).where(eq(signers.envelopeId, envelopeId));
+  async getSignersByEnvelope(envelopeId: number, executor: DbExecutor = db): Promise<Signer[]> {
+    return executor.select().from(signers).where(eq(signers.envelopeId, envelopeId));
   }
 
-  async updateSigner(id: number, data: Partial<Signer>): Promise<Signer | undefined> {
-    const [updated] = await db.update(signers).set(data).where(eq(signers.id, id)).returning();
+  async updateSigner(id: number, data: Partial<Signer>, executor: DbExecutor = db): Promise<Signer | undefined> {
+    const [updated] = await executor.update(signers).set(data).where(eq(signers.id, id)).returning();
     return updated;
   }
 
-  async createAnnotation(data: InsertAnnotation): Promise<Annotation> {
-    const [annotation] = await db.insert(annotations).values(data).returning();
+  async atomicClaimSign(signerId: number, executor: DbExecutor = db): Promise<Signer | undefined> {
+    const [updated] = await executor
+      .update(signers)
+      .set({ signedAt: new Date() })
+      .where(and(eq(signers.id, signerId), isNull(signers.signedAt)))
+      .returning();
+    return updated;
+  }
+
+  async createAnnotation(data: InsertAnnotation, executor: DbExecutor = db): Promise<Annotation> {
+    const [annotation] = await executor.insert(annotations).values(data).returning();
     return annotation;
   }
 
-  async getAnnotationsByEnvelopeAndSigner(envelopeId: number, signerId: number): Promise<Annotation[]> {
-    return db.select().from(annotations).where(
+  async getAnnotationsByEnvelopeAndSigner(envelopeId: number, signerId: number, executor: DbExecutor = db): Promise<Annotation[]> {
+    return executor.select().from(annotations).where(
       and(eq(annotations.envelopeId, envelopeId), eq(annotations.signerId, signerId))
     );
   }
@@ -121,8 +142,8 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(communicationLogs).where(eq(communicationLogs.envelopeId, envelopeId)).orderBy(desc(communicationLogs.timestamp));
   }
 
-  async createAuditEvent(data: InsertAuditEvent): Promise<AuditEvent> {
-    const [event] = await db.insert(auditEvents).values(data).returning();
+  async createAuditEvent(data: InsertAuditEvent, executor: DbExecutor = db): Promise<AuditEvent> {
+    const [event] = await executor.insert(auditEvents).values(data).returning();
     return event;
   }
 

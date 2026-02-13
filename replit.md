@@ -58,7 +58,24 @@ shared/
 ## Key Features (continued)
 7. **Settings Page** - Admin-editable email copy text (firm name, registration line, footer, invitation/OTP/completion email bodies) stored in DB and used by all outbound email templates
 
+## Security & Integrity Hardening
+
+### Phase 1 (Completed)
+- Path traversal protection on /uploads route (path.resolve + prefix check)
+- OTP generation via crypto.randomInt() + SHA-256 hashing before DB storage
+- All synchronous file I/O converted to async fs/promises
+- Log sanitization: accessToken, otpCode, otpExpiresAt redacted from response logs
+
+### Phase 2 (Completed)
+- **ACID Transactions**: Envelope creation (envelope + signers + audit) and signing flow (annotation + claim + status + audit) wrapped in db.transaction()
+- **N+1 Query Fix**: getEnvelopes() uses batch signer fetch with inArray() instead of per-envelope queries; getEnvelope() uses Promise.all() for parallel fetches
+- **Double-Sign Prevention**: atomicClaimSign() uses conditional UPDATE (WHERE signedAt IS NULL) to prevent race conditions
+- **Clean Transaction Boundaries**: PDF file generation happens after transaction commit to avoid orphan files on rollback
+- Storage methods accept optional DbExecutor parameter for transaction participation
+
 ## Recent Changes
+- 2026-02-13: Phase 2 data integrity hardening (ACID transactions, N+1 fix, atomic double-sign prevention)
+- 2026-02-13: Phase 1 security hardening (path traversal, OTP hashing, async I/O, log redaction)
 - 2026-02-13: Added Rollback Ledger page (version tracking with ACTIVE/SUPERSEDED statuses, CRUD operations)
 - 2026-02-13: Added Data Recovery page (soft-deleted envelopes recovery, JSON backup creation/download/delete)
 - 2026-02-13: Added Pre-Deployment Checks page with three audit prompt cards

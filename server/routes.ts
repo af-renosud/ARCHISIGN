@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { db } from "./db";
 import { sendEmail, getGmailProfile } from "./gmail";
 import { insertRollbackVersionSchema, insertBackupSchema } from "@shared/schema";
 import { randomBytes, randomInt, createHash } from "crypto";
@@ -151,33 +152,37 @@ export async function registerRoutes(
         }
       }
 
-      const envelope = await storage.createEnvelope({
-        subject,
-        externalRef: externalRef || null,
-        message: message || null,
-        webhookUrl: webhookUrl || null,
-        originalPdfUrl: pdfUrl || null,
-        signedPdfUrl: null,
-        totalPages,
-        status: "draft",
-        gmailThreadId: null,
-      });
+      const envelope = await db.transaction(async (tx) => {
+        const env = await storage.createEnvelope({
+          subject,
+          externalRef: externalRef || null,
+          message: message || null,
+          webhookUrl: webhookUrl || null,
+          originalPdfUrl: pdfUrl || null,
+          signedPdfUrl: null,
+          totalPages,
+          status: "draft",
+          gmailThreadId: null,
+        }, tx);
 
-      for (const s of signersData) {
-        await storage.createSigner({
-          envelopeId: envelope.id,
-          email: s.email,
-          fullName: s.fullName,
-          accessToken: generateToken(),
-        });
-      }
+        for (const s of signersData) {
+          await storage.createSigner({
+            envelopeId: env.id,
+            email: s.email,
+            fullName: s.fullName,
+            accessToken: generateToken(),
+          }, tx);
+        }
 
-      await storage.createAuditEvent({
-        envelopeId: envelope.id,
-        eventType: "Envelope created",
-        actorEmail: null,
-        ipAddress: req.ip || null,
-        metadata: null,
+        await storage.createAuditEvent({
+          envelopeId: env.id,
+          eventType: "Envelope created",
+          actorEmail: null,
+          ipAddress: req.ip || null,
+          metadata: null,
+        }, tx);
+
+        return env;
       });
 
       const full = await storage.getEnvelope(envelope.id);
@@ -595,65 +600,92 @@ export async function registerRoutes(
         return res.status(400).json({ message: `Please initial all ${envelope.totalPages} pages before signing.` });
       }
 
-      await storage.createAnnotation({
-        envelopeId: envelope.id,
-        signerId: signer.id,
-        pageNumber: envelope.totalPages,
-        xPos: 0.5,
-        yPos: 0.9,
-        type: "signature",
-        value: signer.fullName,
-      });
-
-      await storage.updateSigner(signer.id, { signedAt: new Date() });
-
-      const allSigners = await storage.getSignersByEnvelope(envelope.id);
-      const allSigned = allSigners.every(s => s.id === signer.id || s.signedAt);
-
-      if (allSigned) {
-        let signedPdfUrl: string | null = null;
-        if (envelope.originalPdfUrl) {
-          try {
-            const { PDFDocument, rgb, StandardFonts } = await import("pdf-lib");
-            const pdfPath = path.join(process.cwd(), envelope.originalPdfUrl.replace(/^\//, ""));
-            if (await fsPromises.access(pdfPath).then(() => true).catch(() => false)) {
-              const pdfBytes = await fsPromises.readFile(pdfPath);
-              const pdfDoc = await PDFDocument.load(pdfBytes);
-              const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-
-              for (const s of allSigners) {
-                const signerAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, s.id);
-                for (const ann of signerAnnotations) {
-                  const pageIndex = ann.pageNumber - 1;
-                  if (pageIndex >= 0 && pageIndex < pdfDoc.getPageCount()) {
-                    const page = pdfDoc.getPage(pageIndex);
-                    const { width, height } = page.getSize();
-                    const text = ann.type === "signature" ? `Signed: ${ann.value}` : `[${ann.value}]`;
-                    const fontSize = ann.type === "signature" ? 10 : 7;
-                    page.drawText(text, {
-                      x: ann.xPos * width,
-                      y: (1 - ann.yPos) * height,
-                      size: fontSize,
-                      font,
-                      color: rgb(0.1, 0.1, 0.5),
-                    });
-                  }
-                }
-              }
-
-              const signedBytes = await pdfDoc.save();
-              const signedFileName = `signed_${Date.now()}.pdf`;
-              const signedPath = path.join("uploads", signedFileName);
-              await fsPromises.writeFile(signedPath, signedBytes);
-              signedPdfUrl = `/uploads/${signedFileName}`;
-            }
-          } catch (pdfErr) {
-            console.error("PDF signing failed:", pdfErr);
-          }
+      const txResult = await db.transaction(async (tx) => {
+        const claimed = await storage.atomicClaimSign(signer.id, tx);
+        if (!claimed) {
+          throw new Error("ALREADY_SIGNED");
         }
 
-        await storage.updateEnvelope(envelope.id, { status: "signed", signedPdfUrl });
+        await storage.createAnnotation({
+          envelopeId: envelope.id,
+          signerId: signer.id,
+          pageNumber: envelope.totalPages,
+          xPos: 0.5,
+          yPos: 0.9,
+          type: "signature",
+          value: signer.fullName,
+        }, tx);
 
+        const txSigners = await storage.getSignersByEnvelope(envelope.id, tx);
+        const txAllSigned = txSigners.every(s => s.signedAt !== null);
+
+        if (txAllSigned) {
+          await storage.updateEnvelope(envelope.id, { status: "signed" }, tx);
+        }
+
+        await storage.createAuditEvent({
+          envelopeId: envelope.id,
+          eventType: "Document signed",
+          actorEmail: signer.email,
+          ipAddress: req.ip || null,
+          metadata: null,
+        }, tx);
+
+        return { allSigned: txAllSigned, allSigners: txSigners };
+      }).catch((err) => {
+        if (err.message === "ALREADY_SIGNED") {
+          return null as null;
+        }
+        throw err;
+      });
+
+      if (!txResult) {
+        return res.status(400).json({ message: "Already signed" });
+      }
+
+      const { allSigned, allSigners } = txResult;
+
+      if (allSigned && envelope.originalPdfUrl) {
+        try {
+          const { PDFDocument, rgb, StandardFonts } = await import("pdf-lib");
+          const pdfPath = path.join(process.cwd(), envelope.originalPdfUrl.replace(/^\//, ""));
+          if (await fsPromises.access(pdfPath).then(() => true).catch(() => false)) {
+            const pdfBytes = await fsPromises.readFile(pdfPath);
+            const pdfDoc = await PDFDocument.load(pdfBytes);
+            const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+            for (const s of allSigners) {
+              const signerAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, s.id);
+              for (const ann of signerAnnotations) {
+                const pageIndex = ann.pageNumber - 1;
+                if (pageIndex >= 0 && pageIndex < pdfDoc.getPageCount()) {
+                  const page = pdfDoc.getPage(pageIndex);
+                  const { width, height } = page.getSize();
+                  const text = ann.type === "signature" ? `Signed: ${ann.value}` : `[${ann.value}]`;
+                  const fontSize = ann.type === "signature" ? 10 : 7;
+                  page.drawText(text, {
+                    x: ann.xPos * width,
+                    y: (1 - ann.yPos) * height,
+                    size: fontSize,
+                    font,
+                    color: rgb(0.1, 0.1, 0.5),
+                  });
+                }
+              }
+            }
+
+            const signedBytes = await pdfDoc.save();
+            const signedFileName = `signed_${Date.now()}.pdf`;
+            const signedPath = path.join("uploads", signedFileName);
+            await fsPromises.writeFile(signedPath, signedBytes);
+            await storage.updateEnvelope(envelope.id, { signedPdfUrl: `/uploads/${signedFileName}` });
+          }
+        } catch (pdfErr) {
+          console.error("PDF signing failed:", pdfErr);
+        }
+      }
+
+      if (allSigned) {
         const firmEmail = await getGmailProfile();
         const emailCfg = await loadEmailSettings();
 
@@ -705,14 +737,6 @@ export async function registerRoutes(
         }
       }
 
-      await storage.createAuditEvent({
-        envelopeId: envelope.id,
-        eventType: "Document signed",
-        actorEmail: signer.email,
-        ipAddress: req.ip || null,
-        metadata: null,
-      });
-
       res.json({ success: true, allSigned });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -727,30 +751,34 @@ export async function registerRoutes(
         return res.status(400).json({ message: "subject and signerEmail are required" });
       }
 
-      const envelope = await storage.createEnvelope({
-        subject,
-        externalRef: externalRef || null,
-        webhookUrl: webhookUrl || null,
-        originalPdfUrl: pdfUrl || null,
-        signedPdfUrl: null,
-        totalPages: 1,
-        status: "draft",
-        gmailThreadId: null,
-      });
+      const envelope = await db.transaction(async (tx) => {
+        const env = await storage.createEnvelope({
+          subject,
+          externalRef: externalRef || null,
+          webhookUrl: webhookUrl || null,
+          originalPdfUrl: pdfUrl || null,
+          signedPdfUrl: null,
+          totalPages: 1,
+          status: "draft",
+          gmailThreadId: null,
+        }, tx);
 
-      await storage.createSigner({
-        envelopeId: envelope.id,
-        email: signerEmail,
-        fullName: signerName || signerEmail,
-        accessToken: generateToken(),
-      });
+        await storage.createSigner({
+          envelopeId: env.id,
+          email: signerEmail,
+          fullName: signerName || signerEmail,
+          accessToken: generateToken(),
+        }, tx);
 
-      await storage.createAuditEvent({
-        envelopeId: envelope.id,
-        eventType: "Envelope created via API",
-        actorEmail: null,
-        ipAddress: req.ip || null,
-        metadata: JSON.stringify({ source: "ArchiDoc" }),
+        await storage.createAuditEvent({
+          envelopeId: env.id,
+          eventType: "Envelope created via API",
+          actorEmail: null,
+          ipAddress: req.ip || null,
+          metadata: JSON.stringify({ source: "ArchiDoc" }),
+        }, tx);
+
+        return env;
       });
 
       const full = await storage.getEnvelope(envelope.id);
