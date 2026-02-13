@@ -25,6 +25,7 @@ const formSchema = z.object({
   subject: z.string().min(1, "Subject is required"),
   externalRef: z.string().optional(),
   webhookUrl: z.string().url("Must be a valid URL").optional().or(z.literal("")),
+  message: z.string().optional(),
   signerName: z.string().min(1, "Signer name is required"),
   signerEmail: z.string().email("Valid email required"),
 });
@@ -43,6 +44,7 @@ export default function EnvelopeNew() {
       subject: "",
       externalRef: "",
       webhookUrl: "",
+      message: "",
       signerName: "",
       signerEmail: "",
     },
@@ -54,6 +56,7 @@ export default function EnvelopeNew() {
       formData.append("subject", values.subject);
       if (values.externalRef) formData.append("externalRef", values.externalRef);
       if (values.webhookUrl) formData.append("webhookUrl", values.webhookUrl);
+      if (values.message) formData.append("message", values.message);
 
       const allSigners = [
         { fullName: values.signerName, email: values.signerEmail },
@@ -154,6 +157,25 @@ export default function EnvelopeNew() {
                       <FormLabel>Webhook Callback URL (optional)</FormLabel>
                       <FormControl>
                         <Input placeholder="https://archidoc.example.com/webhook" {...field} data-testid="input-webhook-url" />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="message"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Message to signers (optional)</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          placeholder="Add a personal message to include in the signing invitation email..."
+                          className="resize-none"
+                          rows={3}
+                          {...field}
+                          data-testid="input-message"
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

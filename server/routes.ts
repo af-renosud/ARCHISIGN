@@ -58,7 +58,7 @@ export async function registerRoutes(
 
   app.post("/api/envelopes", upload.single("pdf"), async (req, res) => {
     try {
-      const { subject, externalRef, webhookUrl } = req.body;
+      const { subject, externalRef, webhookUrl, message } = req.body;
       if (!subject) return res.status(400).json({ message: "Subject is required" });
 
       let signersData;
@@ -92,6 +92,7 @@ export async function registerRoutes(
       const envelope = await storage.createEnvelope({
         subject,
         externalRef: externalRef || null,
+        message: message || null,
         webhookUrl: webhookUrl || null,
         originalPdfUrl: pdfUrl || null,
         signedPdfUrl: null,
@@ -143,6 +144,7 @@ export async function registerRoutes(
             <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0;">
               <p style="margin: 4px 0;"><strong>Subject:</strong> ${envelope.subject}</p>
               ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${envelope.externalRef}</p>` : ""}
+              ${envelope.message ? `<p style="margin: 12px 0 4px 0; white-space: pre-line;">${envelope.message}</p>` : ""}
             </div>
             <p>Please click the button below to verify your identity and review the document:</p>
             <a href="${signingUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">Review & Sign Document</a>

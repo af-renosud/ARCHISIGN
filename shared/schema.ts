@@ -15,6 +15,7 @@ export const envelopes = pgTable("envelopes", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   externalRef: text("external_ref"),
   subject: text("subject").notNull(),
+  message: text("message"),
   status: envelopeStatusEnum("status").notNull().default("draft"),
   originalPdfUrl: text("original_pdf_url"),
   signedPdfUrl: text("signed_pdf_url"),
