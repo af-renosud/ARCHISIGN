@@ -54,13 +54,12 @@ export function AppSidebar() {
           className="w-full bg-[#F59E0B] text-white border-2 border-[#D97706] font-semibold uppercase tracking-wide"
           data-testid="button-sidebar-new-envelope"
         >
-          <Plus className="h-4 w-4 mr-2" />
           New Envelope
         </Button>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel className="flex items-center justify-between gap-2">
+          <SidebarGroupLabel className="flex items-center justify-between gap-2 text-[#7D7E82]">
             <span>Status Overview</span>
           </SidebarGroupLabel>
           <SidebarGroupContent>
@@ -74,7 +73,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup>
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
+          <SidebarGroupLabel className="text-[#7D7E82]">Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
