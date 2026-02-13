@@ -7,19 +7,46 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 
-function wrapEmail(bodyContent: string, baseUrl: string): string {
+interface EmailSettings {
+  registrationLine: string;
+  footerText: string;
+  firmName: string;
+  invitationBody: string;
+  otpBody: string;
+  completionBody: string;
+  subjectPrefix: string;
+}
+
+async function loadEmailSettings(): Promise<EmailSettings> {
+  const allSettings = await storage.getAllSettings();
+  const map: Record<string, string> = {};
+  for (const s of allSettings) {
+    map[s.key] = s.value;
+  }
+  return {
+    registrationLine: map["email_registration_line"] || "INSCRIPTION \u00C0 L\u2019ORDRE DES ARCHITECTES OCCITANIE S24348",
+    footerText: map["email_footer_text"] || "Powered by ArchiSign Pro",
+    firmName: map["firm_name"] || "ArchiSign Pro",
+    invitationBody: map["email_invitation_body"] || "You have been invited to review and sign the following document.",
+    otpBody: map["email_otp_body"] || "Please use the verification code below to access the document. This code expires in 10 minutes.",
+    completionBody: map["email_completion_body"] || "All parties have completed signing the document. The signed document is now available for download.",
+    subjectPrefix: map["email_invitation_subject_prefix"] || "Signature Required:",
+  };
+}
+
+function wrapEmail(bodyContent: string, baseUrl: string, emailCfg: EmailSettings): string {
   const logoUrl = `${baseUrl}/logo.png`;
   return `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">
       <div style="text-align: center; padding: 24px 0 16px 0; border-bottom: 1px solid #e2e8f0;">
-        <img src="${logoUrl}" alt="AF" style="width: 48px; height: 48px; border-radius: 50%;" />
+        <img src="${logoUrl}" alt="${emailCfg.firmName}" style="width: 48px; height: 48px; border-radius: 50%;" />
       </div>
       <div style="padding: 24px;">
         ${bodyContent}
       </div>
       <div style="border-top: 1px solid #e2e8f0; padding: 16px 24px; text-align: center;">
-        <p style="color: #94a3b8; font-size: 11px; margin: 0 0 4px 0;">INSCRIPTION \u00C0 L\u2019ORDRE DES ARCHITECTES OCCITANIE S24348</p>
-        <p style="color: #94a3b8; font-size: 11px; margin: 0;">Powered by ArchiSign Pro</p>
+        <p style="color: #94a3b8; font-size: 11px; margin: 0 0 4px 0;">${emailCfg.registrationLine}</p>
+        <p style="color: #94a3b8; font-size: 11px; margin: 0;">${emailCfg.footerText}</p>
       </div>
     </div>
   `;
@@ -151,6 +178,7 @@ export async function registerRoutes(
       if (envelope.status !== "draft") return res.status(400).json({ message: "Envelope already sent" });
 
       const firmEmail = await getGmailProfile();
+      const emailCfg = await loadEmailSettings();
 
       for (const signer of envelope.signers) {
         const baseUrl = `${req.protocol}://${req.get("host")}`;
@@ -158,7 +186,7 @@ export async function registerRoutes(
         const htmlBody = wrapEmail(`
             <h2 style="color: #1e40af; margin-top: 0;">Document Ready for Signing</h2>
             <p>Dear ${signer.fullName},</p>
-            <p>You have been invited to review and sign the following document:</p>
+            <p>${emailCfg.invitationBody}</p>
             <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0;">
               <p style="margin: 4px 0;"><strong>Subject:</strong> ${envelope.subject}</p>
               ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${envelope.externalRef}</p>` : ""}
@@ -167,12 +195,12 @@ export async function registerRoutes(
             <p>Please click the button below to verify your identity and review the document:</p>
             <a href="${signingUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">Review & Sign Document</a>
             <p style="margin-top: 24px; color: #64748b; font-size: 12px;">This is a secure link. Do not share it with anyone.</p>
-        `, baseUrl);
+        `, baseUrl, emailCfg);
 
         try {
           const result = await sendEmail(
             signer.email,
-            `[ArchiSign] Please sign: ${envelope.subject}`,
+            `[${emailCfg.firmName}] ${emailCfg.subjectPrefix} ${envelope.subject}`,
             htmlBody
           );
 
@@ -221,6 +249,7 @@ export async function registerRoutes(
       const firmEmail = await getGmailProfile();
 
       const baseUrl = `${req.protocol}://${req.get("host")}`;
+      const emailCfg = await loadEmailSettings();
       for (const signer of envelope.signers) {
         const htmlBody = wrapEmail(`
             <h3 style="color: #1e40af; margin-top: 0;">Response from Architect</h3>
@@ -228,12 +257,12 @@ export async function registerRoutes(
             <p>Regarding: <strong>${envelope.subject}</strong></p>
             <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0; white-space: pre-wrap;">${message}</div>
             <p>You may continue to <a href="${baseUrl}/sign/${signer.accessToken}">review and sign the document</a>.</p>
-        `, baseUrl);
+        `, baseUrl, emailCfg);
 
         try {
           await sendEmail(
             signer.email,
-            `Re: [ArchiSign] ${envelope.subject}`,
+            `Re: [${emailCfg.firmName}] ${envelope.subject}`,
             htmlBody,
             envelope.gmailThreadId || undefined
           );
@@ -300,22 +329,23 @@ export async function registerRoutes(
       });
 
       const envelope = await storage.getEnvelope(signer.envelopeId);
+      const emailCfg = await loadEmailSettings();
 
       const baseUrl = `${req.protocol}://${req.get("host")}`;
       try {
         await sendEmail(
           signer.email,
-          `[ArchiSign] Your verification code: ${otp}`,
+          `[${emailCfg.firmName}] Your verification code: ${otp}`,
           wrapEmail(`
             <h2 style="color: #1e40af; margin-top: 0;">Verification Code</h2>
             <p>Dear ${signer.fullName},</p>
+            <p>${emailCfg.otpBody}</p>
             <p>Your verification code for signing "${envelope?.subject}" is:</p>
             <div style="background: #f8fafc; border-radius: 8px; padding: 24px; margin: 16px 0; text-align: center;">
               <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1e40af;">${otp}</span>
             </div>
-            <p>This code expires in 10 minutes.</p>
             <p style="color: #64748b; font-size: 12px;">If you did not request this code, please ignore this email.</p>
-          `, baseUrl)
+          `, baseUrl, emailCfg)
         );
       } catch (err) {
         console.error("Failed to send OTP email:", err);
@@ -482,11 +512,12 @@ export async function registerRoutes(
       const firmEmail = await getGmailProfile();
 
       const baseUrl = `${req.protocol}://${req.get("host")}`;
+      const emailCfg = await loadEmailSettings();
       if (firmEmail) {
         try {
           await sendEmail(
             firmEmail,
-            `[ArchiSign Query] ${envelope.subject} - from ${signer.fullName}`,
+            `[${emailCfg.firmName} Query] ${envelope.subject} - from ${signer.fullName}`,
             wrapEmail(`
               <h2 style="color: #dc2626; margin-top: 0;">Clarification Request</h2>
               <div style="background: #fef2f2; border-radius: 8px; padding: 16px; margin: 16px 0;">
@@ -496,8 +527,8 @@ export async function registerRoutes(
               </div>
               <h3>Query:</h3>
               <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0; white-space: pre-wrap;">${message}</div>
-              <p style="color: #64748b; font-size: 12px;">Reply to this email or respond through the ArchiSign Pro admin panel.</p>
-            `, baseUrl),
+              <p style="color: #64748b; font-size: 12px;">Reply to this email or respond through the ${emailCfg.firmName} admin panel.</p>
+            `, baseUrl, emailCfg),
             envelope.gmailThreadId || undefined
           );
         } catch (err) {
@@ -607,20 +638,21 @@ export async function registerRoutes(
         await storage.updateEnvelope(envelope.id, { status: "signed", signedPdfUrl });
 
         const firmEmail = await getGmailProfile();
+        const emailCfg = await loadEmailSettings();
 
         const baseUrl = `${req.protocol}://${req.get("host")}`;
         for (const s of allSigners) {
           try {
             await sendEmail(
               s.email,
-              `[ArchiSign] Document signed: ${envelope.subject}`,
+              `[${emailCfg.firmName}] Document signed: ${envelope.subject}`,
               wrapEmail(`
                 <h2 style="color: #16a34a; margin-top: 0;">Document Successfully Signed</h2>
                 <p>Dear ${s.fullName},</p>
-                <p>The document "<strong>${envelope.subject}</strong>" has been signed by all parties.</p>
+                <p>${emailCfg.completionBody}</p>
                 ${envelope.externalRef ? `<p><strong>Reference:</strong> ${envelope.externalRef}</p>` : ""}
                 <p style="color: #64748b; font-size: 12px;">A finalized copy will be available shortly.</p>
-              `, baseUrl),
+              `, baseUrl, emailCfg),
               envelope.gmailThreadId || undefined
             );
           } catch (err) {
@@ -632,13 +664,13 @@ export async function registerRoutes(
           try {
             await sendEmail(
               firmEmail,
-              `[ArchiSign] All signatures complete: ${envelope.subject}`,
+              `[${emailCfg.firmName}] All signatures complete: ${envelope.subject}`,
               wrapEmail(`
                 <h2 style="color: #16a34a; margin-top: 0;">All Signatures Collected</h2>
-                <p>All parties have signed "<strong>${envelope.subject}</strong>".</p>
+                <p>${emailCfg.completionBody}</p>
                 ${envelope.externalRef ? `<p><strong>Reference:</strong> ${envelope.externalRef}</p>` : ""}
                 <p>Signers: ${allSigners.map(s => s.fullName).join(", ")}</p>
-              `, baseUrl),
+              `, baseUrl, emailCfg),
               envelope.gmailThreadId || undefined
             );
           } catch (err) {
@@ -717,6 +749,45 @@ export async function registerRoutes(
       res.sendFile(filePath);
     } else {
       res.status(404).json({ message: "File not found" });
+    }
+  });
+
+  app.get("/api/settings", async (_req, res) => {
+    try {
+      const allSettings = await storage.getAllSettings();
+      res.json(allSettings);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/settings/:key", async (req, res) => {
+    try {
+      const setting = await storage.getSetting(req.params.key);
+      if (!setting) return res.status(404).json({ error: "Setting not found" });
+      res.json(setting);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.put("/api/settings", async (req, res) => {
+    try {
+      const settingsArray = req.body;
+      if (!Array.isArray(settingsArray)) {
+        return res.status(400).json({ error: "Expected array of settings" });
+      }
+      const results = [];
+      for (const s of settingsArray) {
+        if (!s.key || !s.value || !s.label) {
+          continue;
+        }
+        const result = await storage.upsertSetting(s);
+        results.push(result);
+      }
+      res.json(results);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
   });
 

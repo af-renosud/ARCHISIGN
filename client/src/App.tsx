@@ -13,6 +13,7 @@ import EnvelopeNew from "@/pages/envelope-new";
 import EnvelopeDetail from "@/pages/envelope-detail";
 import SignerVerify from "@/pages/signer-verify";
 import SignerDocument from "@/pages/signer-document";
+import SettingsPage from "@/pages/settings";
 
 function AdminLayout({ children }: { children: React.ReactNode }) {
   const style = {
@@ -44,6 +45,7 @@ function AdminRouter() {
       <Route path="/" component={Dashboard} />
       <Route path="/envelopes/new" component={EnvelopeNew} />
       <Route path="/envelopes/:id" component={EnvelopeDetail} />
+      <Route path="/settings" component={SettingsPage} />
       <Route component={NotFound} />
     </Switch>
   );

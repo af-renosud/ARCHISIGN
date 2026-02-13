@@ -71,6 +71,17 @@ export const auditEvents = pgTable("audit_events", {
   timestamp: timestamp("timestamp").notNull().defaultNow(),
 });
 
+export const settings = pgTable("settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  label: text("label").notNull(),
+  category: text("category").notNull().default("general"),
+});
+
+export const insertSettingSchema = createInsertSchema(settings);
+export type Setting = typeof settings.$inferSelect;
+export type InsertSetting = z.infer<typeof insertSettingSchema>;
+
 export const envelopeRelations = relations(envelopes, ({ many }) => ({
   signers: many(signers),
   annotations: many(annotations),

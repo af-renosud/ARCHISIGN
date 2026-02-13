@@ -1,10 +1,11 @@
 import {
-  envelopes, signers, annotations, communicationLogs, auditEvents,
+  envelopes, signers, annotations, communicationLogs, auditEvents, settings,
   type Envelope, type InsertEnvelope,
   type Signer, type InsertSigner,
   type Annotation, type InsertAnnotation,
   type CommunicationLog, type InsertCommunicationLog,
   type AuditEvent, type InsertAuditEvent,
+  type Setting, type InsertSetting,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, sql } from "drizzle-orm";
@@ -28,6 +29,11 @@ export interface IStorage {
 
   createAuditEvent(data: InsertAuditEvent): Promise<AuditEvent>;
   getAuditEvents(envelopeId: number): Promise<AuditEvent[]>;
+
+  getAllSettings(): Promise<Setting[]>;
+  getSetting(key: string): Promise<Setting | undefined>;
+  upsertSetting(data: InsertSetting): Promise<Setting>;
+  getSettingsByCategory(category: string): Promise<Setting[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -106,6 +112,31 @@ export class DatabaseStorage implements IStorage {
 
   async getAuditEvents(envelopeId: number): Promise<AuditEvent[]> {
     return db.select().from(auditEvents).where(eq(auditEvents.envelopeId, envelopeId)).orderBy(desc(auditEvents.timestamp));
+  }
+
+  async getAllSettings(): Promise<Setting[]> {
+    return db.select().from(settings);
+  }
+
+  async getSetting(key: string): Promise<Setting | undefined> {
+    const [setting] = await db.select().from(settings).where(eq(settings.key, key));
+    return setting;
+  }
+
+  async upsertSetting(data: InsertSetting): Promise<Setting> {
+    const [setting] = await db
+      .insert(settings)
+      .values(data)
+      .onConflictDoUpdate({
+        target: settings.key,
+        set: { value: data.value, label: data.label, category: data.category },
+      })
+      .returning();
+    return setting;
+  }
+
+  async getSettingsByCategory(category: string): Promise<Setting[]> {
+    return db.select().from(settings).where(eq(settings.category, category));
   }
 }
 

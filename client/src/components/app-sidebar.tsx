@@ -19,6 +19,7 @@ import type { Envelope } from "@shared/schema";
 const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "New Envelope", url: "/envelopes/new", icon: Plus },
+  { title: "Settings", url: "/settings", icon: Settings },
 ];
 
 export function AppSidebar() {

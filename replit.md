@@ -24,6 +24,7 @@ ArchiSign Pro is a specialized internal tool for a French architecture firm to h
 - `annotations` - Initials/signatures per page
 - `communication_logs` - Query messages between parties
 - `audit_events` - Full audit trail
+- `settings` - Key-value configuration (email copy text, firm name, etc.)
 
 ## Project Structure
 ```
@@ -33,6 +34,7 @@ client/src/
   pages/envelope-detail.tsx  - Envelope detail + tabs (overview, signers, communication, audit)
   pages/signer-verify.tsx    - External OTP verification
   pages/signer-document.tsx  - Document signing interface
+  pages/settings.tsx         - Admin settings (email copy text)
   components/app-sidebar.tsx - Navigation sidebar
   components/theme-toggle.tsx - Dark/light mode
   lib/theme-provider.tsx     - Theme context
@@ -48,5 +50,10 @@ shared/
   schema.ts    - Drizzle models + Zod schemas
 ```
 
+## Key Features (continued)
+7. **Settings Page** - Admin-editable email copy text (firm name, registration line, footer, invitation/OTP/completion email bodies) stored in DB and used by all outbound email templates
+
 ## Recent Changes
+- 2026-02-13: Added Settings page with editable email copy text, stored in DB settings table
+- 2026-02-13: Added inline PDF viewing in envelope detail and signer document pages
 - 2026-02-13: Initial MVP build with full schema, admin UI, signing flow, Gmail integration
