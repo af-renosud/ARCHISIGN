@@ -102,7 +102,14 @@ export default function Dashboard() {
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard label="Total Envelopes" value={stats.total} icon={FileText} borderColor="border-primary" />
+          <StatCard
+            label="Total Envelopes"
+            value={stats.total}
+            icon={FileText}
+            borderColor="border-primary"
+            onClick={() => handleStatCardClick("all")}
+            active={statusFilter === "all"}
+          />
           <StatCard
             label="Awaiting Signature"
             value={stats.pending}
