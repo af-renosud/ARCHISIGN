@@ -1,4 +1,4 @@
-import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database } from "lucide-react";
+import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database, ChevronRight } from "lucide-react";
 import archisignLogo from "@assets/Generated_Image_February_13__2026_-_7_21AM-removebg-preview_1770963731125.png";
 import { useLocation, Link } from "wouter";
 import {
@@ -10,17 +10,27 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
   SidebarHeader,
   SidebarFooter,
 } from "@/components/ui/sidebar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
 import type { Envelope } from "@shared/schema";
 
-const navItems = [
+const mainNavItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "New Envelope", url: "/envelopes/new", icon: Plus },
-  { title: "Settings", url: "/settings", icon: Settings },
+];
+
+const settingsSubItems = [
   { title: "Rollback Ledger", url: "/rollback-ledger", icon: History },
   { title: "Data Recovery", url: "/data-recovery", icon: Database },
   { title: "Pre-Deployment", url: "/pre-deployment", icon: Shield },
@@ -35,6 +45,8 @@ export function AppSidebar() {
 
   const queriedCount = envelopes?.filter(e => e.status === "queried").length || 0;
 
+  const settingsActive = location === "/settings" || settingsSubItems.some(s => location === s.url);
+
   return (
     <Sidebar>
       <SidebarHeader className="p-4">
@@ -43,26 +55,6 @@ export function AppSidebar() {
         </div>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {navItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={location === item.url}
-                  >
-                    <Link href={item.url} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s/g, '-')}`}>
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
         <SidebarGroup>
           <SidebarGroupLabel className="flex items-center justify-between gap-2">
             <span>Status Overview</span>
@@ -75,6 +67,67 @@ export function AppSidebar() {
               <StatusRow label="Queried" count={queriedCount} highlight />
               <StatusRow label="Signed" count={envelopes?.filter(e => e.status === "signed").length || 0} />
             </div>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {mainNavItems.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={location === item.url}
+                  >
+                    <Link href={item.url} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s/g, '-')}`}>
+                      <item.icon className="h-4 w-4" />
+                      <span>{item.title}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+              <Collapsible defaultOpen={settingsActive} className="group/collapsible">
+                <SidebarMenuItem>
+                  <CollapsibleTrigger asChild>
+                    <SidebarMenuButton
+                      isActive={settingsActive}
+                      data-testid="link-nav-settings"
+                    >
+                      <Settings className="h-4 w-4" />
+                      <span>Settings</span>
+                      <ChevronRight className="ml-auto h-4 w-4 transition-transform group-data-[state=open]/collapsible:rotate-90" />
+                    </SidebarMenuButton>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarMenuSub>
+                      <SidebarMenuSubItem>
+                        <SidebarMenuSubButton
+                          asChild
+                          isActive={location === "/settings"}
+                        >
+                          <Link href="/settings" data-testid="link-nav-general-settings">
+                            <span>General</span>
+                          </Link>
+                        </SidebarMenuSubButton>
+                      </SidebarMenuSubItem>
+                      {settingsSubItems.map((item) => (
+                        <SidebarMenuSubItem key={item.title}>
+                          <SidebarMenuSubButton
+                            asChild
+                            isActive={location === item.url}
+                          >
+                            <Link href={item.url} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s/g, '-')}`}>
+                              <item.icon className="h-3 w-3" />
+                              <span>{item.title}</span>
+                            </Link>
+                          </SidebarMenuSubButton>
+                        </SidebarMenuSubItem>
+                      ))}
+                    </SidebarMenuSub>
+                  </CollapsibleContent>
+                </SidebarMenuItem>
+              </Collapsible>
+            </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
