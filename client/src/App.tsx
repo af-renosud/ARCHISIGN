@@ -14,6 +14,7 @@ import EnvelopeDetail from "@/pages/envelope-detail";
 import SignerVerify from "@/pages/signer-verify";
 import SignerDocument from "@/pages/signer-document";
 import SettingsPage from "@/pages/settings";
+import PreDeployment from "@/pages/pre-deployment";
 
 function AdminLayout({ children }: { children: React.ReactNode }) {
   const style = {
@@ -46,6 +47,7 @@ function AdminRouter() {
       <Route path="/envelopes/new" component={EnvelopeNew} />
       <Route path="/envelopes/:id" component={EnvelopeDetail} />
       <Route path="/settings" component={SettingsPage} />
+      <Route path="/pre-deployment" component={PreDeployment} />
       <Route component={NotFound} />
     </Switch>
   );
