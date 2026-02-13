@@ -1,0 +1,55 @@
+Project Title: ArchiSign Pro - External Stakeholder Negotiation & E-Signature Platform
+
+Context: We are a French architecture firm. This application is a specialized internal tool to handle external sign-offs (clients, contractors, partners) for architectural plans and contracts. It must integrate directly with our existing ArchiDoc application running in the same Replit account.
+
+1. Internal API Integration (ArchiDoc Link):
+
+Service-to-Service Communication: Create a secure internal API. The ArchiDoc app will send a POST request to /api/v1/envelopes/create containing the PDF binary (or URL), the Signer’s Email, and the Project Reference.
+
+Webhook Callbacks: Once a document is signed or a "Query" is raised by a contractor, ArchiSign must send a POST notification back to a specified URL in ArchiDoc to update the master project status.
+
+Shared Storage: Ensure the app can access or receive files from the ArchiDoc environment efficiently.
+
+2. Database Schema (PostgreSQL):
+
+Envelopes: id (PK), external_ref (ArchiDoc ID), subject, status (Draft, Sent, Viewed, Queried, Signed), original_pdf_url, signed_pdf_url, created_at.
+
+Signers: id (PK), envelope_id (FK), email, full_name, access_token (unique), last_viewed_at.
+
+Annotations: id (PK), envelope_id (FK), page_number, x_pos, y_pos, type (Initial, Signature, Date).
+
+Communication_Logs: id (PK), envelope_id (FK), sender_email, message_body, timestamp, is_external_query (boolean).
+
+Audit_Events: id (PK), envelope_id (FK), event_type, ip_address, timestamp.
+
+3. Negotiation & Gmail Workflow:
+
+The "Query" Loop: On the signing page, provide a "Request Clarification" button. Messages sent here must trigger a Gmail thread using the Gmail API from our firm's account.
+
+Bidirectional Sync: The app must track the threadId. If the client replies to the email instead of using the portal, the app should fetch that reply and display it in the Internal Admin UI.
+
+Finalization: Upon signature, email a "Flattened" (un-editable) version of the PDF to all parties automatically via Gmail.
+
+4. External Signer Interface:
+
+No Login Required: Accessible via a secure, tokenized URL.
+
+Validation: Implement an Email OTP (One-Time Password) to verify the external party's identity.
+
+Interaction: The signer must click an "Initial" placeholder on every page (essential for large A3/A2 plans) before the final "Sign" button is enabled.
+
+5. Internal Admin UI (Architecture Firm View):
+
+Master Dashboard: A table-based view of all active sign-offs.
+
+Filtering: High-performance filtering by Client Name, Project Subject, and Status.
+
+Status Badges: Clearly flag documents with the "Queried" status so architects know which contractors need a response.
+
+6. Technical Requirements:
+
+Backend: Python (FastAPI) or Node.js (Express).
+
+PDF Engine: Use PyMuPDF or pdf-lib to hard-code signatures into the PDF layers.
+
+Deployment: Optimized for Replit, utilizing Replit PostgreSQL and Secrets for Gmail API credentials.
