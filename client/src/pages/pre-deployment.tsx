@@ -10,19 +10,22 @@ const DATABASE_AUDIT_PROMPT = `## ARCHISIGN — DATABASE AUDIT (Pre-Deployment)
 Run a full database audit on the Archisign e-signature platform before deployment.
 
 ### 1. Schema Sync Verification
-- Compare the Drizzle ORM schema in \`shared/schema.ts\` against the live PostgreSQL database
-- Verify all 8 tables exist: \`envelopes\`, \`signers\`, \`annotations\`, \`communication_logs\`, \`audit_events\`, \`settings\`, \`rollback_versions\`, \`backups\`
+- Compare the Drizzle ORM schema in \`shared/schema.ts\` and \`shared/models/auth.ts\` against the live PostgreSQL database
+- Verify all 10 tables exist: \`envelopes\`, \`signers\`, \`annotations\`, \`communication_logs\`, \`audit_events\`, \`settings\`, \`rollback_versions\`, \`backups\`, \`users\`, \`sessions\`
 - Verify all 3 enum types exist: \`envelope_status\` (draft, sent, viewed, queried, signed, declined), \`annotation_type\` (initial, signature, date), \`rollback_version_status\` (active, superseded)
 - Confirm every column matches its Drizzle definition (type, default, nullability):
   - \`envelopes\`: id (identity PK), external_ref (text nullable), subject (text NOT NULL), message (text nullable), status (envelope_status default 'draft'), original_pdf_url (text nullable), signed_pdf_url (text nullable), total_pages (int default 1), webhook_url (text nullable), gmail_thread_id (text nullable), created_at (timestamp defaultNow), updated_at (timestamp defaultNow), deleted_at (timestamp nullable)
   - \`signers\`: id (identity PK), envelope_id (int NOT NULL FK), email (text NOT NULL), full_name (text NOT NULL), access_token (text NOT NULL UNIQUE), otp_code (text nullable), otp_expires_at (timestamp nullable), otp_verified (boolean default false), last_viewed_at (timestamp nullable), signed_at (timestamp nullable)
   - \`annotations\`: id (identity PK), envelope_id (int NOT NULL FK), signer_id (int NOT NULL FK), page_number (int NOT NULL), x_pos (real NOT NULL), y_pos (real NOT NULL), type (annotation_type NOT NULL), value (text nullable), created_at (timestamp defaultNow)
   - \`communication_logs\`: id (identity PK), envelope_id (int NOT NULL FK), sender_email (text NOT NULL), message_body (text NOT NULL), is_external_query (boolean default false), gmail_message_id (text nullable), timestamp (timestamp defaultNow)
-  - \`audit_events\`: id (identity PK), envelope_id (int NOT NULL FK), event_type (text NOT NULL), actor_email (text nullable), ip_address (text nullable), metadata (text nullable), timestamp (timestamp defaultNow)
+  - \`audit_events\`: id (identity PK), envelope_id (int NULLABLE FK), event_type (text NOT NULL), actor_email (text nullable), ip_address (text nullable), metadata (text nullable), timestamp (timestamp defaultNow)
   - \`settings\`: key (text PK), value (text NOT NULL), label (text NOT NULL), category (text NOT NULL default 'general')
   - \`rollback_versions\`: id (identity PK), version_label (text NOT NULL), note (text nullable), status (rollback_version_status default 'active'), created_at (timestamp defaultNow)
   - \`backups\`: id (identity PK), filename (text NOT NULL), created_at (timestamp defaultNow)
+  - \`users\`: id (varchar PK default \`gen_random_uuid()\`), email (varchar UNIQUE nullable), first_name (varchar nullable), last_name (varchar nullable), profile_image_url (varchar nullable), created_at (timestamp defaultNow), updated_at (timestamp defaultNow)
+  - \`sessions\`: sid (varchar PK), sess (jsonb NOT NULL), expire (timestamp NOT NULL)
 - Check that \`generatedAlwaysAsIdentity()\` is correctly applied on all ID columns (envelopes, signers, annotations, communication_logs, audit_events, rollback_versions, backups)
+- Verify \`sessions\` has an index on \`expire\` column (\`IDX_session_expire\`)
 
 ### 2. Foreign Key & Cascade Verification
 - Verify FK constraints with ON DELETE CASCADE:
@@ -30,20 +33,22 @@ Run a full database audit on the Archisign e-signature platform before deploymen
   - \`annotations.envelope_id → envelopes.id\`
   - \`annotations.signer_id → signers.id\`
   - \`communication_logs.envelope_id → envelopes.id\`
-  - \`audit_events.envelope_id → envelopes.id\`
-- Test: hard-deleting an envelope should cascade-delete its signers, annotations, communication_logs, and audit_events
-- Verify \`settings\`, \`rollback_versions\`, and \`backups\` are standalone tables with no FK dependencies
+  - \`audit_events.envelope_id → envelopes.id\` (NULLABLE — CASCADE applies when envelope_id is not null; rows with null envelope_id are system-level auth events and are not affected by envelope deletion)
+- Test: hard-deleting an envelope should cascade-delete its signers, annotations, communication_logs, and audit_events (where envelope_id matches)
+- Verify \`settings\`, \`rollback_versions\`, \`backups\`, \`users\`, and \`sessions\` are standalone tables with no FK dependencies
 
 ### 3. Unique Constraints & Indexes
 - Verify \`signers.access_token\` has a UNIQUE constraint (used for tokenized signer URLs)
 - Verify \`settings.key\` is the primary key (used for upsert via onConflictDoUpdate)
+- Verify \`users.email\` has a UNIQUE constraint
+- Verify \`sessions\` has an index on \`expire\` (\`IDX_session_expire\`)
 - Check for missing indexes on frequently queried columns: \`signers.envelope_id\`, \`annotations.envelope_id\`, \`annotations.signer_id\`, \`communication_logs.envelope_id\`, \`audit_events.envelope_id\`
 
 ### 4. Orphaned Records Check
 - Query for signers with no matching envelope
 - Query for annotations with no matching signer or envelope
 - Query for communication_logs with no matching envelope
-- Query for audit_events with no matching envelope
+- Query for audit_events with no matching envelope WHERE \`envelope_id IS NOT NULL\` — audit_events with null \`envelope_id\` are NOT orphans (they are system-level auth events such as unauthorized admin access attempts)
 - Report any orphaned data found
 
 ### 5. Soft-Delete Integrity
@@ -61,6 +66,7 @@ Run a full database audit on the Archisign e-signature platform before deploymen
 
 ### 7. Secrets & Connection Safety
 - Verify DATABASE_URL environment variable is set and reachable
+- Verify \`ARCHIDOC_API_KEY\` secret is set (required for ArchiDoc API authentication on \`/api/v1/*\` routes)
 - Verify connection pool (\`@neondatabase/serverless\` Pool) is healthy with no stale connections
 - Confirm graceful shutdown in \`server/index.ts\` calls \`pool.end()\` to close connections
 - Confirm no database credentials are hardcoded in source files
@@ -85,16 +91,30 @@ Run a full application code and security audit on the Archisign e-signature plat
   - **Envelope Actions**: POST \`/api/envelopes/:id/send\` (send invitations), POST \`/api/envelopes/:id/reply\` (reply to query)
   - **Soft-Delete**: GET \`/api/envelopes/deleted\`, POST \`/api/envelopes/:id/soft-delete\`, POST \`/api/envelopes/:id/restore\`
   - **Signer Flow**: GET \`/api/sign/:token/info\`, POST \`/api/sign/:token/request-otp\`, POST \`/api/sign/:token/verify-otp\`, GET \`/api/sign/:token/document\`, POST \`/api/sign/:token/initial\`, POST \`/api/sign/:token/query\`, POST \`/api/sign/:token/sign\`
-  - **ArchiDoc API**: POST \`/api/v1/envelopes/create\` (service-to-service envelope creation)
+  - **ArchiDoc API**: POST \`/api/v1/envelopes/create\` — service-to-service envelope creation with \`X-API-KEY\` header auth validated against \`ARCHIDOC_API_KEY\` secret. Accepts \`pdfBase64\` (base64-encoded PDF, decoded and saved to \`uploads/\`, page count extracted via pdf-lib). Supports \`signers\` array \`[{email, fullName}]\` for multi-signer envelopes, with backward-compatible legacy \`signerEmail\`/\`signerName\` fields. Validated by \`createApiEnvelopeRequestSchema\` Zod schema with \`.refine()\` ensuring at least one signer source is provided.
   - **Settings**: GET \`/api/settings\` (all), GET \`/api/settings/:key\` (single), PUT \`/api/settings\` (bulk upsert array)
   - **Rollback Versions**: GET \`/api/rollback-versions\`, POST \`/api/rollback-versions\`, PATCH \`/api/rollback-versions/:id\`, DELETE \`/api/rollback-versions/:id\`
   - **Backups**: GET \`/api/backups\`, POST \`/api/backups\` (create JSON backup), GET \`/api/backups/:id/download\`, DELETE \`/api/backups/:id\`
   - **Static Files**: GET \`/uploads/*\` (path-traversal-protected file serving)
 - Verify proper error handling (400/404/500 responses) on each route
-- Check that input-accepting routes validate via Zod schemas: \`createEnvelopeRequestSchema\`, \`createSignerRequestSchema\`, \`createApiEnvelopeRequestSchema\`, \`insertRollbackVersionSchema\`
+- Check that input-accepting routes validate via Zod schemas: \`createEnvelopeRequestSchema\`, \`createSignerRequestSchema\`, \`createApiEnvelopeRequestSchema\` (with \`.refine()\`), \`insertRollbackVersionSchema\`
 
-### 3. Security Checks
-- Confirm no secrets (DATABASE_URL, Gmail tokens, API keys) are hardcoded in source code
+### 3. Authentication & Authorization
+- Verify Replit Auth OIDC is configured (\`ISSUER_URL\` env var auto-set by Replit)
+- Verify \`setupAuth()\` and \`registerAuthRoutes()\` are called in \`registerRoutes()\` before admin middleware
+- Verify admin middleware (\`isAdminAuthorized\`) protects all \`/api/*\` routes except:
+  - \`/api/sign/:token/*\` — public signer flow (bypassed)
+  - \`/api/v1/*\` — ArchiDoc API (authenticated via \`X-API-KEY\` header)
+  - \`/api/login\`, \`/api/logout\`, \`/api/callback\`, \`/api/auth/*\` — OIDC auth flow routes
+  - \`/uploads\` — static file serving
+- Verify \`ADMIN_EMAILS\` allowlist enforcement: when set (comma-separated), only listed emails can access admin \`/api/*\` routes; unauthorized attempts return 403
+- Verify unauthorized admin access attempts create \`audit_events\` with null \`envelopeId\`, event type "Unauthorized admin access attempt", actor email, IP, and path/method metadata
+- Verify API key validation on \`/api/v1/*\` routes: \`X-API-KEY\` header checked against \`ARCHIDOC_API_KEY\` secret; returns 401 if invalid; logs warning if \`ARCHIDOC_API_KEY\` is not configured
+- Verify session storage uses PostgreSQL via \`connect-pg-simple\` (\`sessions\` table with \`sid\`, \`sess\`, \`expire\` columns)
+- Verify user profiles are upserted into \`users\` table on OIDC login
+
+### 4. Security Checks
+- Confirm no secrets (DATABASE_URL, Gmail tokens, \`ARCHIDOC_API_KEY\`) are hardcoded in source code
 - Verify signing tokens generated with \`crypto.randomBytes(32).toString("hex")\` (64-char hex, cryptographically secure)
 - Verify OTP generation uses \`crypto.randomInt(100000, 1000000)\` (6-digit, uniform distribution)
 - Verify OTPs are SHA-256 hashed via \`createHash("sha256")\` before DB storage — raw OTP never persisted
@@ -104,16 +124,17 @@ Run a full application code and security audit on the Archisign e-signature plat
 - Verify file upload: multer configured with PDF-only MIME filter and 50MB size limit
 - Verify path traversal protection on \`/uploads\` route: \`path.resolve()\` + prefix check against uploads directory
 - Verify \`/api/sign/:token/sign\` endpoint checks \`signer.signedAt\` to reject already-signed requests
+- Verify JSON body limit is set to 25MB in \`server/index.ts\` (\`express.json({ limit: "25mb" })\`) to support large \`pdfBase64\` payloads from ArchiDoc
 
-### 4. Transaction Safety (ACID)
+### 5. Transaction Safety (ACID)
 - Verify envelope creation (POST \`/api/envelopes\`): envelope + signers + audit event wrapped in \`db.transaction()\`
-- Verify ArchiDoc API (POST \`/api/v1/envelopes/create\`): envelope + signer + audit event wrapped in \`db.transaction()\`
+- Verify ArchiDoc API (POST \`/api/v1/envelopes/create\`): envelope + signers + audit event wrapped in \`db.transaction()\`; if transaction fails after PDF file was saved from \`pdfBase64\`, the orphan file is deleted via \`fsPromises.unlink()\` in catch block
 - Verify signing flow (POST \`/api/sign/:token/sign\`): atomicClaimSign + signature annotation + status update + audit event wrapped in \`db.transaction()\`
 - Confirm \`atomicClaimSign()\` uses conditional UPDATE with \`WHERE signedAt IS NULL\` to prevent double-sign race conditions
 - Verify PDF file generation (pdf-lib) happens AFTER transaction commit — no orphan files on rollback
 - Confirm storage methods accept optional \`DbExecutor\` parameter for transaction participation
 
-### 5. Gmail Integration
+### 6. Gmail Integration
 - Verify Gmail connector in \`server/gmail.ts\` uses Replit Google Mail connector (\`REPLIT_CONNECTORS_HOSTNAME\`) for OAuth token management
 - Confirm token refresh: \`getAccessToken()\` checks \`expires_at\` and re-fetches from connector API when expired
 - Verify \`sendEmail()\` supports plain HTML, threading (\`threadId\` parameter), and MIME attachments
@@ -122,35 +143,38 @@ Run a full application code and security audit on the Archisign e-signature plat
 - Check that all 5 email templates use configurable settings loaded from DB via \`loadEmailSettings()\`: firmName, registrationLine, footerText, invitationBody, otpBody, completionBody, subjectPrefix
 - Verify Gmail thread IDs are stored in \`envelopes.gmail_thread_id\` and reused for reply/query/completion emails
 
-### 6. PDF Processing
+### 7. PDF Processing
 - Verify pdf-lib is dynamically imported (\`await import("pdf-lib")\`) in both envelope creation (page count) and signing (annotation embedding)
 - Confirm page count is extracted on upload and stored in \`envelopes.total_pages\`
+- Verify ArchiDoc API \`pdfBase64\` handling: base64 string is decoded to Buffer, loaded via \`PDFDocument.load()\` for page count, saved to \`uploads/\` as \`api_\${timestamp}_\${random}.pdf\`; if the subsequent DB transaction fails, the saved file is cleaned up (deleted)
 - Verify signed PDF generation embeds all signer annotations (initials + signatures) at correct x_pos/y_pos positions using \`StandardFonts.Helvetica\`
 - Check that original PDFs are preserved — signed PDFs are saved as new files (\`signed_\${timestamp}.pdf\`)
 - Verify the \`uploads/\` directory is created on startup via \`fsPromises.mkdir("uploads", { recursive: true })\`
 
-### 7. Webhook Reliability
+### 8. Webhook Reliability
 - Verify \`sendWebhook()\` uses \`AbortSignal.timeout(10000)\` for 10-second timeout
 - Verify webhook is called on 3 events: \`envelope.sent\`, \`envelope.queried\` (includes queryFrom + queryMessage), \`envelope.signed\`
 - Confirm webhook payloads include: event, envelopeId, externalRef, status
 - Check that webhook failures are caught with try/catch and logged — never block or rollback the primary operation
 
-### 8. Graceful Shutdown
+### 9. Graceful Shutdown
 - Verify \`server/index.ts\` registers handlers for both SIGTERM and SIGINT signals
 - Confirm shutdown sequence: close HTTP server → close DB pool (\`pool.end()\`)
 - Verify 10-second forced-exit timeout (\`setTimeout\` with \`.unref()\`) prevents hanging
 - Confirm \`shuttingDown\` flag prevents duplicate shutdown attempts
 
-### 9. Frontend Pages (10 pages)
+### 10. Frontend Pages (11 pages)
 - Verify all pages are registered in \`client/src/App.tsx\`:
   - Dashboard (\`/\`), New Envelope (\`/envelopes/new\`), Envelope Detail (\`/envelopes/:id\`)
   - Signer Verify (\`/sign/:token\`), Signer Document (\`/sign/:token/document\`)
   - Settings (\`/settings\`), Pre-Deployment (\`/pre-deployment\`)
   - Data Recovery (\`/data-recovery\`), Rollback Ledger (\`/rollback-ledger\`)
+  - Login (\`/login\` — rendered at root for unauthenticated users via \`AuthenticatedAdmin\` component)
+  - Not Found (fallback)
 - Verify sidebar navigation links match registered routes
 - Check that all interactive elements have \`data-testid\` attributes
 
-### 10. Error Handling
+### 11. Error Handling
 - Verify all route handlers have try/catch with proper JSON error responses
 - Check that database errors don't leak internal details to the client
 - Confirm all file system operations use async \`fs/promises\` (no synchronous I/O)
@@ -191,7 +215,7 @@ Test each API endpoint persists data correctly:
 - POST \`/api/sign/:token/initial\` → creates annotation (type='initial') + "Page N initialed" audit event, returns updated list of initialed pages
 - POST \`/api/sign/:token/query\` → creates communication_log (isExternalQuery=true), updates status to 'queried', forwards query to firm email, creates "Clarification requested" audit event, fires \`envelope.queried\` webhook
 - POST \`/api/sign/:token/sign\` → within ACID transaction: atomicClaimSign + signature annotation + check if all signers signed + update status to 'signed' if yes + audit event. AFTER transaction: generates signed PDF with pdf-lib, sends completion emails, fires \`envelope.signed\` webhook
-- POST \`/api/v1/envelopes/create\` → ArchiDoc API: creates envelope + 1 signer + "Envelope created via API" audit event with metadata {source: "ArchiDoc"} (ACID transaction)
+- POST \`/api/v1/envelopes/create\` → ArchiDoc API: requires \`X-API-KEY\` header validated against \`ARCHIDOC_API_KEY\` secret. Accepts \`pdfBase64\` (base64 PDF decoded to Buffer, saved to \`uploads/\`, page count extracted via pdf-lib) or \`pdfUrl\`. Supports \`signers\` array \`[{email, fullName}]\` for multi-signer envelopes, with backward-compatible \`signerEmail\`/\`signerName\`. Creates envelope + N signers + "Envelope created via API" audit event with metadata \`{source: "ArchiDoc", signerCount: N}\` (ACID transaction). Orphan file cleanup: if DB transaction fails after PDF save from \`pdfBase64\`, the file is deleted via \`fsPromises.unlink()\`
 - POST \`/api/envelopes/:id/soft-delete\` → sets \`deleted_at\` to current timestamp (child records untouched)
 - POST \`/api/envelopes/:id/restore\` → sets \`deleted_at\` to NULL (re-appears in active list)
 - PUT \`/api/settings\` → bulk upsert array of {key, value, label, category} via \`onConflictDoUpdate\`
@@ -209,14 +233,14 @@ Check for scenarios where data could be silently lost:
 - Verify \`atomicClaimSign()\` prevents double-sign race conditions (concurrent requests get NULL result)
 
 ### 4. Database Record Counts
-- Count total envelopes (active WHERE deleted_at IS NULL + soft-deleted WHERE deleted_at IS NOT NULL)
-- Count signers, annotations, communication_logs, audit_events, settings, rollback_versions, backups
+- Count total records across all 10 tables: envelopes (active WHERE deleted_at IS NULL + soft-deleted WHERE deleted_at IS NOT NULL), signers, annotations, communication_logs, audit_events, settings, rollback_versions, backups, users, sessions
 - Verify no core tables are unexpectedly empty
 - Check that audit_events exist for every envelope (minimum: "Envelope created" or "Envelope created via API")
+- Note: audit_events may have null \`envelope_id\` for system-level auth events (e.g., "Unauthorized admin access attempt") — these are valid and expected
 - Verify settings table has all 7 expected configuration keys: firm_name, email_registration_line, email_footer_text, email_invitation_body, email_otp_body, email_completion_body, email_invitation_subject_prefix
 
 ### 5. File Storage Persistence
-- Verify uploaded PDFs exist at the paths stored in \`envelopes.original_pdf_url\` (format: \`/uploads/{multerFilename}.pdf\`)
+- Verify uploaded PDFs exist at the paths stored in \`envelopes.original_pdf_url\` (format: \`/uploads/{multerFilename}.pdf\` or \`/uploads/api_{timestamp}_{random}.pdf\` for ArchiDoc \`pdfBase64\` uploads)
 - Verify signed PDFs exist at the paths stored in \`envelopes.signed_pdf_url\` (format: \`/uploads/signed_{timestamp}.pdf\`) for fully-signed envelopes
 - Check that the \`uploads/\` directory is created on startup and not emptied during deployment
 - Verify JSON backup files exist in \`backups/\` directory at paths matching \`backups.filename\` records
@@ -249,8 +273,17 @@ Check for scenarios where data could be silently lost:
   - "OTP requested" / "Identity verified via OTP"
   - "Page N initialed" / "Document signed"
   - "Clarification requested" / "Reply sent to signer query"
-- Confirm each audit event records: envelopeId, eventType, actorEmail, ipAddress, metadata, timestamp
+  - "Unauthorized admin access attempt" (system-level, with null \`envelopeId\`, records actor email, IP address, and path/method in metadata)
+- Confirm each audit event records: envelopeId (nullable for system events), eventType, actorEmail, ipAddress, metadata, timestamp
 - Verify audit events are ordered by timestamp DESC in API responses
+
+### 10. Authentication Persistence
+- Verify \`users\` table stores OIDC user profiles: id (UUID PK), email (unique), first_name, last_name, profile_image_url, created_at, updated_at
+- Verify user profiles are upserted on each OIDC login (new users created, existing users updated)
+- Verify \`sessions\` table stores session data: sid (PK), sess (jsonb), expire (timestamp NOT NULL)
+- Verify sessions have a TTL and the \`expire\` column is indexed (\`IDX_session_expire\`) for efficient cleanup
+- Verify session storage uses \`connect-pg-simple\` backed by the same PostgreSQL database
+- Confirm expired sessions are cleaned up (either by \`connect-pg-simple\` pruning or via the index)
 
 ### Output Format
 For each check, report: PASS, WARN (with explanation), or FAIL (with remediation steps).
