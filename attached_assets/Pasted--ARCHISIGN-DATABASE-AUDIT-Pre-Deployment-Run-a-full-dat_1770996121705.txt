@@ -1,0 +1,69 @@
+## ARCHISIGN — DATABASE AUDIT (Pre-Deployment)
+
+Run a full database audit on the Archisign e-signature platform before deployment.
+
+### 1. Schema Sync Verification
+- Compare the Drizzle ORM schema in `shared/schema.ts` and `shared/models/auth.ts` against the live PostgreSQL database
+- Verify all 10 tables exist: `envelopes`, `signers`, `annotations`, `communication_logs`, `audit_events`, `settings`, `rollback_versions`, `backups`, `users`, `sessions`
+- Verify all 3 enum types exist: `envelope_status` (draft, sent, viewed, queried, signed, declined), `annotation_type` (initial, signature, date), `rollback_version_status` (active, superseded)
+- Confirm every column matches its Drizzle definition (type, default, nullability):
+  - `envelopes`: id (identity PK), external_ref (text nullable), subject (text NOT NULL), message (text nullable), status (envelope_status default 'draft'), original_pdf_url (text nullable), signed_pdf_url (text nullable), total_pages (int default 1), webhook_url (text nullable), gmail_thread_id (text nullable), created_at (timestamp defaultNow), updated_at (timestamp defaultNow), deleted_at (timestamp nullable)
+  - `signers`: id (identity PK), envelope_id (int NOT NULL FK), email (text NOT NULL), full_name (text NOT NULL), access_token (text NOT NULL UNIQUE), otp_code (text nullable), otp_expires_at (timestamp nullable), otp_verified (boolean default false), last_viewed_at (timestamp nullable), signed_at (timestamp nullable)
+  - `annotations`: id (identity PK), envelope_id (int NOT NULL FK), signer_id (int NOT NULL FK), page_number (int NOT NULL), x_pos (real NOT NULL), y_pos (real NOT NULL), type (annotation_type NOT NULL), value (text nullable), created_at (timestamp defaultNow)
+  - `communication_logs`: id (identity PK), envelope_id (int NOT NULL FK), sender_email (text NOT NULL), message_body (text NOT NULL), is_external_query (boolean default false), gmail_message_id (text nullable), timestamp (timestamp defaultNow)
+  - `audit_events`: id (identity PK), envelope_id (int NULLABLE FK), event_type (text NOT NULL), actor_email (text nullable), ip_address (text nullable), metadata (text nullable), timestamp (timestamp defaultNow)
+  - `settings`: key (text PK), value (text NOT NULL), label (text NOT NULL), category (text NOT NULL default 'general')
+  - `rollback_versions`: id (identity PK), version_label (text NOT NULL), note (text nullable), status (rollback_version_status default 'active'), created_at (timestamp defaultNow)
+  - `backups`: id (identity PK), filename (text NOT NULL), created_at (timestamp defaultNow)
+  - `users`: id (varchar PK default `gen_random_uuid()`), email (varchar UNIQUE nullable), first_name (varchar nullable), last_name (varchar nullable), profile_image_url (varchar nullable), created_at (timestamp defaultNow), updated_at (timestamp defaultNow)
+  - `sessions`: sid (varchar PK), sess (jsonb NOT NULL), expire (timestamp NOT NULL)
+- Check that `generatedAlwaysAsIdentity()` is correctly applied on all ID columns (envelopes, signers, annotations, communication_logs, audit_events, rollback_versions, backups)
+- Verify `sessions` has an index on `expire` column (`IDX_session_expire`)
+
+### 2. Foreign Key & Cascade Verification
+- Verify FK constraints with ON DELETE CASCADE:
+  - `signers.envelope_id → envelopes.id`
+  - `annotations.envelope_id → envelopes.id`
+  - `annotations.signer_id → signers.id`
+  - `communication_logs.envelope_id → envelopes.id`
+  - `audit_events.envelope_id → envelopes.id` (NULLABLE — CASCADE applies when envelope_id is not null; rows with null envelope_id are system-level auth events and are not affected by envelope deletion)
+- Test: hard-deleting an envelope should cascade-delete its signers, annotations, communication_logs, and audit_events (where envelope_id matches)
+- Verify `settings`, `rollback_versions`, `backups`, `users`, and `sessions` are standalone tables with no FK dependencies
+
+### 3. Unique Constraints & Indexes
+- Verify `signers.access_token` has a UNIQUE constraint (used for tokenized signer URLs)
+- Verify `settings.key` is the primary key (used for upsert via onConflictDoUpdate)
+- Verify `users.email` has a UNIQUE constraint
+- Verify `sessions` has an index on `expire` (`IDX_session_expire`)
+- Check for missing indexes on frequently queried columns: `signers.envelope_id`, `annotations.envelope_id`, `annotations.signer_id`, `communication_logs.envelope_id`, `audit_events.envelope_id`
+
+### 4. Orphaned Records Check
+- Query for signers with no matching envelope
+- Query for annotations with no matching signer or envelope
+- Query for communication_logs with no matching envelope
+- Query for audit_events with no matching envelope WHERE `envelope_id IS NOT NULL` — audit_events with null `envelope_id` are NOT orphans (they are system-level auth events such as unauthorized admin access attempts)
+- Report any orphaned data found
+
+### 5. Soft-Delete Integrity
+- Verify GET `/api/envelopes` filters by `WHERE deleted_at IS NULL`
+- Verify GET `/api/envelopes/deleted` filters by `WHERE deleted_at IS NOT NULL`
+- Verify POST `/api/envelopes/:id/soft-delete` sets `deleted_at` to current timestamp
+- Verify POST `/api/envelopes/:id/restore` clears `deleted_at` back to NULL
+- Confirm child records (signers, annotations, logs, events) are NOT affected by soft-delete
+
+### 6. Destructive Changes Detection
+- Run `npm run db:push` in dry-run mode and check output for destructive ALTER TABLE statements
+- NEVER run `db:push --force` on production without explicit approval
+- Flag any column type changes, dropped columns, or renamed tables
+- Verify no enum value removals (only additions are safe)
+
+### 7. Secrets & Connection Safety
+- Verify DATABASE_URL environment variable is set and reachable
+- Verify `ARCHIDOC_API_KEY` secret is set (required for ArchiDoc API authentication on `/api/v1/*` routes)
+- Verify connection pool (`@neondatabase/serverless` Pool) is healthy with no stale connections
+- Confirm graceful shutdown in `server/index.ts` calls `pool.end()` to close connections
+- Confirm no database credentials are hardcoded in source files
+
+### Output Format
+For each check, report: PASS, WARN (with explanation), or FAIL (with remediation steps).
+End with: **GO** (ready for deployment) or **NO-GO** (with blocking issues listed).
