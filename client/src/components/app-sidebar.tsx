@@ -48,9 +48,9 @@ export function AppSidebar() {
   return (
     <Sidebar>
       <SidebarHeader className="p-4 space-y-4">
-        <div className="flex items-center gap-2">
+        <Link href="/" className="flex items-center gap-2 cursor-pointer" data-testid="link-sidebar-logo">
           <img src={archisignLogo} alt="Archisign" className="h-28 w-auto object-contain" data-testid="img-sidebar-logo" />
-        </div>
+        </Link>
         <Button
           onClick={() => navigate("/envelopes/new")}
           className="w-full bg-[#F59E0B] text-white border-2 border-[#D97706] font-semibold uppercase tracking-wide"
