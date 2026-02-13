@@ -4,6 +4,7 @@ import { envelopes, settings } from "@shared/schema";
 import { randomBytes } from "crypto";
 import { sql } from "drizzle-orm";
 import fs from "fs";
+import fsPromises from "fs/promises";
 import path from "path";
 
 function generateToken(): string {
@@ -68,7 +69,7 @@ async function generateSamplePdf(title: string, pages: number, filename: string)
 
   const pdfBytes = await pdfDoc.save();
   const filePath = path.join("uploads", filename);
-  fs.writeFileSync(filePath, pdfBytes);
+  await fsPromises.writeFile(filePath, pdfBytes);
   return `/uploads/${filename}`;
 }
 
@@ -99,9 +100,7 @@ export async function seedDatabase() {
 
   console.log("Seeding database with sample data...");
 
-  if (!fs.existsSync("uploads")) {
-    fs.mkdirSync("uploads", { recursive: true });
-  }
+  await fsPromises.mkdir("uploads", { recursive: true });
 
   const pdf1Url = await generateSamplePdf("Villa Montpellier - Phase 2 Structural Plans", 5, "sample_structural_plans.pdf");
   const pdf2Url = await generateSamplePdf("Residence Les Oliviers - Contract Amendment", 3, "sample_contract_amendment.pdf");

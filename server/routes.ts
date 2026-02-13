@@ -3,10 +3,11 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { sendEmail, getGmailProfile } from "./gmail";
 import { insertRollbackVersionSchema, insertBackupSchema } from "@shared/schema";
-import { randomBytes } from "crypto";
+import { randomBytes, randomInt, createHash } from "crypto";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import fsPromises from "fs/promises";
 
 interface EmailSettings {
   registrationLine: string;
@@ -74,16 +75,18 @@ function generateToken(): string {
 }
 
 function generateOtp(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return randomInt(100000, 1000000).toString();
+}
+
+function hashOtp(otp: string): string {
+  return createHash("sha256").update(otp).digest("hex");
 }
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  if (!fs.existsSync("uploads")) {
-    fs.mkdirSync("uploads", { recursive: true });
-  }
+  await fsPromises.mkdir("uploads", { recursive: true });
 
   app.get("/api/envelopes", async (_req, res) => {
     try {
@@ -135,12 +138,12 @@ export async function registerRoutes(
         const ext = path.extname(req.file.originalname);
         const newName = `${req.file.filename}${ext}`;
         const newPath = path.join("uploads", newName);
-        fs.renameSync(req.file.path, newPath);
+        await fsPromises.rename(req.file.path, newPath);
         pdfUrl = `/uploads/${newName}`;
 
         try {
           const { PDFDocument } = await import("pdf-lib");
-          const pdfBytes = fs.readFileSync(newPath);
+          const pdfBytes = await fsPromises.readFile(newPath);
           const pdfDoc = await PDFDocument.load(pdfBytes);
           totalPages = pdfDoc.getPageCount();
         } catch {
@@ -338,7 +341,7 @@ export async function registerRoutes(
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
       await storage.updateSigner(signer.id, {
-        otpCode: otp,
+        otpCode: hashOtp(otp),
         otpExpiresAt: expiresAt,
       });
 
@@ -395,7 +398,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Code has expired. Please request a new one." });
       }
 
-      if (signer.otpCode !== code) {
+      if (signer.otpCode !== hashOtp(String(code))) {
         return res.status(400).json({ message: "Invalid code. Please try again." });
       }
 
@@ -613,8 +616,8 @@ export async function registerRoutes(
           try {
             const { PDFDocument, rgb, StandardFonts } = await import("pdf-lib");
             const pdfPath = path.join(process.cwd(), envelope.originalPdfUrl.replace(/^\//, ""));
-            if (fs.existsSync(pdfPath)) {
-              const pdfBytes = fs.readFileSync(pdfPath);
+            if (await fsPromises.access(pdfPath).then(() => true).catch(() => false)) {
+              const pdfBytes = await fsPromises.readFile(pdfPath);
               const pdfDoc = await PDFDocument.load(pdfBytes);
               const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
@@ -641,7 +644,7 @@ export async function registerRoutes(
               const signedBytes = await pdfDoc.save();
               const signedFileName = `signed_${Date.now()}.pdf`;
               const signedPath = path.join("uploads", signedFileName);
-              fs.writeFileSync(signedPath, signedBytes);
+              await fsPromises.writeFile(signedPath, signedBytes);
               signedPdfUrl = `/uploads/${signedFileName}`;
             }
           } catch (pdfErr) {
@@ -757,11 +760,16 @@ export async function registerRoutes(
     }
   });
 
-  app.use("/uploads", (req, res, next) => {
-    const filePath = path.join(process.cwd(), "uploads", req.path);
-    if (fs.existsSync(filePath)) {
+  app.use("/uploads", async (req, res, next) => {
+    const uploadsDir = path.resolve(process.cwd(), "uploads");
+    const filePath = path.resolve(uploadsDir, req.path.replace(/^\/+/, ""));
+    if (!filePath.startsWith(uploadsDir + path.sep) && filePath !== uploadsDir) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+    try {
+      await fsPromises.access(filePath);
       res.sendFile(filePath);
-    } else {
+    } catch {
       res.status(404).json({ message: "File not found" });
     }
   });
@@ -886,8 +894,8 @@ export async function registerRoutes(
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const filename = `archisign-backup-manual-${timestamp}.json`;
       const backupDir = path.join(process.cwd(), "backups");
-      if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
-      fs.writeFileSync(path.join(backupDir, filename), JSON.stringify(backupData, null, 2));
+      await fsPromises.mkdir(backupDir, { recursive: true });
+      await fsPromises.writeFile(path.join(backupDir, filename), JSON.stringify(backupData, null, 2));
 
       const backup = await storage.createBackup({ filename });
       res.json(backup);
@@ -904,7 +912,11 @@ export async function registerRoutes(
       const backup = allBackups.find(b => b.id === id);
       if (!backup) return res.status(404).json({ message: "Backup not found" });
       const filePath = path.join(process.cwd(), "backups", backup.filename);
-      if (!fs.existsSync(filePath)) return res.status(404).json({ message: "Backup file not found" });
+      try {
+        await fsPromises.access(filePath);
+      } catch {
+        return res.status(404).json({ message: "Backup file not found" });
+      }
       res.download(filePath, backup.filename);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -919,7 +931,7 @@ export async function registerRoutes(
       const backup = allBackups.find(b => b.id === id);
       if (backup) {
         const filePath = path.join(process.cwd(), "backups", backup.filename);
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        await fsPromises.unlink(filePath).catch(() => {});
       }
       await storage.deleteBackup(id);
       res.json({ success: true });

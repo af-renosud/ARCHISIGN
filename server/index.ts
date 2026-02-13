@@ -34,6 +34,31 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+const SENSITIVE_KEYS = new Set([
+  "accessToken", "access_token", "otpCode", "otp_code",
+  "otpExpiresAt", "otp_expires_at", "token", "password",
+  "secret", "authorization",
+]);
+
+function redactSensitive(obj: unknown, depth = 0): unknown {
+  if (depth > 5 || obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) {
+    return obj.map(item => redactSensitive(item, depth + 1));
+  }
+  if (typeof obj === "object") {
+    const redacted: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      if (SENSITIVE_KEYS.has(key)) {
+        redacted[key] = "[REDACTED]";
+      } else {
+        redacted[key] = redactSensitive(value, depth + 1);
+      }
+    }
+    return redacted;
+  }
+  return obj;
+}
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -50,7 +75,7 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        logLine += ` :: ${JSON.stringify(redactSensitive(capturedJsonResponse))}`;
       }
 
       log(logLine);
