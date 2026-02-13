@@ -24,6 +24,7 @@ export const envelopes = pgTable("envelopes", {
   gmailThreadId: text("gmail_thread_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at"),
 });
 
 export const signers = pgTable("signers", {
@@ -78,9 +79,35 @@ export const settings = pgTable("settings", {
   category: text("category").notNull().default("general"),
 });
 
+export const rollbackVersionStatusEnum = pgEnum("rollback_version_status", [
+  "active", "superseded"
+]);
+
+export const rollbackVersions = pgTable("rollback_versions", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  versionLabel: text("version_label").notNull(),
+  note: text("note"),
+  status: rollbackVersionStatusEnum("status").notNull().default("active"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const backups = pgTable("backups", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  filename: text("filename").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const insertSettingSchema = createInsertSchema(settings);
 export type Setting = typeof settings.$inferSelect;
 export type InsertSetting = z.infer<typeof insertSettingSchema>;
+
+export const insertRollbackVersionSchema = createInsertSchema(rollbackVersions).omit({ id: true, createdAt: true });
+export type RollbackVersion = typeof rollbackVersions.$inferSelect;
+export type InsertRollbackVersion = z.infer<typeof insertRollbackVersionSchema>;
+
+export const insertBackupSchema = createInsertSchema(backups).omit({ id: true, createdAt: true });
+export type Backup = typeof backups.$inferSelect;
+export type InsertBackup = z.infer<typeof insertBackupSchema>;
 
 export const envelopeRelations = relations(envelopes, ({ many }) => ({
   signers: many(signers),

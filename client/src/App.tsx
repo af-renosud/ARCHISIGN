@@ -15,6 +15,8 @@ import SignerVerify from "@/pages/signer-verify";
 import SignerDocument from "@/pages/signer-document";
 import SettingsPage from "@/pages/settings";
 import PreDeployment from "@/pages/pre-deployment";
+import RollbackLedger from "@/pages/rollback-ledger";
+import DataRecovery from "@/pages/data-recovery";
 
 function AdminLayout({ children }: { children: React.ReactNode }) {
   const style = {
@@ -48,6 +50,8 @@ function AdminRouter() {
       <Route path="/envelopes/:id" component={EnvelopeDetail} />
       <Route path="/settings" component={SettingsPage} />
       <Route path="/pre-deployment" component={PreDeployment} />
+      <Route path="/rollback-ledger" component={RollbackLedger} />
+      <Route path="/data-recovery" component={DataRecovery} />
       <Route component={NotFound} />
     </Switch>
   );

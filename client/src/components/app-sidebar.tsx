@@ -1,4 +1,4 @@
-import { LayoutDashboard, Plus, Settings, Mail, Shield } from "lucide-react";
+import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database } from "lucide-react";
 import archisignLogo from "@assets/Generated_Image_February_13__2026_-_7_21AM-removebg-preview_1770963731125.png";
 import { useLocation, Link } from "wouter";
 import {
@@ -21,6 +21,8 @@ const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "New Envelope", url: "/envelopes/new", icon: Plus },
   { title: "Settings", url: "/settings", icon: Settings },
+  { title: "Rollback Ledger", url: "/rollback-ledger", icon: History },
+  { title: "Data Recovery", url: "/data-recovery", icon: Database },
   { title: "Pre-Deployment", url: "/pre-deployment", icon: Shield },
 ];
 

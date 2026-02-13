@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { sendEmail, getGmailProfile } from "./gmail";
+import { insertRollbackVersionSchema, insertBackupSchema } from "@shared/schema";
 import { randomBytes } from "crypto";
 import multer from "multer";
 import path from "path";
@@ -88,6 +89,15 @@ export async function registerRoutes(
     try {
       const envs = await storage.getEnvelopes();
       res.json(envs);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/envelopes/deleted", async (_req, res) => {
+    try {
+      const deleted = await storage.getDeletedEnvelopes();
+      res.json(deleted);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -772,6 +782,149 @@ export async function registerRoutes(
       res.json(setting);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/envelopes/:id/soft-delete", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
+      const envelope = await storage.softDeleteEnvelope(id);
+      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+      res.json(envelope);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/envelopes/:id/restore", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
+      const envelope = await storage.restoreEnvelope(id);
+      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+      res.json(envelope);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/rollback-versions", async (_req, res) => {
+    try {
+      const versions = await storage.getRollbackVersions();
+      res.json(versions);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/rollback-versions", async (req, res) => {
+    try {
+      const parsed = insertRollbackVersionSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+      const version = await storage.createRollbackVersion(parsed.data);
+      res.json(version);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.patch("/api/rollback-versions/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
+      const allowedFields: Record<string, unknown> = {};
+      if (req.body.versionLabel !== undefined) allowedFields.versionLabel = req.body.versionLabel;
+      if (req.body.note !== undefined) allowedFields.note = req.body.note;
+      if (req.body.status !== undefined) {
+        if (!["active", "superseded"].includes(req.body.status)) {
+          return res.status(400).json({ message: "Invalid status. Must be 'active' or 'superseded'" });
+        }
+        allowedFields.status = req.body.status;
+      }
+      const updated = await storage.updateRollbackVersion(id, allowedFields);
+      if (!updated) return res.status(404).json({ message: "Version not found" });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/rollback-versions/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
+      await storage.deleteRollbackVersion(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/backups", async (_req, res) => {
+    try {
+      const allBackups = await storage.getBackups();
+      res.json(allBackups);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/backups", async (_req, res) => {
+    try {
+      const allEnvelopes = await storage.getEnvelopes();
+      const allSettings = await storage.getAllSettings();
+      const versions = await storage.getRollbackVersions();
+
+      const backupData = {
+        exportedAt: new Date().toISOString(),
+        envelopes: allEnvelopes,
+        settings: allSettings,
+        rollbackVersions: versions,
+      };
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `archisign-backup-manual-${timestamp}.json`;
+      const backupDir = path.join(process.cwd(), "backups");
+      if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+      fs.writeFileSync(path.join(backupDir, filename), JSON.stringify(backupData, null, 2));
+
+      const backup = await storage.createBackup({ filename });
+      res.json(backup);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/backups/:id/download", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
+      const allBackups = await storage.getBackups();
+      const backup = allBackups.find(b => b.id === id);
+      if (!backup) return res.status(404).json({ message: "Backup not found" });
+      const filePath = path.join(process.cwd(), "backups", backup.filename);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ message: "Backup file not found" });
+      res.download(filePath, backup.filename);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/backups/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
+      const allBackups = await storage.getBackups();
+      const backup = allBackups.find(b => b.id === id);
+      if (backup) {
+        const filePath = path.join(process.cwd(), "backups", backup.filename);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      }
+      await storage.deleteBackup(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
     }
   });
 

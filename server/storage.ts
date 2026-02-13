@@ -1,14 +1,17 @@
 import {
   envelopes, signers, annotations, communicationLogs, auditEvents, settings,
+  rollbackVersions, backups,
   type Envelope, type InsertEnvelope,
   type Signer, type InsertSigner,
   type Annotation, type InsertAnnotation,
   type CommunicationLog, type InsertCommunicationLog,
   type AuditEvent, type InsertAuditEvent,
   type Setting, type InsertSetting,
+  type RollbackVersion, type InsertRollbackVersion,
+  type Backup, type InsertBackup,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, and, sql, isNull, isNotNull } from "drizzle-orm";
 
 export interface IStorage {
   getEnvelopes(): Promise<(Envelope & { signers: Signer[] })[]>;
@@ -34,11 +37,24 @@ export interface IStorage {
   getSetting(key: string): Promise<Setting | undefined>;
   upsertSetting(data: InsertSetting): Promise<Setting>;
   getSettingsByCategory(category: string): Promise<Setting[]>;
+
+  getDeletedEnvelopes(): Promise<Envelope[]>;
+  softDeleteEnvelope(id: number): Promise<Envelope | undefined>;
+  restoreEnvelope(id: number): Promise<Envelope | undefined>;
+
+  getRollbackVersions(): Promise<RollbackVersion[]>;
+  createRollbackVersion(data: InsertRollbackVersion): Promise<RollbackVersion>;
+  updateRollbackVersion(id: number, data: Partial<RollbackVersion>): Promise<RollbackVersion | undefined>;
+  deleteRollbackVersion(id: number): Promise<void>;
+
+  getBackups(): Promise<Backup[]>;
+  createBackup(data: InsertBackup): Promise<Backup>;
+  deleteBackup(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
   async getEnvelopes(): Promise<(Envelope & { signers: Signer[] })[]> {
-    const allEnvelopes = await db.select().from(envelopes).orderBy(desc(envelopes.createdAt));
+    const allEnvelopes = await db.select().from(envelopes).where(isNull(envelopes.deletedAt)).orderBy(desc(envelopes.createdAt));
     const result = [];
     for (const env of allEnvelopes) {
       const envSigners = await db.select().from(signers).where(eq(signers.envelopeId, env.id));
@@ -137,6 +153,51 @@ export class DatabaseStorage implements IStorage {
 
   async getSettingsByCategory(category: string): Promise<Setting[]> {
     return db.select().from(settings).where(eq(settings.category, category));
+  }
+
+  async getDeletedEnvelopes(): Promise<Envelope[]> {
+    return db.select().from(envelopes).where(isNotNull(envelopes.deletedAt)).orderBy(desc(envelopes.deletedAt));
+  }
+
+  async softDeleteEnvelope(id: number): Promise<Envelope | undefined> {
+    const [updated] = await db.update(envelopes).set({ deletedAt: new Date() }).where(eq(envelopes.id, id)).returning();
+    return updated;
+  }
+
+  async restoreEnvelope(id: number): Promise<Envelope | undefined> {
+    const [updated] = await db.update(envelopes).set({ deletedAt: null }).where(eq(envelopes.id, id)).returning();
+    return updated;
+  }
+
+  async getRollbackVersions(): Promise<RollbackVersion[]> {
+    return db.select().from(rollbackVersions).orderBy(desc(rollbackVersions.createdAt));
+  }
+
+  async createRollbackVersion(data: InsertRollbackVersion): Promise<RollbackVersion> {
+    const [version] = await db.insert(rollbackVersions).values(data).returning();
+    return version;
+  }
+
+  async updateRollbackVersion(id: number, data: Partial<RollbackVersion>): Promise<RollbackVersion | undefined> {
+    const [updated] = await db.update(rollbackVersions).set(data).where(eq(rollbackVersions.id, id)).returning();
+    return updated;
+  }
+
+  async deleteRollbackVersion(id: number): Promise<void> {
+    await db.delete(rollbackVersions).where(eq(rollbackVersions.id, id));
+  }
+
+  async getBackups(): Promise<Backup[]> {
+    return db.select().from(backups).orderBy(desc(backups.createdAt));
+  }
+
+  async createBackup(data: InsertBackup): Promise<Backup> {
+    const [backup] = await db.insert(backups).values(data).returning();
+    return backup;
+  }
+
+  async deleteBackup(id: number): Promise<void> {
+    await db.delete(backups).where(eq(backups.id, id));
   }
 }
 
