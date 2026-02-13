@@ -72,10 +72,10 @@ export default function Dashboard() {
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard label="Total Envelopes" value={stats.total} icon={FileText} />
-          <StatCard label="Awaiting Signature" value={stats.pending} icon={Clock} />
-          <StatCard label="Queries Raised" value={stats.queried} icon={AlertTriangle} highlight />
-          <StatCard label="Completed" value={stats.signed} icon={CheckCircle2} />
+          <StatCard label="Total Envelopes" value={stats.total} icon={FileText} borderColor="border-primary" />
+          <StatCard label="Awaiting Signature" value={stats.pending} icon={Clock} borderColor="border-destructive" />
+          <StatCard label="Queries Raised" value={stats.queried} icon={AlertTriangle} highlight borderColor="border-chart-4" />
+          <StatCard label="Completed" value={stats.signed} icon={CheckCircle2} borderColor="border-chart-3" />
         </div>
 
         <Card>
@@ -197,9 +197,9 @@ export default function Dashboard() {
   );
 }
 
-function StatCard({ label, value, icon: Icon, highlight }: { label: string; value: number; icon: any; highlight?: boolean }) {
+function StatCard({ label, value, icon: Icon, highlight, borderColor }: { label: string; value: number; icon: any; highlight?: boolean; borderColor?: string }) {
   return (
-    <Card data-testid={`card-stat-${label.toLowerCase().replace(/\s/g, '-')}`}>
+    <Card className={`border-2 ${borderColor || "border-border"}`} data-testid={`card-stat-${label.toLowerCase().replace(/\s/g, '-')}`}>
       <CardContent className="p-4">
         <div className="flex items-center justify-between gap-2">
           <div>
