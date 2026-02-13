@@ -1,9 +1,8 @@
 import { storage } from "./storage";
 import { db } from "./db";
-import { envelopes, settings } from "@shared/schema";
+import { settings } from "@shared/schema";
 import { sql } from "drizzle-orm";
 import fsPromises from "fs/promises";
-import path from "path";
 
 async function seedSettings() {
   const existingSettings = await db.select({ count: sql<number>`count(*)` }).from(settings);
@@ -25,58 +24,8 @@ async function seedSettings() {
   console.log("Default email settings seeded.");
 }
 
-async function cleanupSampleData() {
-  const result = await db.select({ count: sql<number>`count(*)` }).from(envelopes);
-  const count = result[0].count;
-  if (count === 0) return;
-
-  const allEnvelopes = await db.select().from(envelopes);
-  const samplePrefixes = ["sample_", "api_test_"];
-  let cleaned = false;
-
-  for (const env of allEnvelopes) {
-    if (env.originalPdfUrl) {
-      const filename = path.basename(env.originalPdfUrl);
-      if (samplePrefixes.some(p => filename.startsWith(p))) {
-        const filePath = path.join("uploads", filename);
-        await fsPromises.unlink(filePath).catch(() => {});
-      }
-    }
-  }
-
-  const { sql: sqlTag } = await import("drizzle-orm");
-  const deleted = await db.delete(envelopes).returning();
-  if (deleted.length > 0) {
-    cleaned = true;
-    console.log(`Cleaned up ${deleted.length} sample envelopes (cascade: signers, annotations, logs, events).`);
-  }
-
-  const uploadsDir = path.join(process.cwd(), "uploads");
-  try {
-    const files = await fsPromises.readdir(uploadsDir);
-    for (const f of files) {
-      if (f.startsWith("sample_")) {
-        await fsPromises.unlink(path.join(uploadsDir, f)).catch(() => {});
-      }
-    }
-  } catch {}
-
-  const backupsDir = path.join(process.cwd(), "backups");
-  try {
-    const files = await fsPromises.readdir(backupsDir);
-    for (const f of files) {
-      await fsPromises.unlink(path.join(backupsDir, f)).catch(() => {});
-    }
-  } catch {}
-
-  if (cleaned) {
-    console.log("Production cleanup complete — database is clean.");
-  }
-}
-
 export async function seedDatabase() {
   await fsPromises.mkdir("uploads", { recursive: true });
   await fsPromises.mkdir("backups", { recursive: true });
-  await cleanupSampleData();
   await seedSettings();
 }
