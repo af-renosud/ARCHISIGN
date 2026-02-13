@@ -25,8 +25,8 @@ async function loadEmailSettings(): Promise<EmailSettings> {
   }
   return {
     registrationLine: map["email_registration_line"] || "INSCRIPTION \u00C0 L\u2019ORDRE DES ARCHITECTES OCCITANIE S24348",
-    footerText: map["email_footer_text"] || "Powered by ArchiSign Pro",
-    firmName: map["firm_name"] || "ArchiSign Pro",
+    footerText: map["email_footer_text"] || "Powered by Archisign",
+    firmName: map["firm_name"] || "Archisign",
     invitationBody: map["email_invitation_body"] || "You have been invited to review and sign the following document.",
     otpBody: map["email_otp_body"] || "Please use the verification code below to access the document. This code expires in 10 minutes.",
     completionBody: map["email_completion_body"] || "All parties have completed signing the document. The signed document is now available for download.",
@@ -35,18 +35,22 @@ async function loadEmailSettings(): Promise<EmailSettings> {
 }
 
 function wrapEmail(bodyContent: string, baseUrl: string, emailCfg: EmailSettings): string {
-  const logoUrl = `${baseUrl}/logo.png`;
+  const firmLogoUrl = `${baseUrl}/logo.png`;
+  const platformLogoUrl = `${baseUrl}/archisign-platform-logo.png`;
   return `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff;">
       <div style="text-align: center; padding: 24px 0 16px 0; border-bottom: 1px solid #e2e8f0;">
-        <img src="${logoUrl}" alt="${emailCfg.firmName}" style="width: 48px; height: 48px; border-radius: 50%;" />
+        <img src="${firmLogoUrl}" alt="${emailCfg.firmName}" style="max-height: 48px; border-radius: 50%;" />
       </div>
       <div style="padding: 24px;">
         ${bodyContent}
       </div>
       <div style="border-top: 1px solid #e2e8f0; padding: 16px 24px; text-align: center;">
-        <p style="color: #94a3b8; font-size: 11px; margin: 0 0 4px 0;">${emailCfg.registrationLine}</p>
-        <p style="color: #94a3b8; font-size: 11px; margin: 0;">${emailCfg.footerText}</p>
+        <p style="color: #94a3b8; font-size: 11px; margin: 0 0 8px 0;">${emailCfg.registrationLine}</p>
+        <div style="margin: 8px 0 4px 0;">
+          <img src="${platformLogoUrl}" alt="Archisign" style="height: 20px; opacity: 0.6;" />
+        </div>
+        <p style="color: #b0b8c4; font-size: 10px; margin: 0;">${emailCfg.footerText}</p>
       </div>
     </div>
   `;

@@ -21,7 +21,7 @@ async function generateSamplePdf(title: string, pages: number, filename: string)
     const { width, height } = page.getSize();
 
     page.drawRectangle({ x: 40, y: height - 80, width: width - 80, height: 50, color: rgb(0.1, 0.15, 0.35) });
-    page.drawText("ARCHISIGN PRO", { x: 50, y: height - 60, size: 14, font: fontBold, color: rgb(1, 1, 1) });
+    page.drawText("ARCHISIGN", { x: 50, y: height - 60, size: 14, font: fontBold, color: rgb(1, 1, 1) });
     page.drawText(`Page ${i} of ${pages}`, { x: width - 140, y: height - 60, size: 10, font, color: rgb(0.8, 0.8, 0.9) });
 
     page.drawText(title, { x: 50, y: height - 120, size: 16, font: fontBold, color: rgb(0.1, 0.1, 0.3) });
@@ -77,9 +77,9 @@ async function seedSettings() {
   if (existingSettings[0].count > 0) return;
 
   const defaultSettings = [
-    { key: "firm_name", value: "ArchiSign Pro", label: "Firm Name", category: "email" },
+    { key: "firm_name", value: "Archisign", label: "Firm Name", category: "email" },
     { key: "email_registration_line", value: "INSCRIPTION \u00C0 L\u2019ORDRE DES ARCHITECTES OCCITANIE S24348", label: "Architect Registration Line", category: "email" },
-    { key: "email_footer_text", value: "Powered by ArchiSign Pro", label: "Email Footer Text", category: "email" },
+    { key: "email_footer_text", value: "Powered by Archisign", label: "Email Footer Text", category: "email" },
     { key: "email_invitation_subject_prefix", value: "Signature Required:", label: "Invitation Email Subject Prefix", category: "email" },
     { key: "email_invitation_body", value: "You have been invited to review and sign a document. Please click the button below to access the secure signing portal.", label: "Invitation Email Body", category: "email" },
     { key: "email_otp_body", value: "Please use the verification code below to access the document. This code expires in 10 minutes.", label: "OTP Email Body Text", category: "email" },

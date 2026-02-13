@@ -1,7 +1,7 @@
-# ArchiSign Pro - E-Signature Platform
+# Archisign - E-Signature Platform
 
 ## Overview
-ArchiSign Pro is a specialized internal tool for a French architecture firm to handle external sign-offs (clients, contractors, partners) for architectural plans and contracts. It integrates with Gmail for email communication and provides a secure, tokenized signing workflow.
+Archisign is a specialized internal tool for a French architecture firm to handle external sign-offs (clients, contractors, partners) for architectural plans and contracts. It integrates with Gmail for email communication and provides a secure, tokenized signing workflow.
 
 ## Architecture
 - **Frontend**: React + Vite + Tailwind CSS + Shadcn UI

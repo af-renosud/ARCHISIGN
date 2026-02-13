@@ -1,4 +1,5 @@
-import { FileText, LayoutDashboard, Plus, Settings, Mail } from "lucide-react";
+import { LayoutDashboard, Plus, Settings, Mail } from "lucide-react";
+import archisignLogo from "@assets/Generated_Image_February_13__2026_-_7_21AM-removebg-preview_1770963731125.png";
 import { useLocation, Link } from "wouter";
 import {
   Sidebar,
@@ -35,13 +36,7 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary">
-            <FileText className="h-4 w-4 text-primary-foreground" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold">ArchiSign Pro</h2>
-            <p className="text-xs text-muted-foreground">E-Signature Platform</p>
-          </div>
+          <img src={archisignLogo} alt="Archisign" className="h-8" data-testid="img-sidebar-logo" />
         </div>
       </SidebarHeader>
       <SidebarContent>

@@ -203,7 +203,7 @@ export default function SignerVerify() {
           )}
 
           <p className="text-xs text-center text-muted-foreground">
-            Secured by ArchiSign Pro. Your identity is verified via email.
+            Secured by Archisign. Your identity is verified via email.
           </p>
         </CardContent>
       </Card>
