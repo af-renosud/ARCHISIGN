@@ -22,13 +22,9 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import type { Envelope } from "@shared/schema";
-
-const mainNavItems = [
-  { title: "Dashboard", url: "/", icon: LayoutDashboard },
-  { title: "New Envelope", url: "/envelopes/new", icon: Plus },
-];
 
 const settingsSubItems = [
   { title: "Rollback Ledger", url: "/rollback-ledger", icon: History },
@@ -37,7 +33,7 @@ const settingsSubItems = [
 ];
 
 export function AppSidebar() {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
 
   const { data: envelopes } = useQuery<Envelope[]>({
     queryKey: ["/api/envelopes"],
@@ -49,10 +45,18 @@ export function AppSidebar() {
 
   return (
     <Sidebar>
-      <SidebarHeader className="p-4">
+      <SidebarHeader className="p-4 space-y-4">
         <div className="flex items-center gap-2">
           <img src={archisignLogo} alt="Archisign" className="h-28 w-auto object-contain" data-testid="img-sidebar-logo" />
         </div>
+        <Button
+          onClick={() => navigate("/envelopes/new")}
+          className="w-full bg-[#F59E0B] text-white border-2 border-[#D97706] font-semibold uppercase tracking-wide"
+          data-testid="button-sidebar-new-envelope"
+        >
+          <Plus className="h-4 w-4 mr-2" />
+          New Envelope
+        </Button>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
@@ -73,27 +77,23 @@ export function AppSidebar() {
           <SidebarGroupLabel>Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {mainNavItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={location === item.url}
-                    className="[&>a]:text-[#F59E0B] [&>a]:font-medium"
-                  >
-                    <Link href={item.url} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s/g, '-')}`}>
-                      <item.icon className="h-4 w-4" />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={location === "/"}
+                >
+                  <Link href="/" data-testid="link-nav-dashboard">
+                    <LayoutDashboard className="h-4 w-4" />
+                    <span>Dashboard</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
               <Collapsible defaultOpen={settingsActive} className="group/collapsible">
                 <SidebarMenuItem>
                   <CollapsibleTrigger asChild>
                     <SidebarMenuButton
                       isActive={settingsActive}
                       data-testid="link-nav-settings"
-                      className="text-[#F59E0B] font-medium"
                     >
                       <Settings className="h-4 w-4" />
                       <span>Settings</span>
