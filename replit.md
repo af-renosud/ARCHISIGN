@@ -93,7 +93,16 @@ shared/
 - **Session Storage**: PostgreSQL-backed sessions (connect-pg-simple), 7-day TTL
 - **Unauthorized Logging**: Failed admin access attempts logged to server console with email and path
 
+## ArchiDoc API Integration (`POST /api/v1/envelopes/create`)
+- **Authentication**: `X-API-KEY` header validated against `ARCHIDOC_API_KEY` secret
+- **pdfBase64**: Base64-encoded PDF content; decoded, saved to `uploads/`, page count extracted via pdf-lib
+- **Multi-signer**: `signers` array `[{email, fullName}]` creates multiple signer records with access tokens
+- **Backward compat**: Legacy `signerEmail`/`signerName` fields still work for single-signer requests
+- **Priority**: If both `pdfBase64` and `pdfUrl` are provided, `pdfBase64` takes priority
+- **Webhook**: `webhookUrl` field for status change callbacks (sent, viewed, queried, signed)
+
 ## Recent Changes
+- 2026-02-13: Enhanced ArchiDoc API with pdfBase64 support, multi-signer arrays, and API key authentication
 - 2026-02-13: Added Replit Auth (OIDC) for admin area protection with user allowlist, login page, and session management
 - 2026-02-13: Phase 3 robustness (Zod schema validation, graceful shutdown, email-failure-safe send flow)
 - 2026-02-13: Phase 2 data integrity hardening (ACID transactions, N+1 fix, atomic double-sign prevention)

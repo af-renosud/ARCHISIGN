@@ -156,12 +156,20 @@ export const createSignerRequestSchema = z.object({
 
 export const createApiEnvelopeRequestSchema = z.object({
   subject: z.string().min(1, "Subject is required"),
-  signerEmail: z.string().email("Invalid signer email"),
+  signerEmail: z.string().email("Invalid signer email").optional(),
   signerName: z.string().optional(),
+  signers: z.array(z.object({
+    email: z.string().email("Invalid signer email"),
+    fullName: z.string().min(1, "Signer name is required"),
+  })).optional(),
   externalRef: z.string().nullish(),
   pdfUrl: z.string().nullish(),
+  pdfBase64: z.string().nullish(),
   webhookUrl: z.string().url("Invalid webhook URL").nullish().or(z.literal("")),
-});
+}).refine(
+  (data) => (data.signers && data.signers.length > 0) || data.signerEmail,
+  { message: "At least one signer is required: provide 'signers' array or 'signerEmail'", path: ["signers"] }
+);
 
 export type Envelope = typeof envelopes.$inferSelect;
 export type InsertEnvelope = z.infer<typeof insertEnvelopeSchema>;

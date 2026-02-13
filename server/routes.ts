@@ -846,37 +846,73 @@ export async function registerRoutes(
       if (!parsed.success) {
         return res.status(400).json({ message: "Invalid request data", errors: parsed.error.flatten().fieldErrors });
       }
-      const { subject, signerEmail, signerName, externalRef, pdfUrl, webhookUrl } = parsed.data;
+      const { subject, signerEmail, signerName, signers, externalRef, pdfUrl, pdfBase64, webhookUrl } = parsed.data;
 
-      const envelope = await db.transaction(async (tx) => {
+      let savedPdfUrl: string | null = pdfUrl || null;
+      let totalPages = 1;
+
+      if (pdfBase64) {
+        let pdfBuffer: Buffer;
+        try {
+          pdfBuffer = Buffer.from(pdfBase64, "base64");
+          const { PDFDocument } = await import("pdf-lib");
+          const pdfDoc = await PDFDocument.load(pdfBuffer);
+          totalPages = pdfDoc.getPageCount();
+        } catch (e: any) {
+          return res.status(400).json({ message: "Invalid PDF data: " + e.message });
+        }
+
+        const fileName = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.pdf`;
+        const filePath = path.join("uploads", fileName);
+        await fsPromises.mkdir("uploads", { recursive: true });
+        await fsPromises.writeFile(filePath, pdfBuffer);
+        savedPdfUrl = `/uploads/${fileName}`;
+      }
+
+      const signerList = (signers && signers.length > 0)
+        ? signers
+        : [{ email: signerEmail!, fullName: signerName || signerEmail! }];
+
+      let envelope;
+      try {
+        envelope = await db.transaction(async (tx) => {
         const env = await storage.createEnvelope({
           subject,
           externalRef: externalRef || null,
           webhookUrl: webhookUrl || null,
-          originalPdfUrl: pdfUrl || null,
+          originalPdfUrl: savedPdfUrl,
           signedPdfUrl: null,
-          totalPages: 1,
+          totalPages,
           status: "draft",
           gmailThreadId: null,
         }, tx);
 
-        await storage.createSigner({
-          envelopeId: env.id,
-          email: signerEmail,
-          fullName: signerName || signerEmail,
-          accessToken: generateToken(),
-        }, tx);
+        for (const s of signerList) {
+          await storage.createSigner({
+            envelopeId: env.id,
+            email: s.email,
+            fullName: s.fullName,
+            accessToken: generateToken(),
+          }, tx);
+        }
 
         await storage.createAuditEvent({
           envelopeId: env.id,
           eventType: "Envelope created via API",
           actorEmail: null,
           ipAddress: req.ip || null,
-          metadata: JSON.stringify({ source: "ArchiDoc" }),
+          metadata: JSON.stringify({ source: "ArchiDoc", signerCount: signerList.length }),
         }, tx);
 
         return env;
-      });
+        });
+      } catch (txErr) {
+        if (savedPdfUrl && pdfBase64) {
+          const filePath = path.join(process.cwd(), savedPdfUrl);
+          await fsPromises.unlink(filePath).catch(() => {});
+        }
+        throw txErr;
+      }
 
       const full = await storage.getEnvelope(envelope.id);
       res.json(full);
