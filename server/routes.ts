@@ -94,9 +94,21 @@ export async function registerRoutes(
   await setupAuth(app);
   registerAuthRoutes(app);
 
-  const adminOnly: RequestHandler = (req, res, next) => {
+  const isAdminAuthorized: RequestHandler = (req, res, next) => {
     const p = req.path;
-    if (p.startsWith("/api/sign/") || p.startsWith("/api/v1/")) {
+    if (p.startsWith("/api/sign/")) {
+      return next();
+    }
+    if (p.startsWith("/api/v1/")) {
+      const apiKey = req.headers["x-api-key"] || req.query.api_key;
+      const expectedKey = process.env.ARCHIDOC_API_KEY;
+      if (expectedKey && apiKey !== expectedKey) {
+        console.warn(`[AUTH] Invalid API key on ${req.method} ${req.path}`);
+        return res.status(401).json({ message: "Invalid or missing API key" });
+      }
+      if (!expectedKey) {
+        console.warn(`[AUTH] ARCHIDOC_API_KEY not configured — /api/v1/* routes are unprotected`);
+      }
       return next();
     }
     if (p.startsWith("/api/login") || p.startsWith("/api/logout") || p.startsWith("/api/callback") || p.startsWith("/api/auth/")) {
@@ -106,11 +118,30 @@ export async function registerRoutes(
       return next();
     }
     if (p.startsWith("/api/")) {
-      return isAuthenticated(req, res, next);
+      return isAuthenticated(req, res, () => {
+        const user = req.user as any;
+        const userEmail = user?.claims?.email;
+
+        const allowedEmails = (process.env.ADMIN_EMAILS || "").split(",").map(e => e.trim().toLowerCase()).filter(Boolean);
+
+        if (allowedEmails.length > 0 && (!userEmail || !allowedEmails.includes(userEmail.toLowerCase()))) {
+          console.warn(`[AUTH] Unauthorized admin access attempt by ${userEmail || "unknown"} on ${req.method} ${req.path}`);
+          storage.createAuditEvent({
+            envelopeId: null,
+            eventType: "Unauthorized admin access attempt",
+            actorEmail: userEmail || "unknown",
+            ipAddress: req.ip || null,
+            metadata: JSON.stringify({ path: req.path, method: req.method }),
+          }).catch(() => {});
+          return res.status(403).json({ message: "Access denied. Your account is not authorized for admin access." });
+        }
+
+        next();
+      });
     }
     next();
   };
-  app.use(adminOnly);
+  app.use(isAdminAuthorized);
 
   app.get("/api/envelopes", async (_req, res) => {
     try {

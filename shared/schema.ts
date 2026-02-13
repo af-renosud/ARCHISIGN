@@ -66,7 +66,7 @@ export const communicationLogs = pgTable("communication_logs", {
 
 export const auditEvents = pgTable("audit_events", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  envelopeId: integer("envelope_id").notNull().references(() => envelopes.id, { onDelete: "cascade" }),
+  envelopeId: integer("envelope_id").references(() => envelopes.id, { onDelete: "cascade" }),
   eventType: text("event_type").notNull(),
   actorEmail: text("actor_email"),
   ipAddress: text("ip_address"),

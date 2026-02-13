@@ -27,6 +27,8 @@ Archisign is a specialized internal tool for a French architecture firm to handl
 - `settings` - Key-value configuration (email copy text, firm name, etc.)
 - `rollback_versions` - Version tracking ledger (label, note, status: active/superseded)
 - `backups` - Backup file metadata (filename, created_at)
+- `users` - Authenticated admin users (Replit Auth, OIDC)
+- `sessions` - Server-side session storage for auth (connect-pg-simple)
 
 ## Project Structure
 ```
@@ -40,19 +42,24 @@ client/src/
   pages/rollback-ledger.tsx  - Rollback version ledger
   pages/data-recovery.tsx    - Deleted envelopes + backup management
   pages/pre-deployment.tsx   - Pre-deployment audit prompts
-  components/app-sidebar.tsx - Navigation sidebar
+  pages/login.tsx            - Login page (split-screen, Replit Auth)
+  components/app-sidebar.tsx - Navigation sidebar (user info + logout)
   components/theme-toggle.tsx - Dark/light mode
+  hooks/use-auth.ts          - Auth state hook (useAuth)
+  lib/auth-utils.ts          - Auth error utilities
   lib/theme-provider.tsx     - Theme context
 
 server/
-  routes.ts    - All API endpoints
+  routes.ts    - All API endpoints (admin routes protected by auth middleware)
   storage.ts   - Database storage layer
   db.ts        - Drizzle/PostgreSQL connection
   gmail.ts     - Gmail API integration
   seed.ts      - Sample data seeder
+  replit_integrations/auth/  - Replit Auth OIDC module (passport, sessions, user storage)
 
 shared/
   schema.ts    - Drizzle models + Zod schemas
+  models/auth.ts - Users + sessions tables (Replit Auth)
 ```
 
 ## Key Features (continued)
@@ -78,7 +85,16 @@ shared/
 - **Graceful Shutdown**: server/index.ts listens for SIGTERM and SIGINT, closes HTTP server and DB pool cleanly, with a 10-second forced-exit timeout.
 - **Error Handling**: Email send failures in the send flow now prevent the envelope from being marked as 'sent'. If all emails fail, the envelope stays in 'draft' and returns 502. Webhook calls are properly awaited with try/catch and a 10-second timeout. All external call errors are logged with context.
 
+## Authentication & Authorization
+- **Replit Auth (OIDC)**: Admin area protected by Replit's OpenID Connect authentication (Google, GitHub, Apple, email/password)
+- **Admin Middleware**: All `/api/*` routes require authentication EXCEPT `/api/sign/:token/*` (external signer flow) and `/api/v1/*` (ArchiDoc API)
+- **User Allowlist**: Optional `ADMIN_EMAILS` environment variable (comma-separated). When set, only listed emails can access admin. When empty, all authenticated users are allowed.
+- **Login Page**: Split-screen design at root path for unauthenticated users
+- **Session Storage**: PostgreSQL-backed sessions (connect-pg-simple), 7-day TTL
+- **Unauthorized Logging**: Failed admin access attempts logged to server console with email and path
+
 ## Recent Changes
+- 2026-02-13: Added Replit Auth (OIDC) for admin area protection with user allowlist, login page, and session management
 - 2026-02-13: Phase 3 robustness (Zod schema validation, graceful shutdown, email-failure-safe send flow)
 - 2026-02-13: Phase 2 data integrity hardening (ACID transactions, N+1 fix, atomic double-sign prevention)
 - 2026-02-13: Phase 1 security hardening (path traversal, OTP hashing, async I/O, log redaction)
