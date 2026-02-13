@@ -138,7 +138,7 @@ export function AppSidebar() {
           <span>Gmail Connected</span>
         </div>
         <UserInfo />
-        <p className="text-[10px] text-muted-foreground text-center" data-testid="text-version">v1.0.0</p>
+        <p className="text-[10px] text-muted-foreground text-left uppercase" data-testid="text-version">v1.0.0</p>
       </SidebarFooter>
     </Sidebar>
   );
