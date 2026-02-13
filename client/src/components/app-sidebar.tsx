@@ -36,7 +36,7 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-2">
-          <img src={archisignLogo} alt="Archisign" className="h-8" data-testid="img-sidebar-logo" />
+          <img src={archisignLogo} alt="Archisign" className="h-14 w-auto object-contain" data-testid="img-sidebar-logo" />
         </div>
       </SidebarHeader>
       <SidebarContent>
