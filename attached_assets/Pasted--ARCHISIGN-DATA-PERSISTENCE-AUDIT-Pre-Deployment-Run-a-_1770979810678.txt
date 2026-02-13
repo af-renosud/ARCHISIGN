@@ -1,0 +1,95 @@
+## ARCHISIGN — DATA PERSISTENCE AUDIT (Pre-Deployment)
+
+Run a full data persistence and integrity audit on the Archisign e-signature platform before deployment.
+
+### 1. Entity Persistence Chains
+Verify the complete lifecycle of each entity is persisted correctly:
+- **Envelope chain**: Create (draft) → Send (sent) → View (viewed) → Query (queried) → Sign (signed)
+  - Confirm each status transition calls `updateEnvelope()` which also sets `updated_at` to current timestamp
+  - Verify `signed_pdf_url` is set when ALL signers have completed signing
+  - Verify `gmail_thread_id` is captured on first email send and reused for all subsequent emails
+  - Confirm reply to query resets status from 'queried' back to 'sent'
+- **Signer chain**: Create (with crypto token) → OTP Request → OTP Verify → Initial Pages → Final Sign
+  - Verify `access_token` is a 64-char hex string generated via `crypto.randomBytes(32)`
+  - Confirm `otp_code` stores SHA-256 hash (not plaintext), `otp_expires_at` set 10 min in future
+  - Verify after OTP verification: `otp_verified = true`, `otp_code = NULL`, `otp_expires_at = NULL`, `last_viewed_at` = current time
+  - Verify `signed_at` is set atomically via `atomicClaimSign()` (conditional UPDATE WHERE signedAt IS NULL)
+- **Annotation chain**: Initial per page → Final signature
+  - Verify initials: type='initial', x_pos=0.9, y_pos=0.95, value = uppercase initials from full name
+  - Verify signature: type='signature', x_pos=0.5, y_pos=0.9, value = full name, page_number = totalPages
+  - Confirm position data (x_pos, y_pos) stored as normalized 0-1 real values
+
+### 2. API Call Verification
+Test each API endpoint persists data correctly:
+- POST `/api/envelopes` → creates envelope + N signers + "Envelope created" audit event (ACID transaction), extracts PDF page count via pdf-lib
+- POST `/api/envelopes/:id/send` → sends invitation emails to all signers, updates status to 'sent', creates "Envelope sent for signing" audit event, captures Gmail thread ID. If ALL emails fail: stays 'draft', returns 502, logs "Envelope send failed" audit event with failure details
+- POST `/api/envelopes/:id/reply` → sends reply email to all signers, creates communication_log (isExternalQuery=false), resets status to 'sent', creates "Reply sent to signer query" audit event
+- POST `/api/sign/:token/request-otp` → generates 6-digit OTP via `crypto.randomInt()`, stores SHA-256 hash + expiry on signer, sends OTP email, creates "OTP requested" audit event
+- POST `/api/sign/:token/verify-otp` → compares hash of submitted code against stored hash, sets `otp_verified=true`, clears OTP fields, updates envelope status to 'viewed' if currently 'sent', creates "Identity verified via OTP" audit event
+- POST `/api/sign/:token/initial` → creates annotation (type='initial') + "Page N initialed" audit event, returns updated list of initialed pages
+- POST `/api/sign/:token/query` → creates communication_log (isExternalQuery=true), updates status to 'queried', forwards query to firm email, creates "Clarification requested" audit event, fires `envelope.queried` webhook
+- POST `/api/sign/:token/sign` → within ACID transaction: atomicClaimSign + signature annotation + check if all signers signed + update status to 'signed' if yes + audit event. AFTER transaction: generates signed PDF with pdf-lib, sends completion emails, fires `envelope.signed` webhook
+- POST `/api/v1/envelopes/create` → ArchiDoc API: creates envelope + 1 signer + "Envelope created via API" audit event with metadata {source: "ArchiDoc"} (ACID transaction)
+- POST `/api/envelopes/:id/soft-delete` → sets `deleted_at` to current timestamp (child records untouched)
+- POST `/api/envelopes/:id/restore` → sets `deleted_at` to NULL (re-appears in active list)
+- PUT `/api/settings` → bulk upsert array of {key, value, label, category} via `onConflictDoUpdate`
+- POST `/api/rollback-versions` → creates version entry validated by `insertRollbackVersionSchema`
+- POST `/api/backups` → exports envelopes + settings + rollbackVersions as JSON to `backups/` directory
+
+### 3. Silent Data Loss Patterns
+Check for scenarios where data could be silently lost:
+- Verify `ON DELETE CASCADE` only triggers on hard-delete (which is NOT exposed via any API endpoint — only soft-delete is available)
+- Verify soft-delete (setting `deleted_at`) does NOT cascade-delete child records (signers, annotations, logs, events remain intact for recovery)
+- Check if partial signing state is preserved if a signer disconnects mid-process (initials are persisted individually, signing is atomic)
+- Verify OTP expiry doesn't lock out signers permanently (POST `/api/sign/:token/request-otp` can be called again to generate a fresh OTP)
+- Confirm email send failures keep envelope in 'draft' status (email-failure-safe send flow with 502 response)
+- Check that webhook failures are caught and logged — never block, rollback, or alter the primary database operation
+- Verify `atomicClaimSign()` prevents double-sign race conditions (concurrent requests get NULL result)
+
+### 4. Database Record Counts
+- Count total envelopes (active WHERE deleted_at IS NULL + soft-deleted WHERE deleted_at IS NOT NULL)
+- Count signers, annotations, communication_logs, audit_events, settings, rollback_versions, backups
+- Verify no core tables are unexpectedly empty
+- Check that audit_events exist for every envelope (minimum: "Envelope created" or "Envelope created via API")
+- Verify settings table has all 7 expected configuration keys: firm_name, email_registration_line, email_footer_text, email_invitation_body, email_otp_body, email_completion_body, email_invitation_subject_prefix
+
+### 5. File Storage Persistence
+- Verify uploaded PDFs exist at the paths stored in `envelopes.original_pdf_url` (format: `/uploads/{multerFilename}.pdf`)
+- Verify signed PDFs exist at the paths stored in `envelopes.signed_pdf_url` (format: `/uploads/signed_{timestamp}.pdf`) for fully-signed envelopes
+- Check that the `uploads/` directory is created on startup and not emptied during deployment
+- Verify JSON backup files exist in `backups/` directory at paths matching `backups.filename` records
+- Confirm file paths use relative references that work in both dev and production
+
+### 6. Backup & Recovery Readiness
+- Verify database can be backed up via Replit's snapshot system
+- Verify JSON backup creation via POST `/api/backups` exports: envelopes (with signers), settings, rollbackVersions
+- Verify backup download via GET `/api/backups/:id/download` returns the correct JSON file
+- Verify backup deletion via DELETE `/api/backups/:id` removes both the DB record and the filesystem file
+- Check that `uploads/` and `backups/` directory contents would survive a redeployment
+- Confirm no ephemeral/in-memory data stores are used for critical state — only `loadEmailSettings()` result is re-fetched per-request (not cached)
+- Verify all application state is in PostgreSQL or filesystem (nothing in memory-only)
+
+### 7. Settings Persistence
+- Verify all 7 email template settings are stored in the `settings` table with category 'email'
+- Confirm `loadEmailSettings()` in `server/routes.ts` fetches settings fresh from DB on every email send (no stale cache)
+- Check that default fallback values exist in code for all 7 settings keys (firmName, registrationLine, footerText, invitationBody, otpBody, completionBody, subjectPrefix)
+- Verify `upsertSetting()` uses `onConflictDoUpdate` on `settings.key` primary key for safe upserts
+
+### 8. Rollback Version Ledger
+- Verify `rollback_versions` table tracks deployment versions with: version_label (text NOT NULL), note (text nullable), status (active/superseded enum), created_at (timestamp)
+- Confirm full CRUD: create (POST), read (GET), update status/note/label (PATCH), delete (DELETE)
+- Verify PATCH only allows updates to: versionLabel, note, status (validated against "active"/"superseded")
+
+### 9. Audit Trail Completeness
+- Verify audit_events are created for every significant action:
+  - "Envelope created" / "Envelope created via API"
+  - "Envelope sent for signing" / "Envelope send failed - all emails failed"
+  - "OTP requested" / "Identity verified via OTP"
+  - "Page N initialed" / "Document signed"
+  - "Clarification requested" / "Reply sent to signer query"
+- Confirm each audit event records: envelopeId, eventType, actorEmail, ipAddress, metadata, timestamp
+- Verify audit events are ordered by timestamp DESC in API responses
+
+### Output Format
+For each check, report: PASS, WARN (with explanation), or FAIL (with remediation steps).
+End with: **GO** (ready for deployment) or **NO-GO** (with blocking issues listed).
