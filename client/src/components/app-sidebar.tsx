@@ -78,6 +78,7 @@ export function AppSidebar() {
                   <SidebarMenuButton
                     asChild
                     isActive={location === item.url}
+                    className="[&>a]:text-[#F59E0B] [&>a]:font-medium"
                   >
                     <Link href={item.url} data-testid={`link-nav-${item.title.toLowerCase().replace(/\s/g, '-')}`}>
                       <item.icon className="h-4 w-4" />
@@ -92,6 +93,7 @@ export function AppSidebar() {
                     <SidebarMenuButton
                       isActive={settingsActive}
                       data-testid="link-nav-settings"
+                      className="text-[#F59E0B] font-medium"
                     >
                       <Settings className="h-4 w-4" />
                       <span>Settings</span>
