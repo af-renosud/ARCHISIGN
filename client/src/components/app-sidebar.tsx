@@ -80,6 +80,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   asChild
                   isActive={location === "/"}
+                  className="text-[#7D7E82]"
                 >
                   <Link href="/" data-testid="link-nav-dashboard">
                     <LayoutDashboard className="h-4 w-4" />
@@ -93,6 +94,7 @@ export function AppSidebar() {
                     <SidebarMenuButton
                       isActive={settingsActive}
                       data-testid="link-nav-settings"
+                      className="text-[#7D7E82]"
                     >
                       <Settings className="h-4 w-4" />
                       <span>Settings</span>
