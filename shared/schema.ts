@@ -3,6 +3,8 @@ import { pgTable, text, varchar, integer, boolean, timestamp, real, pgEnum } fro
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+export * from "./models/auth";
+
 export const envelopeStatusEnum = pgEnum("envelope_status", [
   "draft", "sent", "viewed", "queried", "signed", "declined"
 ]);

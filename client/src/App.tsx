@@ -7,6 +7,7 @@ import { ThemeProvider } from "@/lib/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
+import { useAuth } from "@/hooks/use-auth";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
 import EnvelopeNew from "@/pages/envelope-new";
@@ -17,6 +18,8 @@ import SettingsPage from "@/pages/settings";
 import PreDeployment from "@/pages/pre-deployment";
 import RollbackLedger from "@/pages/rollback-ledger";
 import DataRecovery from "@/pages/data-recovery";
+import LoginPage from "@/pages/login";
+import { Loader2 } from "lucide-react";
 
 function AdminLayout({ children }: { children: React.ReactNode }) {
   const style = {
@@ -57,6 +60,28 @@ function AdminRouter() {
   );
 }
 
+function AuthenticatedAdmin() {
+  const { isLoading, isAuthenticated } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
+  return (
+    <AdminLayout>
+      <AdminRouter />
+    </AdminLayout>
+  );
+}
+
 function App() {
   return (
     <ThemeProvider>
@@ -66,9 +91,7 @@ function App() {
             <Route path="/sign/:token" component={SignerVerify} />
             <Route path="/sign/:token/document" component={SignerDocument} />
             <Route>
-              <AdminLayout>
-                <AdminRouter />
-              </AdminLayout>
+              <AuthenticatedAdmin />
             </Route>
           </Switch>
           <Toaster />

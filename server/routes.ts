@@ -1,8 +1,9 @@
-import type { Express } from "express";
+import type { Express, RequestHandler } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
 import { sendEmail, getGmailProfile } from "./gmail";
+import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { insertRollbackVersionSchema, insertBackupSchema, createEnvelopeRequestSchema, createSignerRequestSchema, createApiEnvelopeRequestSchema } from "@shared/schema";
 import { z } from "zod";
 import { randomBytes, randomInt, createHash } from "crypto";
@@ -89,6 +90,27 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   await fsPromises.mkdir("uploads", { recursive: true });
+
+  await setupAuth(app);
+  registerAuthRoutes(app);
+
+  const adminOnly: RequestHandler = (req, res, next) => {
+    const p = req.path;
+    if (p.startsWith("/api/sign/") || p.startsWith("/api/v1/")) {
+      return next();
+    }
+    if (p.startsWith("/api/login") || p.startsWith("/api/logout") || p.startsWith("/api/callback") || p.startsWith("/api/auth/")) {
+      return next();
+    }
+    if (p.startsWith("/uploads")) {
+      return next();
+    }
+    if (p.startsWith("/api/")) {
+      return isAuthenticated(req, res, next);
+    }
+    next();
+  };
+  app.use(adminOnly);
 
   app.get("/api/envelopes", async (_req, res) => {
     try {

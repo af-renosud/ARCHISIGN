@@ -1,4 +1,4 @@
-import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database, ChevronRight } from "lucide-react";
+import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database, ChevronRight, LogOut } from "lucide-react";
 import archisignLogo from "@assets/Generated_Image_February_13__2026_-_7_21AM-removebg-preview_1770963731125.png";
 import { useLocation, Link } from "wouter";
 import {
@@ -23,7 +23,9 @@ import {
 } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/use-auth";
 import type { Envelope } from "@shared/schema";
 
 const settingsSubItems = [
@@ -130,13 +132,54 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="p-4">
+      <SidebarFooter className="p-4 space-y-3">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Mail className="h-3 w-3" />
           <span>Gmail Connected</span>
         </div>
+        <UserInfo />
       </SidebarFooter>
     </Sidebar>
+  );
+}
+
+function UserInfo() {
+  const { user } = useAuth();
+  if (!user) return null;
+
+  const initials = [user.firstName, user.lastName]
+    .filter(Boolean)
+    .map(n => n![0])
+    .join("")
+    .toUpperCase() || "U";
+
+  const displayName = [user.firstName, user.lastName].filter(Boolean).join(" ") || user.email || "User";
+
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <Avatar className="h-7 w-7 shrink-0">
+          <AvatarImage src={user.profileImageUrl || undefined} alt={displayName} />
+          <AvatarFallback className="text-xs">{initials}</AvatarFallback>
+        </Avatar>
+        <div className="min-w-0">
+          <p className="text-xs font-medium truncate" data-testid="text-user-name">{displayName}</p>
+          {user.email && (
+            <p className="text-[10px] text-muted-foreground truncate" data-testid="text-user-email">{user.email}</p>
+          )}
+        </div>
+      </div>
+      <Button
+        variant="ghost"
+        size="icon"
+        asChild
+        data-testid="button-logout"
+      >
+        <a href="/api/logout">
+          <LogOut className="h-4 w-4" />
+        </a>
+      </Button>
+    </div>
   );
 }
 
