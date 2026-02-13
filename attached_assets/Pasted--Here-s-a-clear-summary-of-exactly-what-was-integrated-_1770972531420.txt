@@ -1,0 +1,63 @@
+ Here's a clear summary of exactly what was integrated on the ARCHIDOC side for the E-Sign module. You can pass this directly to the ArchiSign team so they can cross-reference against their post-audit configuration.
+
+E-Sign Integration Summary (ARCHIDOC Side)
+1. Database (6 tables)
+esign_envelopes — Stores envelope metadata (title, status, project link, document URL in Object Storage, created/sent/completed timestamps)
+esign_signers — Each signer per envelope (name, email, role, access token, OTP code + expiry, signing order, signed timestamp, OTP verified flag)
+esign_annotations — Page-level initials/signature data per signer (page number, annotation type, position coordinates, image data, timestamp)
+esign_communication_logs — Threaded messages between signers and architect (sender type, message text, envelope reference)
+esign_audit_events — Full audit trail (event type, actor email, IP address, timestamp, metadata JSON)
+esign_settings — Per-user configuration for the module
+2. Service Layer (server/esignService.ts)
+Key functions and their signatures:
+
+createEnvelope — Creates draft envelope with PDF upload to Object Storage (esign/{envelopeId}/)
+sendEnvelope — Transitions to "sent", generates cryptographic access tokens per signer, triggers invitation emails
+requestOtp — Generates 6-digit code, 10-minute expiry, sends via Gmail. Rate limited: 5 requests per 15 minutes per token (in-memory Map)
+verifyOtp(accessToken, code, ipAddress?) — Validates OTP, logs audit event with IP
+initialPage(accessToken, pageNumber, ipAddress?) — Records page initial annotation, logs with IP
+signDocument(accessToken, ipAddress?) — Marks signer as signed, logs with IP. When all signers complete → generates signed PDF via pdf-lib (overlays annotations onto original PDF), stores in Object Storage, sends completion emails
+logAuditEvent — Writes to esign_audit_events with ipAddress field
+3. API Routes (in server.ts)
+Admin routes (behind authentication):
+
+GET /api/esign/envelopes — List all envelopes
+GET /api/esign/envelopes/:id — Get envelope detail
+POST /api/esign/envelopes — Create envelope
+POST /api/esign/envelopes/:id/send — Send envelope
+POST /api/esign/envelopes/:id/cancel — Cancel envelope
+GET /api/esign/envelopes/:id/audit — Get audit trail
+POST /api/esign/envelopes/:id/reply — Reply to signer query
+GET /api/esign/settings — Get/update settings
+Public signer routes (no auth required):
+
+GET /api/esign/sign/:token/info — Get signer/envelope info
+POST /api/esign/sign/:token/request-otp — Request OTP code
+POST /api/esign/sign/:token/verify-otp — Verify OTP (passes IP)
+GET /api/esign/sign/:token/document — Get document for viewing
+POST /api/esign/sign/:token/initial — Initial a page (passes IP)
+POST /api/esign/sign/:token/sign — Sign document (passes IP)
+POST /api/esign/sign/:token/query — Send query to architect
+4. Auth Middleware Whitelist
+In server/middleware/requireAuth.ts, these path prefixes are whitelisted (skip authentication):
+
+/api/esign/sign/
+/esign/
+5. Gmail Integration (server/gmailService.ts)
+5 email functions added, all using branded ARCHIDOC HTML templates:
+
+Invitation email — Sent when envelope is dispatched, contains signing link
+OTP email — 6-digit code delivery
+Query email — Notifies architect when signer submits a question
+Reply email — Delivers architect's reply to signer
+Completion email — Sent to all parties when all signatures collected
+6. Frontend
+ESignView.tsx — Admin dashboard (envelope list, create form, detail view with 4 tabs: Signers, Annotations, Communications, Audit Trail)
+ESignPublicPage.tsx — Public signer flow (3 phases: OTP verification → page-by-page review/initial → final sign)
+App.tsx routing — /esign/:token mapped to public page, E-Sign tab added to project detail view
+7. Security Summary
+OTP rate limiting: in-memory Map, 5 requests per 15-minute window per access token
+IP capture: extracted from x-forwarded-for header (first value) or req.ip fallback
+Access tokens: cryptographic random tokens generated per signer
+Object Storage paths: esign/{envelopeId}/original.pdf and esign/{envelopeId}/signed.pdf
+This should give the ArchiSign team everything they need to map against their post-audit changes. If their security audit changed things like OTP expiry times, rate limit thresholds, token generation methods, or API route structures, this list will let them pinpoint exactly where adjustments are needed on the ARCHIDOC side.
