@@ -11,15 +11,17 @@ Run a full database audit on the Archisign e-signature platform before deploymen
 
 ### 1. Schema Sync Verification
 - Compare the Drizzle ORM schema in \`shared/schema.ts\` against the live PostgreSQL database
-- Verify all tables exist: \`envelopes\`, \`signers\`, \`annotations\`, \`communication_logs\`, \`audit_events\`, \`settings\`
-- Verify all enum types exist: \`envelope_status\` (draft, sent, viewed, queried, signed, declined), \`annotation_type\` (initial, signature, date)
+- Verify all tables exist: \`envelopes\`, \`signers\`, \`annotations\`, \`communication_logs\`, \`audit_events\`, \`settings\`, \`rollback_versions\`, \`backups\`
+- Verify all enum types exist: \`envelope_status\` (draft, sent, viewed, queried, signed, declined), \`annotation_type\` (initial, signature, date), \`rollback_version_status\` (active, superseded)
 - Confirm all columns match their Drizzle definitions (types, defaults, nullability)
 - Check that \`generatedAlwaysAsIdentity()\` is correctly applied on all ID columns
+- Verify \`envelopes.deleted_at\` column exists for soft-delete support (nullable timestamp)
 
 ### 2. Foreign Key & Cascade Verification
 - Verify FK constraints: \`signers.envelope_id → envelopes.id\`, \`annotations.envelope_id → envelopes.id\`, \`annotations.signer_id → signers.id\`, \`communication_logs.envelope_id → envelopes.id\`, \`audit_events.envelope_id → envelopes.id\`
 - Confirm all FKs have \`ON DELETE CASCADE\`
 - Test: deleting an envelope should cascade-delete its signers, annotations, logs, and audit events
+- Verify \`rollback_versions\` and \`backups\` tables have no FK dependencies (standalone tables)
 
 ### 3. Unique Constraints & Indexes
 - Verify \`signers.access_token\` has a UNIQUE constraint
@@ -33,18 +35,23 @@ Run a full database audit on the Archisign e-signature platform before deploymen
 - Query for audit_events with no matching envelope
 - Report any orphaned data
 
-### 5. Destructive Changes Detection
+### 5. Soft-Delete Integrity
+- Verify that GET \`/api/envelopes\` only returns rows where \`deleted_at IS NULL\`
+- Verify that GET \`/api/envelopes/deleted\` only returns rows where \`deleted_at IS NOT NULL\`
+- Check that soft-deleted envelopes can be restored via POST \`/api/envelopes/:id/restore\`
+
+### 6. Destructive Changes Detection
 - Check if \`npm run db:push\` would produce any destructive ALTER TABLE statements
 - NEVER run \`db:push --force\` on production without explicit approval
 - Flag any column type changes, dropped columns, or renamed tables
 
-### 6. Secrets & Connection Safety
+### 7. Secrets & Connection Safety
 - Verify DATABASE_URL is set and accessible
 - Verify connection pool is healthy (no stale connections)
 - Confirm no database credentials are hardcoded in source files
 
 ### Output Format
-For each check, report: ✅ PASS, ⚠️ WARN (with explanation), or ❌ FAIL (with remediation steps).
+For each check, report: PASS, WARN (with explanation), or FAIL (with remediation steps).
 End with: **GO** (ready for deployment) or **NO-GO** (with blocking issues listed).`;
 
 const APPLICATION_AUDIT_PROMPT = `## ARCHISIGN — APPLICATION AUDIT (Pre-Deployment)
@@ -59,46 +66,63 @@ Run a full application code and security audit on the Archisign e-signature plat
 
 ### 2. API Route Integrity
 - Verify all API routes in \`server/routes.ts\` are reachable:
-  - Admin: GET/POST \`/api/envelopes\`, GET \`/api/envelopes/:id\`, POST \`/api/envelopes/:id/send\`, POST \`/api/envelopes/:id/reply\`
+  - Admin: GET/POST \`/api/envelopes\`, GET \`/api/envelopes/:id\`, GET \`/api/envelopes/deleted\`, POST \`/api/envelopes/:id/send\`, POST \`/api/envelopes/:id/reply\`
+  - Soft-Delete: POST \`/api/envelopes/:id/soft-delete\`, POST \`/api/envelopes/:id/restore\`
   - Signer: GET \`/api/sign/:token/info\`, POST \`/api/sign/:token/request-otp\`, POST \`/api/sign/:token/verify-otp\`, GET \`/api/sign/:token/document\`, POST \`/api/sign/:token/initial\`, POST \`/api/sign/:token/query\`, POST \`/api/sign/:token/sign\`
   - ArchiDoc API: POST \`/api/v1/envelopes/create\`
   - Settings: GET/PUT \`/api/settings\`, GET \`/api/settings/:key\`
+  - Rollback Versions: GET/POST \`/api/rollback-versions\`, PATCH/DELETE \`/api/rollback-versions/:id\`
+  - Backups: GET/POST \`/api/backups\`, GET \`/api/backups/:id/download\`, DELETE \`/api/backups/:id\`
   - Static: GET \`/uploads/*\`
 - Verify proper error handling (400, 404, 500 responses) on each route
-- Check that all routes validate input before database operations
+- Check that all input-accepting routes validate input via Zod schemas before database operations
 
 ### 3. Security Checks
 - Confirm no secrets (DATABASE_URL, SESSION_SECRET, API keys) are hardcoded in source code
 - Verify signing tokens are generated with \`crypto.randomBytes(32)\` (cryptographically secure)
+- Verify OTP generation uses \`crypto.randomInt()\` and OTPs are SHA-256 hashed before DB storage
 - Verify OTP codes expire after 10 minutes and are cleared after verification
 - Check that signer document endpoints require OTP verification (\`otpVerified === true\`)
-- Confirm no sensitive data (OTP codes, access tokens) is exposed in API responses
+- Confirm no sensitive data (OTP codes, access tokens) is exposed in API responses (log redaction for accessToken, otpCode, otpExpiresAt)
 - Verify file upload only accepts PDF MIME type with 50MB limit
+- Verify path traversal protection on \`/uploads\` route (path.resolve + prefix check)
 
-### 4. Gmail Integration
+### 4. Transaction Safety (ACID)
+- Verify envelope creation (envelope + signers + audit) is wrapped in \`db.transaction()\`
+- Verify signing flow (annotation + claim + status + audit) is wrapped in \`db.transaction()\`
+- Confirm \`atomicClaimSign()\` uses conditional UPDATE (WHERE signedAt IS NULL) to prevent double-sign race conditions
+- Verify PDF file generation happens after transaction commit (no orphan files on rollback)
+
+### 5. Gmail Integration
 - Verify Gmail connector in \`server/gmail.ts\` handles token refresh correctly
 - Confirm email sending gracefully handles failures (try/catch, no crash on send failure)
+- Verify email-failure-safe send flow: if all emails fail, envelope stays in draft and returns 502
 - Check that email templates use configurable settings from the database (not hardcoded copy)
 - Verify Gmail thread IDs are preserved for conversation continuity
 
-### 5. PDF Processing
+### 6. PDF Processing
 - Verify pdf-lib import is dynamic (\`await import("pdf-lib")\`) for proper code splitting
 - Confirm signed PDF generation embeds all annotations at correct positions
 - Check that original PDFs are preserved (not overwritten during signing)
 - Verify the \`uploads/\` directory is created on startup
 
-### 6. Webhook Reliability
-- Verify webhook calls are fire-and-forget (don't block the response)
+### 7. Webhook Reliability
+- Verify webhook calls have a 10-second timeout
 - Confirm webhook payloads include \`event\`, \`envelopeId\`, \`externalRef\`, \`status\`
-- Check that webhook failures are caught and logged (not thrown)
+- Check that webhook failures are caught and logged (not thrown), do not block or rollback signing
 
-### 7. Error Handling
+### 8. Graceful Shutdown
+- Verify \`server/index.ts\` listens for SIGTERM and SIGINT
+- Confirm HTTP server and DB pool are closed cleanly
+- Verify 10-second forced-exit timeout on shutdown
+
+### 9. Error Handling
 - Verify all route handlers have try/catch with proper error responses
 - Check that database errors don't leak internal details to the client
-- Confirm file system operations handle missing files gracefully
+- Confirm file system operations use async \`fs/promises\` (no synchronous I/O)
 
 ### Output Format
-For each check, report: ✅ PASS, ⚠️ WARN (with explanation), or ❌ FAIL (with remediation steps).
+For each check, report: PASS, WARN (with explanation), or FAIL (with remediation steps).
 End with: **GO** (ready for deployment) or **NO-GO** (with blocking issues listed).`;
 
 const DATA_PERSISTENCE_AUDIT_PROMPT = `## ARCHISIGN — DATA PERSISTENCE AUDIT (Pre-Deployment)
@@ -120,26 +144,29 @@ Verify the complete lifecycle of each entity is persisted correctly:
 
 ### 2. API Call Verification
 Test each API endpoint persists data correctly:
-- POST \`/api/envelopes\` → creates envelope + signers + audit event
-- POST \`/api/envelopes/:id/send\` → updates status + creates audit event + sets Gmail thread ID
-- POST \`/api/sign/:token/request-otp\` → sets otp_code + otp_expires_at on signer
+- POST \`/api/envelopes\` → creates envelope + signers + audit event (within ACID transaction)
+- POST \`/api/envelopes/:id/send\` → updates status + creates audit event + sets Gmail thread ID (stays draft if all emails fail)
+- POST \`/api/sign/:token/request-otp\` → sets SHA-256 hashed otp_code + otp_expires_at on signer
 - POST \`/api/sign/:token/verify-otp\` → sets otp_verified + clears OTP fields + creates audit event
 - POST \`/api/sign/:token/initial\` → creates annotation record + audit event
-- POST \`/api/sign/:token/sign\` → creates signature annotation + updates signer.signed_at + generates signed PDF if all signed
+- POST \`/api/sign/:token/sign\` → atomicClaimSign + creates signature annotation + generates signed PDF if all signed (within ACID transaction)
 - POST \`/api/sign/:token/query\` → creates communication_log + audit event + updates status to queried
-- POST \`/api/v1/envelopes/create\` → creates envelope + signer + audit event (ArchiDoc API)
+- POST \`/api/v1/envelopes/create\` → creates envelope + signer + audit event (ArchiDoc API, within ACID transaction)
+- POST \`/api/envelopes/:id/soft-delete\` → sets \`deleted_at\` timestamp (envelope remains in DB)
+- POST \`/api/envelopes/:id/restore\` → clears \`deleted_at\` timestamp (restores to active list)
 
 ### 3. Silent Data Loss Patterns
 Check for scenarios where data could be silently lost:
-- Verify \`ON DELETE CASCADE\` doesn't accidentally delete data when envelopes are removed
+- Verify \`ON DELETE CASCADE\` doesn't accidentally delete data when envelopes are hard-deleted
+- Verify soft-delete (setting \`deleted_at\`) does NOT cascade-delete child records (signers, annotations remain intact for recovery)
 - Check if partial signing state is preserved if a signer disconnects mid-process
 - Verify OTP expiry doesn't lock out signers permanently (they can request a new OTP)
-- Confirm email send failures don't prevent envelope status updates
+- Confirm email send failures keep envelope in draft (email-failure-safe send flow)
 - Check that webhook failures don't block or rollback signing operations
 
 ### 4. Database Record Counts
-- Count total envelopes, signers, annotations, communication_logs, audit_events, settings
-- Verify no tables are unexpectedly empty
+- Count total envelopes (active + soft-deleted), signers, annotations, communication_logs, audit_events, settings, rollback_versions, backups
+- Verify no core tables are unexpectedly empty
 - Check that audit_events exist for every envelope (at minimum: "Envelope created")
 - Verify settings table has all expected configuration keys
 
@@ -151,6 +178,7 @@ Check for scenarios where data could be silently lost:
 
 ### 6. Backup & Recovery Readiness
 - Verify database can be backed up via Replit's snapshot system
+- Verify JSON backup creation via POST \`/api/backups\` works and files are downloadable via GET \`/api/backups/:id/download\`
 - Check that \`uploads/\` directory content would survive a redeployment
 - Confirm no ephemeral/in-memory data stores are used for critical state
 - Verify all application state is in PostgreSQL or filesystem (nothing in memory-only)
@@ -160,8 +188,12 @@ Check for scenarios where data could be silently lost:
 - Confirm settings survive server restarts (not cached in memory only)
 - Check that default fallback values exist in code for all settings keys
 
+### 8. Rollback Version Ledger
+- Verify rollback_versions table tracks deployment versions with labels, notes, and status (active/superseded)
+- Confirm CRUD operations work: create, read, update (status/note), delete
+
 ### Output Format
-For each check, report: ✅ PASS, ⚠️ WARN (with explanation), or ❌ FAIL (with remediation steps).
+For each check, report: PASS, WARN (with explanation), or FAIL (with remediation steps).
 End with: **GO** (ready for deployment) or **NO-GO** (with blocking issues listed).`;
 
 function CopyButton({ text, label }: { text: string; label: string }) {
