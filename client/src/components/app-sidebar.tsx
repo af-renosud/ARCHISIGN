@@ -70,7 +70,6 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup>
-          <SidebarGroupLabel className="text-[#7D7E82]">Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
