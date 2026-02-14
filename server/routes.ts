@@ -11,6 +11,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import fsPromises from "fs/promises";
+import { uploadFile, downloadFile, streamFileToResponse, fileExists, deleteFile, uploadBackup, downloadBackup, deleteBackupFile } from "./fileStorage";
 
 interface EmailSettings {
   registrationLine: string;
@@ -89,8 +90,6 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  await fsPromises.mkdir("uploads", { recursive: true });
-
   await setupAuth(app);
   registerAuthRoutes(app);
 
@@ -201,19 +200,21 @@ export async function registerRoutes(
       let pdfUrl: string | undefined;
       let totalPages = 1;
       if (req.file) {
-        const ext = path.extname(req.file.originalname);
-        const newName = `${req.file.filename}${ext}`;
-        const newPath = path.join("uploads", newName);
-        await fsPromises.rename(req.file.path, newPath);
-        pdfUrl = `/uploads/${newName}`;
-
         try {
-          const { PDFDocument } = await import("pdf-lib");
-          const pdfBytes = await fsPromises.readFile(newPath);
-          const pdfDoc = await PDFDocument.load(pdfBytes);
-          totalPages = pdfDoc.getPageCount();
-        } catch {
-          totalPages = 1;
+          const ext = path.extname(req.file.originalname);
+          const newName = `${req.file.filename}${ext}`;
+          const pdfBytes = await fsPromises.readFile(req.file.path);
+          pdfUrl = await uploadFile(newName, pdfBytes);
+
+          try {
+            const { PDFDocument } = await import("pdf-lib");
+            const pdfDoc = await PDFDocument.load(pdfBytes);
+            totalPages = pdfDoc.getPageCount();
+          } catch {
+            totalPages = 1;
+          }
+        } finally {
+          await fsPromises.unlink(req.file.path).catch(() => {});
         }
       }
 
@@ -741,10 +742,9 @@ export async function registerRoutes(
       if (allSigned && envelope.originalPdfUrl) {
         try {
           const { PDFDocument, rgb, StandardFonts } = await import("pdf-lib");
-          const pdfPath = path.join(process.cwd(), envelope.originalPdfUrl.replace(/^\//, ""));
-          if (await fsPromises.access(pdfPath).then(() => true).catch(() => false)) {
-            const pdfBytes = await fsPromises.readFile(pdfPath);
-            const pdfDoc = await PDFDocument.load(pdfBytes);
+          const downloaded = await downloadFile(envelope.originalPdfUrl);
+          if (downloaded) {
+            const pdfDoc = await PDFDocument.load(downloaded.data);
             const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
             for (const s of allSigners) {
@@ -769,9 +769,8 @@ export async function registerRoutes(
 
             const signedBytes = await pdfDoc.save();
             const signedFileName = `signed_${Date.now()}.pdf`;
-            const signedPath = path.join("uploads", signedFileName);
-            await fsPromises.writeFile(signedPath, signedBytes);
-            await storage.updateEnvelope(envelope.id, { signedPdfUrl: `/uploads/${signedFileName}` });
+            const signedPdfUrl = await uploadFile(signedFileName, Buffer.from(signedBytes));
+            await storage.updateEnvelope(envelope.id, { signedPdfUrl });
           }
         } catch (pdfErr) {
           console.error("PDF signing failed:", pdfErr);
@@ -863,10 +862,7 @@ export async function registerRoutes(
         }
 
         const fileName = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.pdf`;
-        const filePath = path.join("uploads", fileName);
-        await fsPromises.mkdir("uploads", { recursive: true });
-        await fsPromises.writeFile(filePath, pdfBuffer);
-        savedPdfUrl = `/uploads/${fileName}`;
+        savedPdfUrl = await uploadFile(fileName, pdfBuffer);
       }
 
       const signerList = (signers && signers.length > 0)
@@ -908,8 +904,7 @@ export async function registerRoutes(
         });
       } catch (txErr) {
         if (savedPdfUrl && pdfBase64) {
-          const filePath = path.join(process.cwd(), savedPdfUrl);
-          await fsPromises.unlink(filePath).catch(() => {});
+          await deleteFile(savedPdfUrl);
         }
         throw txErr;
       }
@@ -922,16 +917,19 @@ export async function registerRoutes(
   });
 
   app.use("/uploads", async (req, res, next) => {
-    const uploadsDir = path.resolve(process.cwd(), "uploads");
-    const filePath = path.resolve(uploadsDir, req.path.replace(/^\/+/, ""));
-    if (!filePath.startsWith(uploadsDir + path.sep) && filePath !== uploadsDir) {
+    const fileName = req.path.replace(/^\/+/, "");
+    if (!fileName || fileName.includes("..") || fileName.includes("/")) {
       return res.status(403).json({ message: "Access denied" });
     }
     try {
-      await fsPromises.access(filePath);
-      res.sendFile(filePath);
+      const streamed = await streamFileToResponse(`/uploads/${fileName}`, res);
+      if (!streamed) {
+        return res.status(404).json({ message: "File not found" });
+      }
     } catch {
-      res.status(404).json({ message: "File not found" });
+      if (!res.headersSent) {
+        res.status(404).json({ message: "File not found" });
+      }
     }
   });
 
@@ -1054,9 +1052,7 @@ export async function registerRoutes(
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const filename = `archisign-backup-manual-${timestamp}.json`;
-      const backupDir = path.join(process.cwd(), "backups");
-      await fsPromises.mkdir(backupDir, { recursive: true });
-      await fsPromises.writeFile(path.join(backupDir, filename), JSON.stringify(backupData, null, 2));
+      await uploadBackup(filename, JSON.stringify(backupData, null, 2));
 
       const backup = await storage.createBackup({ filename });
       res.json(backup);
@@ -1072,13 +1068,13 @@ export async function registerRoutes(
       const allBackups = await storage.getBackups();
       const backup = allBackups.find(b => b.id === id);
       if (!backup) return res.status(404).json({ message: "Backup not found" });
-      const filePath = path.join(process.cwd(), "backups", backup.filename);
-      try {
-        await fsPromises.access(filePath);
-      } catch {
+      const backupData = await downloadBackup(backup.filename);
+      if (!backupData) {
         return res.status(404).json({ message: "Backup file not found" });
       }
-      res.download(filePath, backup.filename);
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Content-Disposition", `attachment; filename="${backup.filename}"`);
+      res.send(backupData);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1091,8 +1087,7 @@ export async function registerRoutes(
       const allBackups = await storage.getBackups();
       const backup = allBackups.find(b => b.id === id);
       if (backup) {
-        const filePath = path.join(process.cwd(), "backups", backup.filename);
-        await fsPromises.unlink(filePath).catch(() => {});
+        await deleteBackupFile(backup.filename);
       }
       await storage.deleteBackup(id);
       res.json({ success: true });

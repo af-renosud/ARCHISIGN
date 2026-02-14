@@ -11,6 +11,7 @@ See `ARCHITECTURE.md` for detailed system architecture, database schema, and API
 - **Database**: PostgreSQL (Replit-hosted, Drizzle ORM)
 - **Email**: Gmail API via Replit Google Mail connector
 - **PDF**: pdf-lib for document processing
+- **File Storage**: Replit Object Storage (GCS-backed, persistent across deploys)
 - **Auth**: Replit Auth (OIDC) for admin, Token+OTP for external signers
 
 ## Key Features
@@ -54,13 +55,15 @@ client/src/
   lib/theme-provider.tsx     - Theme context
 
 server/
-  index.ts   - Express app setup (25MB JSON limit for large PDFs)
-  routes.ts  - All API endpoints (admin routes protected by auth middleware)
-  storage.ts - Database storage layer (IStorage interface)
-  db.ts      - Drizzle/PostgreSQL connection
-  gmail.ts   - Gmail API integration
-  seed.ts    - Sample data seeder
-  replit_integrations/auth/  - Replit Auth OIDC module (passport, sessions, user storage)
+  index.ts       - Express app setup (25MB JSON limit for large PDFs)
+  routes.ts      - All API endpoints (admin routes protected by auth middleware)
+  storage.ts     - Database storage layer (IStorage interface)
+  fileStorage.ts - Object Storage abstraction (upload/download/delete PDFs & backups)
+  db.ts          - Drizzle/PostgreSQL connection
+  gmail.ts       - Gmail API integration
+  seed.ts        - Sample data seeder
+  replit_integrations/auth/            - Replit Auth OIDC module
+  replit_integrations/object_storage/  - Object Storage client (GCS)
 
 shared/
   schema.ts      - Drizzle models + Zod schemas
@@ -78,7 +81,7 @@ shared/
 
 ## ArchiDoc API Integration (`POST /api/v1/envelopes/create`)
 - **Authentication**: `X-API-KEY` header validated against `ARCHIDOC_API_KEY` secret
-- **pdfBase64**: Base64-encoded PDF content; decoded, saved to `uploads/`, page count extracted via pdf-lib
+- **pdfBase64**: Base64-encoded PDF content; decoded, saved to Object Storage, page count extracted via pdf-lib
 - **Multi-signer**: `signers` array `[{email, fullName}]` creates multiple signer records with access tokens
 - **Backward compat**: Legacy `signerEmail`/`signerName` fields still work for single-signer requests
 - **Priority**: If both `pdfBase64` and `pdfUrl` are provided, `pdfBase64` takes priority
@@ -88,8 +91,14 @@ shared/
 
 ## Security & Integrity Hardening
 
+### Phase 4 (Completed)
+- **Object Storage Migration**: All PDFs and backups stored in Replit Object Storage (GCS-backed)
+- **Persistent Files**: Files survive deployments and container restarts
+- **fileStorage.ts**: Abstraction layer for upload/download/delete with automatic bucket/prefix parsing
+- **Multer temp cleanup**: Uploaded files streamed to Object Storage, temp files cleaned up
+
 ### Phase 1 (Completed)
-- Path traversal protection on /uploads route (path.resolve + prefix check)
+- Path traversal protection on /uploads route (filename validation, no path traversal)
 - OTP generation via crypto.randomInt() + SHA-256 hashing before DB storage
 - All synchronous file I/O converted to async fs/promises
 - Log sanitization: accessToken, otpCode, otpExpiresAt redacted from response logs
@@ -113,6 +122,7 @@ shared/
 | ADMIN_EMAILS      | env    | No       | Comma-separated allowlist of admin emails        |
 
 ## Recent Changes
+- 2026-02-14: Migrated all file storage (PDFs, backups) from local filesystem to Replit Object Storage for deployment persistence
 - 2026-02-13: Cleared all test data for production-ready fresh start
 - 2026-02-13: Increased JSON body limit to 25MB for large architectural PDFs
 - 2026-02-13: Enhanced ArchiDoc API with pdfBase64 support, multi-signer arrays, and API key authentication
