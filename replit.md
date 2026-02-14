@@ -15,7 +15,7 @@ See `ARCHITECTURE.md` for detailed system architecture, database schema, and API
 - **Auth**: Replit Auth (OIDC) for admin, Token+OTP for external signers
 
 ## Key Features
-1. **Admin Dashboard** - Table view of all envelopes with filtering by status, client, reference
+1. **Admin Dashboard** - Table view of all envelopes with filtering by status, client, reference (30s auto-refresh)
 2. **Envelope Management** - Create, send, track document sign-off workflows
 3. **External Signer Interface** - Tokenized URL, OTP verification, page-by-page initials, final signature
 4. **Query Loop** - Signers can request clarification, triggering Gmail threads
@@ -26,7 +26,7 @@ See `ARCHITECTURE.md` for detailed system architecture, database schema, and API
 ## Database Schema
 - `envelopes` - Documents sent for signing (soft-delete via `deleted_at` column)
 - `signers` - External parties who sign (token + OTP auth)
-- `annotations` - Initials/signatures per page
+- `annotations` - Initials/signatures per page (signerId FK, xPos, yPos, type, value)
 - `communication_logs` - Query messages between parties
 - `audit_events` - Full audit trail (nullable envelopeId for system events)
 - `settings` - Key-value configuration (email copy text, firm name, etc.)
@@ -38,12 +38,12 @@ See `ARCHITECTURE.md` for detailed system architecture, database schema, and API
 ## Project Structure
 ```
 client/src/
-  pages/dashboard.tsx        - Admin dashboard
-  pages/envelope-new.tsx     - Create envelope form
+  pages/dashboard.tsx        - Admin dashboard (30s auto-refresh)
+  pages/envelope-new.tsx     - Create envelope form (PDF upload + signers)
   pages/envelope-detail.tsx  - Envelope detail + tabs (overview, signers, communication, audit)
   pages/signer-verify.tsx    - External OTP verification
-  pages/signer-document.tsx  - Document signing interface
-  pages/settings.tsx         - Admin settings (email copy text)
+  pages/signer-document.tsx  - Document signing interface (page-by-page initials + signature)
+  pages/settings.tsx         - Admin settings (email copy text, firm name)
   pages/rollback-ledger.tsx  - Rollback version ledger
   pages/data-recovery.tsx    - Deleted envelopes + backup management
   pages/pre-deployment.tsx   - Pre-deployment audit prompts
@@ -51,22 +51,24 @@ client/src/
   components/app-sidebar.tsx - Navigation sidebar (logo links to dashboard, user info + logout)
   components/theme-toggle.tsx - Dark/light mode
   hooks/use-auth.ts          - Auth state hook (useAuth)
+  hooks/use-toast.ts         - Toast notification hook
   lib/auth-utils.ts          - Auth error utilities
+  lib/queryClient.ts         - TanStack Query client config
   lib/theme-provider.tsx     - Theme context
 
 server/
-  index.ts       - Express app setup (25MB JSON limit for large PDFs)
+  index.ts       - Express app setup (25MB JSON limit for large PDFs, graceful shutdown)
   routes.ts      - All API endpoints (admin routes protected by auth middleware)
   storage.ts     - Database storage layer (IStorage interface)
-  fileStorage.ts - Object Storage abstraction (upload/download/delete PDFs & backups)
+  fileStorage.ts - Object Storage abstraction (upload/download/stream/delete PDFs & backups)
   db.ts          - Drizzle/PostgreSQL connection
-  gmail.ts       - Gmail API integration
-  seed.ts        - Sample data seeder
-  replit_integrations/auth/            - Replit Auth OIDC module
-  replit_integrations/object_storage/  - Object Storage client (GCS)
+  gmail.ts       - Gmail API integration (send email, get profile)
+  seed.ts        - Email settings seeder (7 default settings, no sample data)
+  replit_integrations/auth/            - Replit Auth OIDC module (passport, sessions, user storage)
+  replit_integrations/object_storage/  - Object Storage client (GCS credentials, ACL)
 
 shared/
-  schema.ts      - Drizzle models + Zod schemas
+  schema.ts      - Drizzle models + Zod schemas + relations
   models/auth.ts - Users + sessions tables (Replit Auth)
 ```
 
@@ -87,15 +89,25 @@ shared/
 - **Priority**: If both `pdfBase64` and `pdfUrl` are provided, `pdfBase64` takes priority
 - **Webhook**: `webhookUrl` field for status change callbacks (sent, viewed, queried, signed)
 - **Body limit**: 25MB JSON to support large architectural PDFs (~18MB original)
-- **Orphan cleanup**: If DB transaction fails after PDF save, the saved file is automatically deleted
+- **Orphan cleanup**: If DB transaction fails after PDF save, the saved file is automatically deleted from Object Storage
+
+## File Storage (Object Storage)
+- **All PDFs and backups** stored in Replit Object Storage (GCS-backed, persistent across deploys)
+- **fileStorage.ts** abstraction layer: `uploadFile`, `downloadFile`, `streamFileToResponse`, `fileExists`, `deleteFile`
+- **Backup functions**: `uploadBackup`, `downloadBackup`, `deleteBackupFile`
+- **Upload flow**: Multer temp file → read buffer → upload to Object Storage → delete temp file (in `finally` block)
+- **Serving flow**: `/uploads/:filename` route streams directly from Object Storage (no full-file buffering)
+- **Path traversal protection**: Filename validated — `..` and `/` segments rejected
+- **Storage layout**: `<bucket>/<prefix>/uploads/` for PDFs, `<bucket>/<prefix>/backups/` for backup exports
 
 ## Security & Integrity Hardening
 
 ### Phase 4 (Completed)
 - **Object Storage Migration**: All PDFs and backups stored in Replit Object Storage (GCS-backed)
 - **Persistent Files**: Files survive deployments and container restarts
-- **fileStorage.ts**: Abstraction layer for upload/download/delete with automatic bucket/prefix parsing
-- **Multer temp cleanup**: Uploaded files streamed to Object Storage, temp files cleaned up
+- **fileStorage.ts**: Abstraction layer for upload/download/stream/delete with automatic bucket/prefix parsing
+- **Multer temp cleanup**: Uploaded files streamed to Object Storage, temp files cleaned up in `finally` blocks
+- **Streaming serving**: `/uploads` route streams from Object Storage — memory-efficient for large PDFs
 
 ### Phase 1 (Completed)
 - Path traversal protection on /uploads route (filename validation, no path traversal)
@@ -115,14 +127,19 @@ shared/
 - **Error Handling**: Email failures prevent envelope status change; webhook errors isolated
 
 ## Environment Variables & Secrets
-| Variable          | Type   | Required | Description                                      |
-|-------------------|--------|----------|--------------------------------------------------|
-| DATABASE_URL      | env    | Yes      | PostgreSQL connection string (auto-provided)     |
-| ARCHIDOC_API_KEY  | secret | Yes      | API key for ArchiDoc service-to-service auth     |
-| ADMIN_EMAILS      | env    | No       | Comma-separated allowlist of admin emails        |
+| Variable                         | Type   | Required | Description                                      |
+|----------------------------------|--------|----------|--------------------------------------------------|
+| DATABASE_URL                     | env    | Yes      | PostgreSQL connection string (auto-provided)     |
+| ARCHIDOC_API_KEY                 | secret | Yes      | API key for ArchiDoc service-to-service auth     |
+| ADMIN_EMAILS                     | env    | No       | Comma-separated allowlist of admin emails        |
+| DEFAULT_OBJECT_STORAGE_BUCKET_ID | secret | Auto     | Object Storage bucket ID (auto-configured)       |
+| PRIVATE_OBJECT_DIR               | secret | Auto     | Object Storage private directory path            |
+| PUBLIC_OBJECT_SEARCH_PATHS       | secret | Auto     | Object Storage public search paths               |
+| SESSION_SECRET                   | secret | Auto     | Express session secret (auto-configured)         |
 
 ## Recent Changes
 - 2026-02-14: Migrated all file storage (PDFs, backups) from local filesystem to Replit Object Storage for deployment persistence
+- 2026-02-14: Updated ARCHITECTURE.md and replit.md with complete Object Storage documentation
 - 2026-02-13: Cleared all test data for production-ready fresh start
 - 2026-02-13: Increased JSON body limit to 25MB for large architectural PDFs
 - 2026-02-13: Enhanced ArchiDoc API with pdfBase64 support, multi-signer arrays, and API key authentication
