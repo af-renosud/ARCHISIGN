@@ -37,6 +37,7 @@ export default function Dashboard() {
 
   const { data: envelopes, isLoading } = useQuery<(Envelope & { signers: Signer[] })[]>({
     queryKey: ["/api/envelopes"],
+    refetchInterval: 30000,
   });
 
   const filtered = envelopes?.filter((env) => {

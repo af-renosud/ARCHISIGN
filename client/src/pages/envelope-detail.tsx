@@ -41,6 +41,7 @@ export default function EnvelopeDetail() {
   const { data: envelope, isLoading } = useQuery<EnvelopeDetail>({
     queryKey: ["/api/envelopes", id],
     enabled: !!id,
+    refetchInterval: 30000,
   });
 
   const sendMutation = useMutation({
