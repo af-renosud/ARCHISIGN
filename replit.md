@@ -15,7 +15,7 @@ See `ARCHITECTURE.md` for detailed system architecture, database schema, and API
 - **Auth**: Replit Auth (OIDC) for admin, Token+OTP for external signers
 
 ## Key Features
-1. **Admin Dashboard** - Table view of all envelopes with filtering by status, client, reference (30s auto-refresh)
+1. **Admin Dashboard** - Table view of all envelopes with filtering by status, client, reference (10s auto-refresh)
 2. **Envelope Management** - Create, send, track document sign-off workflows
 3. **External Signer Interface** - Tokenized URL, OTP verification, page-by-page initials, final signature
 4. **Query Loop** - Signers can request clarification, triggering Gmail threads
@@ -138,6 +138,8 @@ shared/
 | SESSION_SECRET                   | secret | Auto     | Express session secret (auto-configured)         |
 
 ## Recent Changes
+- 2026-02-15: Reduced dashboard auto-refresh from 30s to 10s for faster status updates; made Completed stat card clickable for filtering
+- 2026-02-15: Moved Sign Document button to fixed bottom bar with prominent #F97316 orange styling
 - 2026-02-14: Migrated all file storage (PDFs, backups) from local filesystem to Replit Object Storage for deployment persistence
 - 2026-02-14: Updated ARCHITECTURE.md and replit.md with complete Object Storage documentation
 - 2026-02-13: Cleared all test data for production-ready fresh start

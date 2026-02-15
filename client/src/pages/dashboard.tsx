@@ -37,7 +37,7 @@ export default function Dashboard() {
 
   const { data: envelopes, isLoading } = useQuery<(Envelope & { signers: Signer[] })[]>({
     queryKey: ["/api/envelopes"],
-    refetchInterval: 30000,
+    refetchInterval: 10000,
   });
 
   const filtered = envelopes?.filter((env) => {
@@ -128,7 +128,14 @@ export default function Dashboard() {
             onClick={() => handleStatCardClick("queried")}
             active={statusFilter === "queried"}
           />
-          <StatCard label="Completed" value={stats.signed} icon={CheckCircle2} borderColor="border-chart-3" />
+          <StatCard
+            label="Completed"
+            value={stats.signed}
+            icon={CheckCircle2}
+            borderColor="border-chart-3"
+            onClick={() => handleStatCardClick("signed")}
+            active={statusFilter === "signed"}
+          />
         </div>
 
         <Card>
