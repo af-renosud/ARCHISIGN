@@ -19,6 +19,11 @@ export async function apiRequest(
     credentials: "include",
   });
 
+  if (res.status === 401 && !url.startsWith("/api/auth/")) {
+    window.location.href = "/api/login";
+    throw new Error("Session expired. Redirecting to login...");
+  }
+
   await throwIfResNotOk(res);
   return res;
 }
