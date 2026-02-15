@@ -13,6 +13,15 @@ import fs from "fs";
 import fsPromises from "fs/promises";
 import { uploadFile, downloadFile, streamFileToResponse, fileExists, deleteFile, uploadBackup, downloadBackup, deleteBackupFile } from "./fileStorage";
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 interface EmailSettings {
   registrationLine: string;
   footerText: string;
@@ -275,12 +284,12 @@ export async function registerRoutes(
         const signingUrl = `${baseUrl}/sign/${signer.accessToken}`;
         const htmlBody = wrapEmail(`
             <h2 style="color: #1e40af; margin-top: 0;">Document Ready for Signing</h2>
-            <p>Dear ${signer.fullName},</p>
+            <p>Dear ${escapeHtml(signer.fullName)},</p>
             <p>${emailCfg.invitationBody}</p>
             <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0;">
-              <p style="margin: 4px 0;"><strong>Subject:</strong> ${envelope.subject}</p>
-              ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${envelope.externalRef}</p>` : ""}
-              ${envelope.message ? `<p style="margin: 12px 0 4px 0; white-space: pre-line;">${envelope.message}</p>` : ""}
+              <p style="margin: 4px 0;"><strong>Subject:</strong> ${escapeHtml(envelope.subject)}</p>
+              ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
+              ${envelope.message ? `<p style="margin: 12px 0 4px 0; white-space: pre-line;">${escapeHtml(envelope.message)}</p>` : ""}
             </div>
             <p>Please click the button below to verify your identity and review the document:</p>
             <a href="${signingUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">Review & Sign Document</a>
@@ -365,9 +374,9 @@ export async function registerRoutes(
       for (const signer of envelope.signers) {
         const htmlBody = wrapEmail(`
             <h3 style="color: #1e40af; margin-top: 0;">Response from Architect</h3>
-            <p>Dear ${signer.fullName},</p>
-            <p>Regarding: <strong>${envelope.subject}</strong></p>
-            <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0; white-space: pre-wrap;">${message}</div>
+            <p>Dear ${escapeHtml(signer.fullName)},</p>
+            <p>Regarding: <strong>${escapeHtml(envelope.subject)}</strong></p>
+            <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0; white-space: pre-wrap;">${escapeHtml(message)}</div>
             <p>You may continue to <a href="${baseUrl}/sign/${signer.accessToken}">review and sign the document</a>.</p>
         `, baseUrl, emailCfg);
 
@@ -450,9 +459,9 @@ export async function registerRoutes(
           `[${emailCfg.firmName}] Your verification code: ${otp}`,
           wrapEmail(`
             <h2 style="color: #1e40af; margin-top: 0;">Verification Code</h2>
-            <p>Dear ${signer.fullName},</p>
+            <p>Dear ${escapeHtml(signer.fullName)},</p>
             <p>${emailCfg.otpBody}</p>
-            <p>Your verification code for signing "${envelope?.subject}" is:</p>
+            <p>Your verification code for signing "${escapeHtml(envelope?.subject || "")}" is:</p>
             <div style="background: #f8fafc; border-radius: 8px; padding: 24px; margin: 16px 0; text-align: center;">
               <span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1e40af;">${otp}</span>
             </div>
@@ -636,12 +645,12 @@ export async function registerRoutes(
             wrapEmail(`
               <h2 style="color: #dc2626; margin-top: 0;">Clarification Request</h2>
               <div style="background: #fef2f2; border-radius: 8px; padding: 16px; margin: 16px 0;">
-                <p style="margin: 4px 0;"><strong>Document:</strong> ${envelope.subject}</p>
-                <p style="margin: 4px 0;"><strong>From:</strong> ${signer.fullName} (${signer.email})</p>
-                ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${envelope.externalRef}</p>` : ""}
+                <p style="margin: 4px 0;"><strong>Document:</strong> ${escapeHtml(envelope.subject)}</p>
+                <p style="margin: 4px 0;"><strong>From:</strong> ${escapeHtml(signer.fullName)} (${escapeHtml(signer.email)})</p>
+                ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
               </div>
               <h3>Query:</h3>
-              <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0; white-space: pre-wrap;">${message}</div>
+              <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0; white-space: pre-wrap;">${escapeHtml(message)}</div>
               <p style="color: #64748b; font-size: 12px;">Reply to this email or respond through the ${emailCfg.firmName} admin panel.</p>
             `, baseUrl, emailCfg),
             envelope.gmailThreadId || undefined
@@ -792,9 +801,9 @@ export async function registerRoutes(
               `[${emailCfg.firmName}] Document signed: ${envelope.subject}`,
               wrapEmail(`
                 <h2 style="color: #16a34a; margin-top: 0;">Document Successfully Signed</h2>
-                <p>Dear ${s.fullName},</p>
+                <p>Dear ${escapeHtml(s.fullName)},</p>
                 <p>${emailCfg.completionBody}</p>
-                ${envelope.externalRef ? `<p><strong>Reference:</strong> ${envelope.externalRef}</p>` : ""}
+                ${envelope.externalRef ? `<p><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
                 <p style="color: #64748b; font-size: 12px;">A finalized copy will be available shortly.</p>
               `, baseUrl, emailCfg),
               envelope.gmailThreadId || undefined
@@ -812,8 +821,8 @@ export async function registerRoutes(
               wrapEmail(`
                 <h2 style="color: #16a34a; margin-top: 0;">All Signatures Collected</h2>
                 <p>${emailCfg.completionBody}</p>
-                ${envelope.externalRef ? `<p><strong>Reference:</strong> ${envelope.externalRef}</p>` : ""}
-                <p>Signers: ${allSigners.map(s => s.fullName).join(", ")}</p>
+                ${envelope.externalRef ? `<p><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
+                <p>Signers: ${allSigners.map(s => escapeHtml(s.fullName)).join(", ")}</p>
               `, baseUrl, emailCfg),
               envelope.gmailThreadId || undefined
             );
