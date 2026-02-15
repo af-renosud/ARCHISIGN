@@ -7,11 +7,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Send, Copy, ExternalLink, FileText, Eye, Clock,
-  AlertTriangle, CheckCircle2, MessageSquare, Shield, Users
+  AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2
 } from "lucide-react";
 import type { Envelope, Signer, CommunicationLog, AuditEvent } from "@shared/schema";
 import { format } from "date-fns";
@@ -37,6 +39,8 @@ export default function EnvelopeDetail() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const [replyMessage, setReplyMessage] = useState("");
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
 
   const { data: envelope, isLoading } = useQuery<EnvelopeDetail>({
     queryKey: ["/api/envelopes", id],
@@ -62,6 +66,20 @@ export default function EnvelopeDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
       setReplyMessage("");
       toast({ title: "Reply sent", description: "Your response has been sent via email." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (reason: string) => apiRequest("POST", `/api/envelopes/${id}/soft-delete`, { reason }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes"] });
+      setDeleteDialogOpen(false);
+      setDeleteReason("");
+      toast({ title: "Envelope deleted", description: "The envelope has been moved to the deleted items." });
+      navigate("/");
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -126,6 +144,14 @@ export default function EnvelopeDetail() {
                 {sendMutation.isPending ? "Sending..." : "Send for Signing"}
               </Button>
             )}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setDeleteDialogOpen(true)}
+              data-testid="button-delete-envelope"
+            >
+              <Trash2 className="h-4 w-4 text-destructive" />
+            </Button>
           </div>
         </div>
 
@@ -366,6 +392,42 @@ export default function EnvelopeDetail() {
           </TabsContent>
         </Tabs>
       </div>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => { setDeleteDialogOpen(open); if (!open) setDeleteReason(""); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Envelope</DialogTitle>
+            <DialogDescription>
+              This will move the envelope to deleted items. Please provide a reason for this deletion — it will be recorded in the audit trail.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="delete-reason">Reason for deletion</Label>
+            <Textarea
+              id="delete-reason"
+              placeholder="e.g. Duplicate envelope, client cancelled project, incorrect document..."
+              value={deleteReason}
+              onChange={(e) => setDeleteReason(e.target.value)}
+              className="min-h-[100px]"
+              data-testid="input-delete-reason"
+            />
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => { setDeleteDialogOpen(false); setDeleteReason(""); }} data-testid="button-cancel-delete">
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteMutation.mutate(deleteReason)}
+              disabled={deleteReason.trim().length === 0 || deleteMutation.isPending}
+              data-testid="button-confirm-delete"
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              {deleteMutation.isPending ? "Deleting..." : "Delete Envelope"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

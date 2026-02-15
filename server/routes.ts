@@ -956,8 +956,19 @@ export async function registerRoutes(
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
+      const { reason } = req.body || {};
+      if (!reason || typeof reason !== "string" || reason.trim().length === 0) {
+        return res.status(400).json({ message: "A reason for deletion is required" });
+      }
       const envelope = await storage.softDeleteEnvelope(id);
       if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+      await storage.createAuditEvent({
+        envelopeId: id,
+        eventType: "Envelope deleted",
+        actorEmail: (req.user as any)?.email || null,
+        ipAddress: req.ip || null,
+        metadata: JSON.stringify({ reason: reason.trim() }),
+      });
       res.json(envelope);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
