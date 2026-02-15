@@ -158,24 +158,6 @@ export default function SignerDocument() {
             <Badge variant="secondary" data-testid="badge-initial-progress">
               {initialedPages.length}/{totalPages} initialed
             </Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setQueryDialogOpen(true)}
-              data-testid="button-request-clarification"
-            >
-              <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
-              Request Clarification
-            </Button>
-            <Button
-              size="sm"
-              disabled={!canSign}
-              onClick={() => setSignDialogOpen(true)}
-              data-testid="button-final-sign"
-            >
-              <PenTool className="h-3.5 w-3.5 mr-1.5" />
-              Sign Document
-            </Button>
           </div>
         </div>
       </div>
@@ -275,6 +257,31 @@ export default function SignerDocument() {
             <span>Please initial all {totalPages} pages before signing. {totalPages - initialedPages.length} pages remaining.</span>
           </div>
         )}
+
+        <div className="h-24" />
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 z-50 border-t bg-background/95 backdrop-blur-sm">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 p-4 flex-wrap">
+          <Button
+            variant="outline"
+            onClick={() => setQueryDialogOpen(true)}
+            data-testid="button-request-clarification"
+          >
+            <MessageSquare className="h-4 w-4 mr-2" />
+            Request Clarification
+          </Button>
+          <Button
+            size="lg"
+            disabled={!canSign}
+            onClick={() => setSignDialogOpen(true)}
+            className="bg-[#F97316] border-[#F97316] text-white font-semibold text-base px-8 shadow-lg"
+            data-testid="button-final-sign"
+          >
+            <PenTool className="h-5 w-5 mr-2" />
+            Sign Document
+          </Button>
+        </div>
       </div>
 
       <Dialog open={queryDialogOpen} onOpenChange={setQueryDialogOpen}>
