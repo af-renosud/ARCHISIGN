@@ -16,7 +16,7 @@ import type { Signer, Envelope } from "@shared/schema";
 
 type DocumentInfo = {
   envelope: Envelope;
-  signer: Signer;
+  signer: Signer & { authenticationId?: string | null };
   totalPages: number;
   initialed: number[];
 };
@@ -120,19 +120,46 @@ export default function SignerDocument() {
   }
 
   if (docInfo.signer.signedAt) {
+    const signedDate = new Date(docInfo.signer.signedAt);
+    const formattedDate = signedDate.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "long",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const authId = docInfo.signer.authenticationId || "—";
+
     return (
       <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="p-8 text-center space-y-4">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/20 mx-auto">
-              <ShieldCheck className="h-8 w-8 text-green-600 dark:text-green-400" />
-            </div>
-            <h2 className="text-xl font-semibold">Document Signed</h2>
-            <p className="text-sm text-muted-foreground">
-              You have successfully signed "{docInfo.envelope.subject}". A copy of the signed document will be emailed to you.
+        <div className="w-full max-w-lg space-y-6">
+          <div className="border-[3px] border-red-600 p-6 space-y-1" data-testid="digital-envelope-box">
+            <p className="text-base font-bold text-blue-700 dark:text-blue-400 tracking-wide" data-testid="text-digital-envelope-title">
+              DIGITAL ENVELOPE
             </p>
-          </CardContent>
-        </Card>
+            <p className="text-sm font-semibold text-blue-700 dark:text-blue-400" data-testid="text-signed-by">
+              SIGNED BY: {docInfo.signer.fullName.toUpperCase()}
+            </p>
+            <p className="text-sm font-semibold text-blue-700 dark:text-blue-400" data-testid="text-date-signed">
+              DATE: {formattedDate.toUpperCase()}
+            </p>
+            <p className="text-sm font-semibold text-blue-700 dark:text-blue-400" data-testid="text-auth-id">
+              AUTHENTICATION: {authId}
+            </p>
+          </div>
+
+          <Card>
+            <CardContent className="p-8 text-center space-y-4">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/20 mx-auto">
+                <ShieldCheck className="h-8 w-8 text-green-600 dark:text-green-400" />
+              </div>
+              <h2 className="text-xl font-semibold">Document Signed</h2>
+              <p className="text-sm text-muted-foreground">
+                You have successfully signed "{docInfo.envelope.subject}". A copy of the signed document will be emailed to you.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     );
   }

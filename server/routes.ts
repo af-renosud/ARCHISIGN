@@ -551,6 +551,9 @@ export async function registerRoutes(
           fullName: signer.fullName,
           email: signer.email,
           signedAt: signer.signedAt,
+          authenticationId: signer.signedAt
+            ? createHash("sha256").update(`${signer.id}-${envelope.id}-${signer.signedAt}`).digest("hex").substring(0, 12).toUpperCase()
+            : null,
         },
         totalPages: envelope.totalPages,
         initialed: [...new Set(initialedPages)],
