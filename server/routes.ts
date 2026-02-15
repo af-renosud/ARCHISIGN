@@ -358,6 +358,83 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/envelopes/:id/resend", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const envelope = await storage.getEnvelope(id);
+      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+
+      const resendableStatuses = ["sent", "viewed", "queried"];
+      if (!resendableStatuses.includes(envelope.status)) {
+        return res.status(400).json({ message: `Cannot resend envelope with status "${envelope.status}".` });
+      }
+
+      const pendingSigners = envelope.signers.filter(s => !s.signedAt);
+      if (pendingSigners.length === 0) {
+        return res.status(400).json({ message: "All signers have already signed." });
+      }
+
+      const firmEmail = await getGmailProfile();
+      const emailCfg = await loadEmailSettings();
+      const emailResults: { email: string; success: boolean; error?: string }[] = [];
+
+      for (const signer of pendingSigners) {
+        const baseUrl = `${req.protocol}://${req.get("host")}`;
+        const signingUrl = `${baseUrl}/sign/${signer.accessToken}`;
+        const htmlBody = wrapEmail(`
+            <h2 style="color: #1e40af; margin-top: 0;">Reminder: Document Awaiting Your Signature</h2>
+            <p>Dear ${escapeHtml(signer.fullName)},</p>
+            <p>This is a reminder that a document is still awaiting your signature.</p>
+            <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0;">
+              <p style="margin: 4px 0;"><strong>Subject:</strong> ${escapeHtml(envelope.subject)}</p>
+              ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
+            </div>
+            <p>Please click the button below to verify your identity and review the document:</p>
+            <a href="${signingUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">Review & Sign Document</a>
+            <p style="margin-top: 24px; color: #64748b; font-size: 12px;">This is a secure link. Do not share it with anyone.</p>
+        `, baseUrl, emailCfg);
+
+        try {
+          await sendEmail(
+            signer.email,
+            `[${emailCfg.firmName}] Reminder: ${emailCfg.subjectPrefix} ${envelope.subject}`,
+            htmlBody,
+            envelope.gmailThreadId || undefined
+          );
+          emailResults.push({ email: signer.email, success: true });
+        } catch (err: any) {
+          console.error(`Failed to resend email to ${signer.email}:`, err);
+          emailResults.push({ email: signer.email, success: false, error: err.message });
+        }
+      }
+
+      const allFailed = emailResults.every(r => !r.success);
+      if (allFailed) {
+        await storage.createAuditEvent({
+          envelopeId: id,
+          eventType: "Envelope resend failed - all emails failed",
+          actorEmail: (req.user as any)?.claims?.email || firmEmail || null,
+          ipAddress: req.ip || null,
+          metadata: JSON.stringify(emailResults),
+        });
+        return res.status(502).json({ message: "Failed to resend emails to all pending signers.", failures: emailResults });
+      }
+
+      await storage.createAuditEvent({
+        envelopeId: id,
+        eventType: "Envelope resent to pending signers",
+        actorEmail: (req.user as any)?.claims?.email || firmEmail || null,
+        ipAddress: req.ip || null,
+        metadata: JSON.stringify({ recipients: emailResults }),
+      });
+
+      const updated = await storage.getEnvelope(id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.post("/api/envelopes/:id/reply", async (req, res) => {
     try {
       const id = parseInt(req.params.id);

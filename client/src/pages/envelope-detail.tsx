@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Send, Copy, ExternalLink, FileText, Eye, Clock,
-  AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2
+  AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2, RefreshCw
 } from "lucide-react";
 import type { Envelope, Signer, CommunicationLog, AuditEvent } from "@shared/schema";
 import { format } from "date-fns";
@@ -66,6 +66,17 @@ export default function EnvelopeDetail() {
       queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
       setReplyMessage("");
       toast({ title: "Reply sent", description: "Your response has been sent via email." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const resendMutation = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/envelopes/${id}/resend`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
+      toast({ title: "Invitations resent", description: "Reminder emails have been sent to all pending signers." });
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -142,6 +153,12 @@ export default function EnvelopeDetail() {
               <Button onClick={() => sendMutation.mutate()} disabled={sendMutation.isPending} data-testid="button-send-envelope">
                 <Send className="h-4 w-4 mr-2" />
                 {sendMutation.isPending ? "Sending..." : "Send for Signing"}
+              </Button>
+            )}
+            {["sent", "viewed", "queried"].includes(envelope.status) && (
+              <Button variant="outline" onClick={() => resendMutation.mutate()} disabled={resendMutation.isPending} data-testid="button-resend-envelope">
+                <RefreshCw className={`h-4 w-4 mr-2 ${resendMutation.isPending ? "animate-spin" : ""}`} />
+                {resendMutation.isPending ? "Resending..." : "Resend Invitations"}
               </Button>
             )}
             <Button
