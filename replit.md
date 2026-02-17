@@ -138,6 +138,8 @@ shared/
 | SESSION_SECRET                   | secret | Auto     | Express session secret (auto-configured)         |
 
 ## Recent Changes
+- 2026-02-17: Added signed PDF delivery: download button on confirmation screen + signed PDF attached to completion email with secure download link
+- 2026-02-17: Added envelope resend feature with "Resend Invitations" button for sent/viewed/queried statuses
 - 2026-02-15: Reduced dashboard auto-refresh from 30s to 10s for faster status updates; made Completed stat card clickable for filtering
 - 2026-02-15: Moved Sign Document button to fixed bottom bar with prominent #F97316 orange styling
 - 2026-02-14: Migrated all file storage (PDFs, backups) from local filesystem to Replit Object Storage for deployment persistence

@@ -941,8 +941,27 @@ export async function registerRoutes(
         const emailCfg = await loadEmailSettings();
 
         const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+        const updatedEnvelope = await storage.getEnvelope(envelope.id);
+        let signedPdfAttachment: { filename: string; content: Buffer; mimeType: string } | null = null;
+        if (updatedEnvelope?.signedPdfUrl) {
+          try {
+            const signedFile = await downloadFile(updatedEnvelope.signedPdfUrl);
+            if (signedFile) {
+              signedPdfAttachment = {
+                filename: `signed_${envelope.subject.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf`,
+                content: Buffer.from(signedFile.data),
+                mimeType: "application/pdf",
+              };
+            }
+          } catch (dlErr) {
+            console.error("Failed to download signed PDF for email attachment:", dlErr);
+          }
+        }
+
         for (const s of allSigners) {
           try {
+            const downloadUrl = `${baseUrl}/api/sign/${s.accessToken}/download`;
             await sendEmail(
               s.email,
               `[${emailCfg.firmName}] Document signed: ${envelope.subject}`,
@@ -951,9 +970,11 @@ export async function registerRoutes(
                 <p>Dear ${escapeHtml(s.fullName)},</p>
                 <p>${emailCfg.completionBody}</p>
                 ${envelope.externalRef ? `<p><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
-                <p style="color: #64748b; font-size: 12px;">A finalized copy will be available shortly.</p>
+                <p>A signed copy of the document is attached to this email. You can also download it using the link below:</p>
+                <p style="margin: 16px 0;"><a href="${downloadUrl}" style="display: inline-block; padding: 10px 24px; background-color: #16a34a; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 600;">Download Signed Document</a></p>
               `, baseUrl, emailCfg),
-              envelope.gmailThreadId || undefined
+              envelope.gmailThreadId || undefined,
+              signedPdfAttachment ? [signedPdfAttachment] : undefined
             );
           } catch (err) {
             console.error(`Failed to send signed notification to ${s.email}:`, err);
@@ -995,6 +1016,37 @@ export async function registerRoutes(
       res.json({ success: true, allSigned });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/sign/:token/download", async (req, res) => {
+    try {
+      const signer = await storage.getSignerByToken(req.params.token);
+      if (!signer) return res.status(404).json({ message: "Invalid link" });
+      if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
+      if (!signer.signedAt) return res.status(400).json({ message: "Document not yet signed" });
+
+      const envelope = await storage.getEnvelope(signer.envelopeId);
+      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+
+      const pdfUrl = envelope.signedPdfUrl || envelope.originalPdfUrl;
+      if (!pdfUrl) return res.status(404).json({ message: "No PDF available" });
+
+      const fileName = pdfUrl.replace(/^.*\//, "");
+      if (!fileName || fileName.includes("..")) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="signed_${envelope.subject.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf"`);
+      const streamed = await streamFileToResponse(`/uploads/${fileName}`, res);
+      if (!streamed && !res.headersSent) {
+        return res.status(404).json({ message: "File not found" });
+      }
+    } catch (err: any) {
+      if (!res.headersSent) {
+        res.status(500).json({ message: err.message });
+      }
     }
   });
 

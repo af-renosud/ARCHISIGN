@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { useToast } from "@/hooks/use-toast";
 import {
   CheckCircle2, PenTool, AlertTriangle, MessageSquare, ChevronLeft, ChevronRight,
-  FileText, Lock, ShieldCheck
+  FileText, Lock, ShieldCheck, Download
 } from "lucide-react";
 import type { Signer, Envelope } from "@shared/schema";
 
@@ -155,8 +155,16 @@ export default function SignerDocument() {
               </div>
               <h2 className="text-xl font-semibold">Document Signed</h2>
               <p className="text-sm text-muted-foreground">
-                You have successfully signed "{docInfo.envelope.subject}". A copy of the signed document will be emailed to you.
+                You have successfully signed "{docInfo.envelope.subject}". A signed copy has been sent to your email.
               </p>
+              <Button
+                onClick={() => window.open(`/api/sign/${token}/download`, "_blank")}
+                className="bg-[#16a34a] border-[#16a34a] text-white"
+                data-testid="button-download-signed-pdf"
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Download Signed Copy
+              </Button>
             </CardContent>
           </Card>
         </div>
