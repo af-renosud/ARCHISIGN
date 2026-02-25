@@ -65,6 +65,7 @@ server/
   gmail.ts       - Gmail API integration (send email, get profile)
   seed.ts        - Email settings seeder (7 default settings, no sample data)
   services/PdfService.ts               - PDF manipulation service (getPageCount, stampSignedPdf)
+  services/SecurityService.ts          - Cryptographic & auth utilities (tokens, OTP, signing links)
   replit_integrations/auth/            - Replit Auth OIDC module (passport, sessions, user storage)
   replit_integrations/object_storage/  - Object Storage client (GCS credentials, ACL)
 

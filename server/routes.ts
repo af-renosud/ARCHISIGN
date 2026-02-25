@@ -6,13 +6,13 @@ import { sendEmail, getGmailProfile } from "./gmail";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { insertRollbackVersionSchema, insertBackupSchema, createEnvelopeRequestSchema, createSignerRequestSchema, createApiEnvelopeRequestSchema } from "@shared/schema";
 import { z } from "zod";
-import { randomBytes, randomInt, createHash } from "crypto";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
 import fsPromises from "fs/promises";
 import { uploadFile, downloadFile, streamFileToResponse, fileExists, deleteFile, uploadBackup, downloadBackup, deleteBackupFile } from "./fileStorage";
 import { getPageCount, stampSignedPdf } from "./services/PdfService";
+import { generateToken, generateOtp, hashOtp, verifyOtp, buildSigningLink, generateAuthenticationId } from "./services/SecurityService";
 
 function escapeHtml(str: string): string {
   return str
@@ -83,18 +83,6 @@ const upload = multer({
     }
   },
 });
-
-function generateToken(): string {
-  return randomBytes(32).toString("hex");
-}
-
-function generateOtp(): string {
-  return randomInt(100000, 1000000).toString();
-}
-
-function hashOtp(otp: string): string {
-  return createHash("sha256").update(otp).digest("hex");
-}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -280,7 +268,7 @@ export async function registerRoutes(
 
       for (const signer of envelope.signers) {
         const baseUrl = `${req.protocol}://${req.get("host")}`;
-        const signingUrl = `${baseUrl}/sign/${signer.accessToken}`;
+        const signingUrl = buildSigningLink(baseUrl, signer.accessToken);
         const htmlBody = wrapEmail(`
             <h2 style="color: #1e40af; margin-top: 0;">Document Ready for Signing</h2>
             <p>Dear ${escapeHtml(signer.fullName)},</p>
@@ -379,7 +367,7 @@ export async function registerRoutes(
 
       for (const signer of pendingSigners) {
         const baseUrl = `${req.protocol}://${req.get("host")}`;
-        const signingUrl = `${baseUrl}/sign/${signer.accessToken}`;
+        const signingUrl = buildSigningLink(baseUrl, signer.accessToken);
         const htmlBody = wrapEmail(`
             <h2 style="color: #1e40af; margin-top: 0;">Reminder: Document Awaiting Your Signature</h2>
             <p>Dear ${escapeHtml(signer.fullName)},</p>
@@ -453,7 +441,7 @@ export async function registerRoutes(
             <p>Dear ${escapeHtml(signer.fullName)},</p>
             <p>Regarding: <strong>${escapeHtml(envelope.subject)}</strong></p>
             <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0; white-space: pre-wrap;">${escapeHtml(message)}</div>
-            <p>You may continue to <a href="${baseUrl}/sign/${signer.accessToken}">review and sign the document</a>.</p>
+            <p>You may continue to <a href="${buildSigningLink(baseUrl, signer.accessToken)}">review and sign the document</a>.</p>
         `, baseUrl, emailCfg);
 
         try {
@@ -578,7 +566,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Code has expired. Please request a new one." });
       }
 
-      if (signer.otpCode !== hashOtp(String(code))) {
+      if (!verifyOtp(String(code), signer.otpCode)) {
         return res.status(400).json({ message: "Invalid code. Please try again." });
       }
 
@@ -637,7 +625,7 @@ export async function registerRoutes(
           email: signer.email,
           signedAt: signer.signedAt,
           authenticationId: signer.signedAt
-            ? createHash("sha256").update(`${signer.id}-${envelope.id}-${signer.signedAt}`).digest("hex").substring(0, 12).toUpperCase()
+            ? generateAuthenticationId(signer.id, envelope.id, signer.signedAt)
             : null,
         },
         totalPages: envelope.totalPages,
