@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { sendEmail, getGmailProfile } from "../gmail";
 import { downloadFile } from "../fileStorage";
 import { storage } from "../storage";
@@ -61,23 +62,58 @@ export function wrapEmail(bodyContent: string, baseUrl: string, emailCfg: EmailS
   `;
 }
 
+const WEBHOOK_MAX_ATTEMPTS = 3;
+const WEBHOOK_BACKOFF_MS = [1000, 3000];
+
+function signPayload(body: string): string | null {
+  const secret = process.env.ARCHISIGN_WEBHOOK_SECRET;
+  if (!secret) return null;
+  return crypto.createHmac("sha256", secret).update(body, "utf8").digest("hex");
+}
+
 export async function dispatchWebhook(webhookUrl: string, payload: any): Promise<boolean> {
-  try {
-    const response = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!response.ok) {
-      console.error(`Webhook returned ${response.status}: ${response.statusText}`);
-      return false;
-    }
-    return true;
-  } catch (err: any) {
-    console.error(`Webhook delivery failed:`, err.message);
-    return false;
+  const body = JSON.stringify(payload);
+  const signature = signPayload(body);
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (signature) {
+    headers["x-archisign-signature"] = signature;
   }
+
+  for (let attempt = 1; attempt <= WEBHOOK_MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(webhookUrl, {
+        method: "POST",
+        headers,
+        body,
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (response.ok) {
+        if (attempt > 1) {
+          console.log(`[Webhook] Delivered on attempt ${attempt} to ${webhookUrl}`);
+        }
+        return true;
+      }
+
+      if (response.status >= 500) {
+        console.error(`[Webhook] Attempt ${attempt}/${WEBHOOK_MAX_ATTEMPTS} returned ${response.status} from ${webhookUrl}`);
+      } else {
+        console.error(`[Webhook] Non-retryable ${response.status} from ${webhookUrl}: ${response.statusText}`);
+        return false;
+      }
+    } catch (err: any) {
+      console.error(`[Webhook] Attempt ${attempt}/${WEBHOOK_MAX_ATTEMPTS} network error for ${webhookUrl}: ${err.message}`);
+    }
+
+    if (attempt < WEBHOOK_MAX_ATTEMPTS) {
+      const delay = WEBHOOK_BACKOFF_MS[attempt - 1] || 3000;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  console.error(`[Webhook] All ${WEBHOOK_MAX_ATTEMPTS} attempts exhausted for ${webhookUrl}`);
+  return false;
 }
 
 interface SignerInfo {

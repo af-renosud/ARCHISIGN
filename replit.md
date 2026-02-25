@@ -136,6 +136,7 @@ shared/
 |----------------------------------|--------|----------|--------------------------------------------------|
 | DATABASE_URL                     | env    | Yes      | PostgreSQL connection string (auto-provided)     |
 | ARCHIDOC_API_KEY                 | secret | Yes      | API key for ArchiDoc service-to-service auth     |
+| ARCHISIGN_WEBHOOK_SECRET         | secret | No       | HMAC SHA-256 secret for webhook payload signing  |
 | ADMIN_EMAILS                     | env    | No       | Comma-separated allowlist of admin emails        |
 | DEFAULT_OBJECT_STORAGE_BUCKET_ID | secret | Auto     | Object Storage bucket ID (auto-configured)       |
 | PRIVATE_OBJECT_DIR               | secret | Auto     | Object Storage private directory path            |
