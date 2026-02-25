@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
-  CheckCircle2, PenTool, AlertTriangle, MessageSquare, ChevronLeft, ChevronRight,
+  CheckCircle2, PenTool, MessageSquare, ChevronLeft, ChevronRight,
   FileText, Lock, ShieldCheck, Download
 } from "lucide-react";
 import type { Signer, Envelope } from "@shared/schema";
@@ -21,13 +21,57 @@ type DocumentInfo = {
   initialed: number[];
 };
 
+function StepperProgress({ currentStep, totalSteps, initialedPages }: {
+  currentStep: number;
+  totalSteps: number;
+  initialedPages: number[];
+}) {
+  return (
+    <div className="flex items-center gap-1 w-full overflow-x-auto py-1" data-testid="stepper-progress">
+      {Array.from({ length: totalSteps }, (_, i) => {
+        const stepNum = i + 1;
+        const isPageStep = stepNum <= totalSteps - 1;
+        const isComplete = isPageStep ? initialedPages.includes(stepNum) : false;
+        const isCurrent = stepNum === currentStep;
+
+        return (
+          <div key={stepNum} className="flex items-center gap-1 flex-shrink-0">
+            {i > 0 && (
+              <div className={`h-0.5 w-4 sm:w-6 ${isComplete || (stepNum <= currentStep && !isPageStep) ? "bg-primary" : "bg-muted-foreground/20"}`} />
+            )}
+            <div
+              className={`flex items-center justify-center rounded-full text-xs font-medium transition-all
+                ${isCurrent
+                  ? "h-7 w-7 ring-2 ring-primary ring-offset-2 ring-offset-background bg-primary text-primary-foreground"
+                  : isComplete
+                    ? "h-6 w-6 bg-primary text-primary-foreground"
+                    : "h-6 w-6 bg-muted text-muted-foreground"
+                }`}
+              data-testid={`stepper-dot-${stepNum}`}
+            >
+              {isComplete ? (
+                <CheckCircle2 className="h-3.5 w-3.5" />
+              ) : isPageStep ? (
+                stepNum
+              ) : (
+                <PenTool className="h-3 w-3" />
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function SignerDocument() {
   const { token } = useParams<{ token: string }>();
   const { toast } = useToast();
-  const [currentPage, setCurrentPage] = useState(1);
+  const [wizardStep, setWizardStep] = useState(1);
   const [queryDialogOpen, setQueryDialogOpen] = useState(false);
   const [queryMessage, setQueryMessage] = useState("");
   const [signDialogOpen, setSignDialogOpen] = useState(false);
+  const hasRestoredStep = useRef(false);
 
   const { data: docInfo, isLoading, refetch } = useQuery<DocumentInfo>({
     queryKey: ["/api/sign", token, "document"],
@@ -39,6 +83,22 @@ export default function SignerDocument() {
     enabled: !!token,
   });
 
+  const totalPages = docInfo?.totalPages ?? 0;
+  const initialedPages = docInfo?.initialed ?? [];
+  const totalSteps = totalPages + 1;
+  const isFinalStep = wizardStep > totalPages;
+  const currentPage = isFinalStep ? totalPages : wizardStep;
+  const isCurrentPageInitialed = initialedPages.includes(currentPage);
+  const allPagesInitialed = totalPages > 0 && initialedPages.length >= totalPages;
+  const canSign = allPagesInitialed;
+
+  const findNextUninitialed = useCallback((afterPage: number, pages: number[]) => {
+    for (let p = afterPage + 1; p <= totalPages; p++) {
+      if (!pages.includes(p)) return p;
+    }
+    return null;
+  }, [totalPages]);
+
   const initialMutation = useMutation({
     mutationFn: async (pageNumber: number) => {
       const res = await fetch(`/api/sign/${token}/initial`, {
@@ -49,8 +109,24 @@ export default function SignerDocument() {
       if (!res.ok) throw new Error("Failed to add initial");
       return res.json();
     },
-    onSuccess: () => {
-      refetch();
+    onSuccess: (_data, pageNumber) => {
+      refetch().then((result) => {
+        if (!result.data) return;
+        const updatedInitialed = result.data.initialed || [];
+        const updatedAllDone = updatedInitialed.length >= totalPages;
+
+        if (updatedAllDone) {
+          setWizardStep(totalPages + 1);
+        } else {
+          const next = findNextUninitialed(pageNumber, updatedInitialed);
+          if (next) {
+            setWizardStep(next);
+          } else {
+            const firstUninitialed = findNextUninitialed(0, updatedInitialed);
+            if (firstUninitialed) setWizardStep(firstUninitialed);
+          }
+        }
+      });
     },
   });
 
@@ -93,6 +169,25 @@ export default function SignerDocument() {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
+
+  useEffect(() => {
+    if (hasRestoredStep.current) return;
+    if (!docInfo || docInfo.signer.signedAt || totalPages === 0) return;
+
+    if (initialedPages.length > 0) {
+      hasRestoredStep.current = true;
+      if (allPagesInitialed) {
+        setWizardStep(totalPages + 1);
+      } else {
+        const firstUninitialed = findNextUninitialed(0, initialedPages);
+        if (firstUninitialed) {
+          setWizardStep(firstUninitialed);
+        }
+      }
+    } else if (docInfo) {
+      hasRestoredStep.current = true;
+    }
+  }, [docInfo, totalPages, initialedPages, allPagesInitialed, findNextUninitialed]);
 
   if (isLoading) {
     return (
@@ -172,11 +267,27 @@ export default function SignerDocument() {
     );
   }
 
-  const totalPages = docInfo.totalPages;
-  const initialedPages = docInfo.initialed || [];
-  const isCurrentPageInitialed = initialedPages.includes(currentPage);
-  const allPagesInitialed = totalPages > 0 && initialedPages.length >= totalPages;
-  const canSign = allPagesInitialed;
+  const stepLabel = isFinalStep
+    ? "Final Step — Sign Document"
+    : `Step ${wizardStep} of ${totalSteps} — Review & Initial Page ${currentPage}`;
+
+  const stepInstruction = isFinalStep
+    ? "All pages have been reviewed and initialed. You may now sign the document or request clarification."
+    : isCurrentPageInitialed
+      ? "You have already initialed this page. Use the navigation to continue, or click the next step."
+      : "Please review the content on this page. When you are ready, click \"Initial This Page\" at the bottom-right of the document to confirm you have read it.";
+
+  const handlePrevStep = () => {
+    setWizardStep((s) => Math.max(1, s - 1));
+  };
+
+  const handleNextStep = () => {
+    if (allPagesInitialed) {
+      setWizardStep(totalPages + 1);
+    } else {
+      setWizardStep((s) => Math.min(totalSteps, s + 1));
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -198,106 +309,131 @@ export default function SignerDocument() {
       </div>
 
       <div className="max-w-5xl mx-auto p-4 space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-            disabled={currentPage <= 1}
-            data-testid="button-prev-page"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <span className="text-sm text-muted-foreground" data-testid="text-page-indicator">
-            Page {currentPage} of {totalPages}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-            disabled={currentPage >= totalPages}
-            data-testid="button-next-page"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
+        <div className="flex justify-center">
+          <StepperProgress
+            currentStep={wizardStep}
+            totalSteps={totalSteps}
+            initialedPages={initialedPages}
+          />
         </div>
 
-        <Card>
-          <CardContent className="p-0">
-            <div className="relative bg-muted rounded-md overflow-hidden" style={{ minHeight: "600px" }}>
-              {docInfo.envelope.originalPdfUrl ? (
-                <iframe
-                  src={`${docInfo.envelope.originalPdfUrl}#page=${currentPage}`}
-                  className="w-full border-0 rounded-md"
-                  style={{ height: "700px" }}
-                  title={`Document page ${currentPage}`}
-                  data-testid="pdf-viewer"
-                />
-              ) : (
-                <div className="flex items-center justify-center h-full min-h-[600px] p-8">
-                  <div className="text-center space-y-4">
-                    <FileText className="h-16 w-16 text-muted-foreground/20 mx-auto" />
-                    <div>
-                      <p className="text-sm font-medium text-muted-foreground">Page {currentPage}</p>
-                      <p className="text-xs text-muted-foreground/60 mt-1">No PDF document attached</p>
+        <div className="rounded-lg border bg-muted/40 px-4 py-3" data-testid="wizard-instruction-box">
+          <p className="text-sm font-semibold text-foreground" data-testid="text-step-label">
+            {stepLabel}
+          </p>
+          <p className="text-sm text-muted-foreground mt-1" data-testid="text-step-instruction">
+            {stepInstruction}
+          </p>
+        </div>
+
+        {!isFinalStep && (
+          <>
+            <div className="flex items-center justify-between gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handlePrevStep}
+                disabled={wizardStep <= 1}
+                data-testid="button-prev-page"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="text-sm text-muted-foreground" data-testid="text-page-indicator">
+                Page {currentPage} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleNextStep}
+                disabled={wizardStep >= totalSteps}
+                data-testid="button-next-page"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <Card>
+              <CardContent className="p-0">
+                <div className="relative bg-muted rounded-md overflow-hidden" style={{ minHeight: "600px" }}>
+                  {docInfo.envelope.originalPdfUrl ? (
+                    <iframe
+                      src={`${docInfo.envelope.originalPdfUrl}#page=${currentPage}`}
+                      className="w-full border-0 rounded-md"
+                      style={{ height: "700px" }}
+                      title={`Document page ${currentPage}`}
+                      data-testid="pdf-viewer"
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full min-h-[600px] p-8">
+                      <div className="text-center space-y-4">
+                        <FileText className="h-16 w-16 text-muted-foreground/20 mx-auto" />
+                        <div>
+                          <p className="text-sm font-medium text-muted-foreground">Page {currentPage}</p>
+                          <p className="text-xs text-muted-foreground/60 mt-1">No PDF document attached</p>
+                        </div>
+                      </div>
                     </div>
+                  )}
+
+                  <div className="absolute bottom-4 right-4">
+                    {isCurrentPageInitialed ? (
+                      <Badge variant="default" className="gap-1" data-testid={`badge-initialed-page-${currentPage}`}>
+                        <CheckCircle2 className="h-3 w-3" />
+                        Initialed
+                      </Badge>
+                    ) : (
+                      <Button
+                        size="sm"
+                        onClick={() => initialMutation.mutate(currentPage)}
+                        disabled={initialMutation.isPending}
+                        data-testid={`button-initial-page-${currentPage}`}
+                      >
+                        <PenTool className="h-3.5 w-3.5 mr-1.5" />
+                        {initialMutation.isPending ? "Adding..." : "Initial This Page"}
+                      </Button>
+                    )}
                   </div>
                 </div>
-              )}
+              </CardContent>
+            </Card>
 
-              <div className="absolute bottom-4 right-4">
-                {isCurrentPageInitialed ? (
-                  <Badge variant="default" className="gap-1" data-testid={`badge-initialed-page-${currentPage}`}>
+            <div className="flex gap-1.5 flex-wrap justify-center">
+              {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+                <Button
+                  key={page}
+                  variant={page === currentPage ? "default" : initialedPages.includes(page) ? "outline" : "secondary"}
+                  size="sm"
+                  className="w-9"
+                  onClick={() => setWizardStep(page)}
+                  data-testid={`button-page-${page}`}
+                >
+                  {initialedPages.includes(page) ? (
                     <CheckCircle2 className="h-3 w-3" />
-                    Initialed
-                  </Badge>
-                ) : (
-                  <Button
-                    size="sm"
-                    onClick={() => initialMutation.mutate(currentPage)}
-                    disabled={initialMutation.isPending}
-                    data-testid={`button-initial-page-${currentPage}`}
-                  >
-                    <PenTool className="h-3.5 w-3.5 mr-1.5" />
-                    {initialMutation.isPending ? "Adding..." : "Initial This Page"}
-                  </Button>
-                )}
-              </div>
+                  ) : (
+                    page
+                  )}
+                </Button>
+              ))}
             </div>
-          </CardContent>
-        </Card>
-
-        <div className="flex gap-1.5 flex-wrap justify-center">
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-            <Button
-              key={page}
-              variant={page === currentPage ? "default" : initialedPages.includes(page) ? "outline" : "secondary"}
-              size="sm"
-              className="w-9"
-              onClick={() => setCurrentPage(page)}
-              data-testid={`button-page-${page}`}
-            >
-              {initialedPages.includes(page) ? (
-                <CheckCircle2 className="h-3 w-3" />
-              ) : (
-                page
-              )}
-            </Button>
-          ))}
-        </div>
-
-        {!allPagesInitialed && (
-          <div className="flex items-center gap-2 p-3 rounded-md bg-muted text-sm text-muted-foreground">
-            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-            <span>Please initial all {totalPages} pages before signing. {totalPages - initialedPages.length} pages remaining.</span>
-          </div>
+          </>
         )}
 
-        <div className="h-24" />
-      </div>
+        {isFinalStep && (
+          <Card>
+            <CardContent className="p-8 text-center space-y-4">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/20 mx-auto">
+                <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
+              </div>
+              <h2 className="text-xl font-semibold" data-testid="text-ready-to-sign">Ready to Sign</h2>
+              <p className="text-sm text-muted-foreground">
+                You have reviewed and initialed all {totalPages} pages of "{docInfo.envelope.subject}".
+                Click "Sign Document" below to apply your legally binding signature.
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
-      <div className="fixed bottom-0 left-0 right-0 z-50 border-t bg-background/95 backdrop-blur-sm">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 p-4 flex-wrap">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 pb-4" data-testid="action-buttons-row">
           <Button
             variant="outline"
             onClick={() => setQueryDialogOpen(true)}
