@@ -13,6 +13,8 @@ import { uploadFile, downloadFile, streamFileToResponse, fileExists, deleteFile,
 import { getPageCount, stampSignedPdf } from "./services/PdfService";
 import { generateToken, generateOtp, hashOtp, verifyOtp, buildSigningLink, generateAuthenticationId } from "./services/SecurityService";
 import { dispatchWebhook, sendSigningInvitation, sendResendInvitation, sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
+import { asyncHandler } from "./middleware/asyncHandler";
+import { validateId } from "./middleware/validators";
 
 const upload = multer({
   dest: "uploads/",
@@ -82,963 +84,832 @@ export async function registerRoutes(
   };
   app.use(isAdminAuthorized);
 
-  app.get("/api/envelopes", async (_req, res) => {
-    try {
-      const envs = await storage.getEnvelopes();
-      res.json(envs);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
+  app.get("/api/envelopes", asyncHandler(async (_req, res) => {
+    const envs = await storage.getEnvelopes();
+    res.json(envs);
+  }));
+
+  app.get("/api/envelopes/deleted", asyncHandler(async (_req, res) => {
+    const deleted = await storage.getDeletedEnvelopes();
+    res.json(deleted);
+  }));
+
+  app.get("/api/envelopes/:id", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    res.json(envelope);
+  }));
+
+  app.post("/api/envelopes", upload.single("pdf"), asyncHandler(async (req, res) => {
+    const envelopeParsed = createEnvelopeRequestSchema.safeParse(req.body);
+    if (!envelopeParsed.success) {
+      return res.status(400).json({ message: "Invalid envelope data", errors: envelopeParsed.error.flatten().fieldErrors });
     }
-  });
+    const { subject, externalRef, webhookUrl, message } = envelopeParsed.data;
 
-  app.get("/api/envelopes/deleted", async (_req, res) => {
+    let rawSigners: unknown[];
     try {
-      const deleted = await storage.getDeletedEnvelopes();
-      res.json(deleted);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      rawSigners = JSON.parse(req.body.signers || "[]");
+    } catch {
+      return res.status(400).json({ message: "Invalid signers JSON" });
     }
-  });
 
-  app.get("/api/envelopes/:id", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
-      const envelope = await storage.getEnvelope(id);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
-      res.json(envelope);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
+    if (!Array.isArray(rawSigners) || rawSigners.length === 0) {
+      return res.status(400).json({ message: "At least one signer is required" });
     }
-  });
 
-  app.post("/api/envelopes", upload.single("pdf"), async (req, res) => {
-    try {
-      const envelopeParsed = createEnvelopeRequestSchema.safeParse(req.body);
-      if (!envelopeParsed.success) {
-        return res.status(400).json({ message: "Invalid envelope data", errors: envelopeParsed.error.flatten().fieldErrors });
-      }
-      const { subject, externalRef, webhookUrl, message } = envelopeParsed.data;
+    const signersParsed = z.array(createSignerRequestSchema).safeParse(rawSigners);
+    if (!signersParsed.success) {
+      return res.status(400).json({ message: "Invalid signer data", errors: signersParsed.error.flatten().fieldErrors });
+    }
+    const signersData = signersParsed.data;
 
-      let rawSigners: unknown[];
+    let pdfUrl: string | undefined;
+    let totalPages = 1;
+    if (req.file) {
       try {
-        rawSigners = JSON.parse(req.body.signers || "[]");
-      } catch {
-        return res.status(400).json({ message: "Invalid signers JSON" });
-      }
+        const ext = path.extname(req.file.originalname);
+        const newName = `${req.file.filename}${ext}`;
+        const pdfBytes = await fsPromises.readFile(req.file.path);
+        pdfUrl = await uploadFile(newName, pdfBytes);
 
-      if (!Array.isArray(rawSigners) || rawSigners.length === 0) {
-        return res.status(400).json({ message: "At least one signer is required" });
-      }
-
-      const signersParsed = z.array(createSignerRequestSchema).safeParse(rawSigners);
-      if (!signersParsed.success) {
-        return res.status(400).json({ message: "Invalid signer data", errors: signersParsed.error.flatten().fieldErrors });
-      }
-      const signersData = signersParsed.data;
-
-      let pdfUrl: string | undefined;
-      let totalPages = 1;
-      if (req.file) {
         try {
-          const ext = path.extname(req.file.originalname);
-          const newName = `${req.file.filename}${ext}`;
-          const pdfBytes = await fsPromises.readFile(req.file.path);
-          pdfUrl = await uploadFile(newName, pdfBytes);
-
-          try {
-            totalPages = await getPageCount(pdfBytes);
-          } catch {
-            totalPages = 1;
-          }
-        } finally {
-          await fsPromises.unlink(req.file.path).catch(() => {});
+          totalPages = await getPageCount(pdfBytes);
+        } catch {
+          totalPages = 1;
         }
+      } finally {
+        await fsPromises.unlink(req.file.path).catch(() => {});
       }
-
-      const envelope = await db.transaction(async (tx) => {
-        const env = await storage.createEnvelope({
-          subject,
-          externalRef: externalRef || null,
-          message: message || null,
-          webhookUrl: webhookUrl || null,
-          originalPdfUrl: pdfUrl || null,
-          signedPdfUrl: null,
-          totalPages,
-          status: "draft",
-          gmailThreadId: null,
-        }, tx);
-
-        for (const s of signersData) {
-          await storage.createSigner({
-            envelopeId: env.id,
-            email: s.email,
-            fullName: s.fullName,
-            accessToken: generateToken(),
-          }, tx);
-        }
-
-        await storage.createAuditEvent({
-          envelopeId: env.id,
-          eventType: "Envelope created",
-          actorEmail: null,
-          ipAddress: req.ip || null,
-          metadata: null,
-        }, tx);
-
-        return env;
-      });
-
-      const full = await storage.getEnvelope(envelope.id);
-      res.json(full);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
     }
-  });
 
-  app.post("/api/envelopes/:id/send", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const envelope = await storage.getEnvelope(id);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
-      if (envelope.status !== "draft") return res.status(400).json({ message: "Envelope already sent" });
+    const envelope = await db.transaction(async (tx) => {
+      const env = await storage.createEnvelope({
+        subject,
+        externalRef: externalRef || null,
+        message: message || null,
+        webhookUrl: webhookUrl || null,
+        originalPdfUrl: pdfUrl || null,
+        signedPdfUrl: null,
+        totalPages,
+        status: "draft",
+        gmailThreadId: null,
+      }, tx);
 
-      const firmEmail = await getGmailProfile();
-      const emailCfg = await loadEmailSettings();
-      const baseUrl = `${req.protocol}://${req.get("host")}`;
+      for (const s of signersData) {
+        await storage.createSigner({
+          envelopeId: env.id,
+          email: s.email,
+          fullName: s.fullName,
+          accessToken: generateToken(),
+        }, tx);
+      }
 
-      const emailResults: { email: string; success: boolean; error?: string }[] = [];
+      await storage.createAuditEvent({
+        envelopeId: env.id,
+        eventType: "Envelope created",
+        actorEmail: null,
+        ipAddress: req.ip || null,
+        metadata: null,
+      }, tx);
 
-      for (const signer of envelope.signers) {
-        try {
-          const result = await sendSigningInvitation(signer, envelope, baseUrl, emailCfg);
-          emailResults.push({ email: signer.email, success: true });
+      return env;
+    });
 
-          if (result.threadId && !envelope.gmailThreadId) {
-            await storage.updateEnvelope(id, { gmailThreadId: result.threadId });
-          }
-        } catch (err: any) {
-          console.error(`Failed to send email to ${signer.email}:`, err);
-          emailResults.push({ email: signer.email, success: false, error: err.message });
+    const full = await storage.getEnvelope(envelope.id);
+    res.json(full);
+  }));
+
+  app.post("/api/envelopes/:id/send", asyncHandler(async (req, res) => {
+    const id = parseInt(req.params.id);
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    if (envelope.status !== "draft") return res.status(400).json({ message: "Envelope already sent" });
+
+    const firmEmail = await getGmailProfile();
+    const emailCfg = await loadEmailSettings();
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+    const emailResults: { email: string; success: boolean; error?: string }[] = [];
+
+    for (const signer of envelope.signers) {
+      try {
+        const result = await sendSigningInvitation(signer, envelope, baseUrl, emailCfg);
+        emailResults.push({ email: signer.email, success: true });
+
+        if (result.threadId && !envelope.gmailThreadId) {
+          await storage.updateEnvelope(id, { gmailThreadId: result.threadId });
         }
+      } catch (err: any) {
+        console.error(`Failed to send email to ${signer.email}:`, err);
+        emailResults.push({ email: signer.email, success: false, error: err.message });
       }
+    }
 
-      const allFailed = emailResults.every(r => !r.success);
-      if (allFailed) {
-        await storage.createAuditEvent({
-          envelopeId: id,
-          eventType: "Envelope send failed - all emails failed",
-          actorEmail: firmEmail || null,
-          ipAddress: req.ip || null,
-          metadata: JSON.stringify(emailResults),
-        });
-        return res.status(502).json({
-          message: "Failed to send emails to all signers. Envelope remains in draft.",
-          failures: emailResults,
-        });
-      }
-
-      await storage.updateEnvelope(id, { status: "sent" });
+    const allFailed = emailResults.every(r => !r.success);
+    if (allFailed) {
       await storage.createAuditEvent({
         envelopeId: id,
-        eventType: "Envelope sent for signing",
+        eventType: "Envelope send failed - all emails failed",
         actorEmail: firmEmail || null,
         ipAddress: req.ip || null,
-        metadata: emailResults.some(r => !r.success) ? JSON.stringify(emailResults) : null,
+        metadata: JSON.stringify(emailResults),
       });
-
-      if (envelope.webhookUrl) {
-        await dispatchWebhook(envelope.webhookUrl, {
-          event: "envelope.sent",
-          envelopeId: id,
-          externalRef: envelope.externalRef,
-          status: "sent",
-        });
-      }
-
-      const updated = await storage.getEnvelope(id);
-      res.json(updated);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      return res.status(502).json({
+        message: "Failed to send emails to all signers. Envelope remains in draft.",
+        failures: emailResults,
+      });
     }
-  });
 
-  app.post("/api/envelopes/:id/resend", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const envelope = await storage.getEnvelope(id);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    await storage.updateEnvelope(id, { status: "sent" });
+    await storage.createAuditEvent({
+      envelopeId: id,
+      eventType: "Envelope sent for signing",
+      actorEmail: firmEmail || null,
+      ipAddress: req.ip || null,
+      metadata: emailResults.some(r => !r.success) ? JSON.stringify(emailResults) : null,
+    });
 
-      const resendableStatuses = ["sent", "viewed", "queried"];
-      if (!resendableStatuses.includes(envelope.status)) {
-        return res.status(400).json({ message: `Cannot resend envelope with status "${envelope.status}".` });
+    if (envelope.webhookUrl) {
+      await dispatchWebhook(envelope.webhookUrl, {
+        event: "envelope.sent",
+        envelopeId: id,
+        externalRef: envelope.externalRef,
+        status: "sent",
+      });
+    }
+
+    const updated = await storage.getEnvelope(id);
+    res.json(updated);
+  }));
+
+  app.post("/api/envelopes/:id/resend", asyncHandler(async (req, res) => {
+    const id = parseInt(req.params.id);
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+
+    const resendableStatuses = ["sent", "viewed", "queried"];
+    if (!resendableStatuses.includes(envelope.status)) {
+      return res.status(400).json({ message: `Cannot resend envelope with status "${envelope.status}".` });
+    }
+
+    const pendingSigners = envelope.signers.filter(s => !s.signedAt);
+    if (pendingSigners.length === 0) {
+      return res.status(400).json({ message: "All signers have already signed." });
+    }
+
+    const firmEmail = await getGmailProfile();
+    const emailCfg = await loadEmailSettings();
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const emailResults: { email: string; success: boolean; error?: string }[] = [];
+
+    for (const signer of pendingSigners) {
+      try {
+        await sendResendInvitation(signer, envelope, baseUrl, emailCfg);
+        emailResults.push({ email: signer.email, success: true });
+      } catch (err: any) {
+        console.error(`Failed to resend email to ${signer.email}:`, err);
+        emailResults.push({ email: signer.email, success: false, error: err.message });
       }
+    }
 
-      const pendingSigners = envelope.signers.filter(s => !s.signedAt);
-      if (pendingSigners.length === 0) {
-        return res.status(400).json({ message: "All signers have already signed." });
-      }
-
-      const firmEmail = await getGmailProfile();
-      const emailCfg = await loadEmailSettings();
-      const baseUrl = `${req.protocol}://${req.get("host")}`;
-      const emailResults: { email: string; success: boolean; error?: string }[] = [];
-
-      for (const signer of pendingSigners) {
-        try {
-          await sendResendInvitation(signer, envelope, baseUrl, emailCfg);
-          emailResults.push({ email: signer.email, success: true });
-        } catch (err: any) {
-          console.error(`Failed to resend email to ${signer.email}:`, err);
-          emailResults.push({ email: signer.email, success: false, error: err.message });
-        }
-      }
-
-      const allFailed = emailResults.every(r => !r.success);
-      if (allFailed) {
-        await storage.createAuditEvent({
-          envelopeId: id,
-          eventType: "Envelope resend failed - all emails failed",
-          actorEmail: (req.user as any)?.claims?.email || firmEmail || null,
-          ipAddress: req.ip || null,
-          metadata: JSON.stringify(emailResults),
-        });
-        return res.status(502).json({ message: "Failed to resend emails to all pending signers.", failures: emailResults });
-      }
-
+    const allFailed = emailResults.every(r => !r.success);
+    if (allFailed) {
       await storage.createAuditEvent({
         envelopeId: id,
-        eventType: "Envelope resent to pending signers",
+        eventType: "Envelope resend failed - all emails failed",
         actorEmail: (req.user as any)?.claims?.email || firmEmail || null,
         ipAddress: req.ip || null,
-        metadata: JSON.stringify({ recipients: emailResults }),
+        metadata: JSON.stringify(emailResults),
       });
-
-      const updated = await storage.getEnvelope(id);
-      res.json(updated);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      return res.status(502).json({ message: "Failed to resend emails to all pending signers.", failures: emailResults });
     }
-  });
 
-  app.post("/api/envelopes/:id/reply", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const { message } = req.body;
-      if (!message) return res.status(400).json({ message: "Message is required" });
+    await storage.createAuditEvent({
+      envelopeId: id,
+      eventType: "Envelope resent to pending signers",
+      actorEmail: (req.user as any)?.claims?.email || firmEmail || null,
+      ipAddress: req.ip || null,
+      metadata: JSON.stringify({ recipients: emailResults }),
+    });
 
-      const envelope = await storage.getEnvelope(id);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    const updated = await storage.getEnvelope(id);
+    res.json(updated);
+  }));
 
-      const firmEmail = await getGmailProfile();
+  app.post("/api/envelopes/:id/reply", asyncHandler(async (req, res) => {
+    const id = parseInt(req.params.id);
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ message: "Message is required" });
 
-      const baseUrl = `${req.protocol}://${req.get("host")}`;
-      const emailCfg = await loadEmailSettings();
-      for (const signer of envelope.signers) {
-        try {
-          await sendReplyNotification(signer, envelope, message, baseUrl, emailCfg);
-        } catch (err) {
-          console.error(`Failed to send reply to ${signer.email}:`, err);
-        }
-      }
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
 
-      await storage.createCommunicationLog({
-        envelopeId: id,
-        senderEmail: firmEmail || "architect@firm.com",
-        messageBody: message,
-        isExternalQuery: false,
-        gmailMessageId: null,
-      });
+    const firmEmail = await getGmailProfile();
 
-      await storage.updateEnvelope(id, { status: "sent" });
-      await storage.createAuditEvent({
-        envelopeId: id,
-        eventType: "Reply sent to signer query",
-        actorEmail: firmEmail || null,
-        ipAddress: req.ip || null,
-        metadata: null,
-      });
-
-      const updated = await storage.getEnvelope(id);
-      res.json(updated);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.get("/api/sign/:token/info", async (req, res) => {
-    try {
-      const signer = await storage.getSignerByToken(req.params.token);
-      if (!signer) return res.status(404).json({ message: "Invalid link" });
-
-      const envelope = await storage.getEnvelope(signer.envelopeId);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
-
-      res.json({
-        signerName: signer.fullName,
-        signerEmail: signer.email,
-        envelopeSubject: envelope.subject,
-        verified: signer.otpVerified,
-        signed: !!signer.signedAt,
-      });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.post("/api/sign/:token/request-otp", async (req, res) => {
-    try {
-      const signer = await storage.getSignerByToken(req.params.token);
-      if (!signer) return res.status(404).json({ message: "Invalid link" });
-
-      const otp = generateOtp();
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
-      await storage.updateSigner(signer.id, {
-        otpCode: hashOtp(otp),
-        otpExpiresAt: expiresAt,
-      });
-
-      const envelope = await storage.getEnvelope(signer.envelopeId);
-      const emailCfg = await loadEmailSettings();
-      const baseUrl = `${req.protocol}://${req.get("host")}`;
-
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const emailCfg = await loadEmailSettings();
+    for (const signer of envelope.signers) {
       try {
-        await sendOtpEmail(signer, envelope?.subject || "", otp, baseUrl, emailCfg);
+        await sendReplyNotification(signer, envelope, message, baseUrl, emailCfg);
       } catch (err) {
-        console.error("Failed to send OTP email:", err);
+        console.error(`Failed to send reply to ${signer.email}:`, err);
       }
-
-      await storage.createAuditEvent({
-        envelopeId: signer.envelopeId,
-        eventType: "OTP requested",
-        actorEmail: signer.email,
-        ipAddress: req.ip || null,
-        metadata: null,
-      });
-
-      res.json({ success: true });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
     }
-  });
 
-  app.post("/api/sign/:token/verify-otp", async (req, res) => {
+    await storage.createCommunicationLog({
+      envelopeId: id,
+      senderEmail: firmEmail || "architect@firm.com",
+      messageBody: message,
+      isExternalQuery: false,
+      gmailMessageId: null,
+    });
+
+    await storage.updateEnvelope(id, { status: "sent" });
+    await storage.createAuditEvent({
+      envelopeId: id,
+      eventType: "Reply sent to signer query",
+      actorEmail: firmEmail || null,
+      ipAddress: req.ip || null,
+      metadata: null,
+    });
+
+    const updated = await storage.getEnvelope(id);
+    res.json(updated);
+  }));
+
+  app.get("/api/sign/:token/info", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
+
+    const envelope = await storage.getEnvelope(signer.envelopeId);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+
+    res.json({
+      signerName: signer.fullName,
+      signerEmail: signer.email,
+      envelopeSubject: envelope.subject,
+      verified: signer.otpVerified,
+      signed: !!signer.signedAt,
+    });
+  }));
+
+  app.post("/api/sign/:token/request-otp", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
+
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await storage.updateSigner(signer.id, {
+      otpCode: hashOtp(otp),
+      otpExpiresAt: expiresAt,
+    });
+
+    const envelope = await storage.getEnvelope(signer.envelopeId);
+    const emailCfg = await loadEmailSettings();
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+
     try {
-      const signer = await storage.getSignerByToken(req.params.token);
-      if (!signer) return res.status(404).json({ message: "Invalid link" });
-
-      const { code } = req.body;
-      if (!code) return res.status(400).json({ message: "Code is required" });
-
-      if (!signer.otpCode || !signer.otpExpiresAt) {
-        return res.status(400).json({ message: "No OTP requested. Please request a new code." });
-      }
-
-      if (new Date() > new Date(signer.otpExpiresAt)) {
-        return res.status(400).json({ message: "Code has expired. Please request a new one." });
-      }
-
-      if (!verifyOtp(String(code), signer.otpCode)) {
-        return res.status(400).json({ message: "Invalid code. Please try again." });
-      }
-
-      await storage.updateSigner(signer.id, {
-        otpVerified: true,
-        otpCode: null,
-        otpExpiresAt: null,
-        lastViewedAt: new Date(),
-      });
-
-      const envelope = await storage.getEnvelope(signer.envelopeId);
-      if (envelope && envelope.status === "sent") {
-        await storage.updateEnvelope(signer.envelopeId, { status: "viewed" });
-      }
-
-      await storage.createAuditEvent({
-        envelopeId: signer.envelopeId,
-        eventType: "Identity verified via OTP",
-        actorEmail: signer.email,
-        ipAddress: req.ip || null,
-        metadata: null,
-      });
-
-      res.json({ success: true });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      await sendOtpEmail(signer, envelope?.subject || "", otp, baseUrl, emailCfg);
+    } catch (err) {
+      console.error("Failed to send OTP email:", err);
     }
-  });
 
-  app.get("/api/sign/:token/document", async (req, res) => {
-    try {
-      const signer = await storage.getSignerByToken(req.params.token);
-      if (!signer) return res.status(404).json({ message: "Invalid link" });
-      if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
+    await storage.createAuditEvent({
+      envelopeId: signer.envelopeId,
+      eventType: "OTP requested",
+      actorEmail: signer.email,
+      ipAddress: req.ip || null,
+      metadata: null,
+    });
 
-      const envelope = await storage.getEnvelope(signer.envelopeId);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    res.json({ success: true });
+  }));
 
-      const existingAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, signer.id);
-      const initialedPages = existingAnnotations
-        .filter(a => a.type === "initial")
-        .map(a => a.pageNumber);
+  app.post("/api/sign/:token/verify-otp", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
 
-      res.json({
-        envelope: {
-          id: envelope.id,
-          subject: envelope.subject,
-          externalRef: envelope.externalRef,
-          originalPdfUrl: envelope.originalPdfUrl,
-          status: envelope.status,
-          totalPages: envelope.totalPages,
-        },
-        signer: {
-          id: signer.id,
-          fullName: signer.fullName,
-          email: signer.email,
-          signedAt: signer.signedAt,
-          authenticationId: signer.signedAt
-            ? generateAuthenticationId(signer.id, envelope.id, signer.signedAt)
-            : null,
-        },
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ message: "Code is required" });
+
+    if (!signer.otpCode || !signer.otpExpiresAt) {
+      return res.status(400).json({ message: "No OTP requested. Please request a new code." });
+    }
+
+    if (new Date() > new Date(signer.otpExpiresAt)) {
+      return res.status(400).json({ message: "Code has expired. Please request a new one." });
+    }
+
+    if (!verifyOtp(String(code), signer.otpCode)) {
+      return res.status(400).json({ message: "Invalid code. Please try again." });
+    }
+
+    await storage.updateSigner(signer.id, {
+      otpVerified: true,
+      otpCode: null,
+      otpExpiresAt: null,
+      lastViewedAt: new Date(),
+    });
+
+    const envelope = await storage.getEnvelope(signer.envelopeId);
+    if (envelope && envelope.status === "sent") {
+      await storage.updateEnvelope(signer.envelopeId, { status: "viewed" });
+    }
+
+    await storage.createAuditEvent({
+      envelopeId: signer.envelopeId,
+      eventType: "Identity verified via OTP",
+      actorEmail: signer.email,
+      ipAddress: req.ip || null,
+      metadata: null,
+    });
+
+    res.json({ success: true });
+  }));
+
+  app.get("/api/sign/:token/document", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
+    if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
+
+    const envelope = await storage.getEnvelope(signer.envelopeId);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+
+    const existingAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, signer.id);
+    const initialedPages = existingAnnotations
+      .filter(a => a.type === "initial")
+      .map(a => a.pageNumber);
+
+    res.json({
+      envelope: {
+        id: envelope.id,
+        subject: envelope.subject,
+        externalRef: envelope.externalRef,
+        originalPdfUrl: envelope.originalPdfUrl,
+        status: envelope.status,
         totalPages: envelope.totalPages,
-        initialed: [...new Set(initialedPages)],
-      });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      },
+      signer: {
+        id: signer.id,
+        fullName: signer.fullName,
+        email: signer.email,
+        signedAt: signer.signedAt,
+        authenticationId: signer.signedAt
+          ? generateAuthenticationId(signer.id, envelope.id, signer.signedAt)
+          : null,
+      },
+      totalPages: envelope.totalPages,
+      initialed: [...new Set(initialedPages)],
+    });
+  }));
+
+  app.post("/api/sign/:token/initial", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
+    if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
+    if (signer.signedAt) return res.status(400).json({ message: "Already signed" });
+
+    const { pageNumber } = req.body;
+    if (!pageNumber || typeof pageNumber !== "number") {
+      return res.status(400).json({ message: "Page number is required" });
     }
-  });
 
-  app.post("/api/sign/:token/initial", async (req, res) => {
-    try {
-      const signer = await storage.getSignerByToken(req.params.token);
-      if (!signer) return res.status(404).json({ message: "Invalid link" });
-      if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
-      if (signer.signedAt) return res.status(400).json({ message: "Already signed" });
+    await storage.createAnnotation({
+      envelopeId: signer.envelopeId,
+      signerId: signer.id,
+      pageNumber,
+      xPos: 0.9,
+      yPos: 0.95,
+      type: "initial",
+      value: signer.fullName.split(" ").map(n => n[0]).join("").toUpperCase(),
+    });
 
-      const { pageNumber } = req.body;
-      if (!pageNumber || typeof pageNumber !== "number") {
-        return res.status(400).json({ message: "Page number is required" });
+    await storage.createAuditEvent({
+      envelopeId: signer.envelopeId,
+      eventType: `Page ${pageNumber} initialed`,
+      actorEmail: signer.email,
+      ipAddress: req.ip || null,
+      metadata: null,
+    });
+
+    const existingAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(signer.envelopeId, signer.id);
+    const initialedPages = [...new Set(existingAnnotations.filter(a => a.type === "initial").map(a => a.pageNumber))];
+
+    res.json({ success: true, initialed: initialedPages });
+  }));
+
+  app.post("/api/sign/:token/query", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
+    if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
+
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ message: "Message is required" });
+
+    const envelope = await storage.getEnvelope(signer.envelopeId);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+
+    await storage.createCommunicationLog({
+      envelopeId: envelope.id,
+      senderEmail: signer.email,
+      messageBody: message,
+      isExternalQuery: true,
+      gmailMessageId: null,
+    });
+
+    await storage.updateEnvelope(envelope.id, { status: "queried" });
+
+    const firmEmail = await getGmailProfile();
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const emailCfg = await loadEmailSettings();
+
+    if (firmEmail) {
+      try {
+        await sendQueryNotification(signer, envelope, message, firmEmail, baseUrl, emailCfg);
+      } catch (err) {
+        console.error("Failed to forward query:", err);
+      }
+    }
+
+    await storage.createAuditEvent({
+      envelopeId: envelope.id,
+      eventType: "Clarification requested",
+      actorEmail: signer.email,
+      ipAddress: req.ip || null,
+      metadata: message,
+    });
+
+    if (envelope.webhookUrl) {
+      await dispatchWebhook(envelope.webhookUrl, {
+        event: "envelope.queried",
+        envelopeId: envelope.id,
+        externalRef: envelope.externalRef,
+        status: "queried",
+        queryFrom: signer.email,
+        queryMessage: message,
+      });
+    }
+
+    res.json({ success: true });
+  }));
+
+  app.post("/api/sign/:token/sign", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
+    if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
+    if (signer.signedAt) return res.status(400).json({ message: "Already signed" });
+
+    const envelope = await storage.getEnvelope(signer.envelopeId);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+
+    const existingAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, signer.id);
+    const initialedPages = new Set(existingAnnotations.filter(a => a.type === "initial").map(a => a.pageNumber));
+
+    if (initialedPages.size < envelope.totalPages) {
+      return res.status(400).json({ message: `Please initial all ${envelope.totalPages} pages before signing.` });
+    }
+
+    const txResult = await db.transaction(async (tx) => {
+      const claimed = await storage.atomicClaimSign(signer.id, tx);
+      if (!claimed) {
+        throw new Error("ALREADY_SIGNED");
       }
 
       await storage.createAnnotation({
-        envelopeId: signer.envelopeId,
+        envelopeId: envelope.id,
         signerId: signer.id,
-        pageNumber,
-        xPos: 0.9,
-        yPos: 0.95,
-        type: "initial",
-        value: signer.fullName.split(" ").map(n => n[0]).join("").toUpperCase(),
-      });
+        pageNumber: envelope.totalPages,
+        xPos: 0.5,
+        yPos: 0.9,
+        type: "signature",
+        value: signer.fullName,
+      }, tx);
+
+      const txSigners = await storage.getSignersByEnvelope(envelope.id, tx);
+      const txAllSigned = txSigners.every(s => s.signedAt !== null);
+
+      if (txAllSigned) {
+        await storage.updateEnvelope(envelope.id, { status: "signed" }, tx);
+      }
 
       await storage.createAuditEvent({
-        envelopeId: signer.envelopeId,
-        eventType: `Page ${pageNumber} initialed`,
+        envelopeId: envelope.id,
+        eventType: "Document signed",
         actorEmail: signer.email,
         ipAddress: req.ip || null,
         metadata: null,
-      });
+      }, tx);
 
-      const existingAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(signer.envelopeId, signer.id);
-      const initialedPages = [...new Set(existingAnnotations.filter(a => a.type === "initial").map(a => a.pageNumber))];
-
-      res.json({ success: true, initialed: initialedPages });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.post("/api/sign/:token/query", async (req, res) => {
-    try {
-      const signer = await storage.getSignerByToken(req.params.token);
-      if (!signer) return res.status(404).json({ message: "Invalid link" });
-      if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
-
-      const { message } = req.body;
-      if (!message) return res.status(400).json({ message: "Message is required" });
-
-      const envelope = await storage.getEnvelope(signer.envelopeId);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
-
-      await storage.createCommunicationLog({
-        envelopeId: envelope.id,
-        senderEmail: signer.email,
-        messageBody: message,
-        isExternalQuery: true,
-        gmailMessageId: null,
-      });
-
-      await storage.updateEnvelope(envelope.id, { status: "queried" });
-
-      const firmEmail = await getGmailProfile();
-      const baseUrl = `${req.protocol}://${req.get("host")}`;
-      const emailCfg = await loadEmailSettings();
-
-      if (firmEmail) {
-        try {
-          await sendQueryNotification(signer, envelope, message, firmEmail, baseUrl, emailCfg);
-        } catch (err) {
-          console.error("Failed to forward query:", err);
-        }
+      return { allSigned: txAllSigned, allSigners: txSigners };
+    }).catch((err) => {
+      if (err.message === "ALREADY_SIGNED") {
+        return null as null;
       }
+      throw err;
+    });
 
-      await storage.createAuditEvent({
-        envelopeId: envelope.id,
-        eventType: "Clarification requested",
-        actorEmail: signer.email,
-        ipAddress: req.ip || null,
-        metadata: message,
-      });
+    if (!txResult) {
+      return res.status(400).json({ message: "Already signed" });
+    }
+
+    const { allSigned, allSigners } = txResult;
+
+    if (allSigned && envelope.originalPdfUrl) {
+      try {
+        const downloaded = await downloadFile(envelope.originalPdfUrl);
+        if (downloaded) {
+          const signersWithAnnotations = await Promise.all(
+            allSigners.map(async (s) => ({
+              signer: { id: s.id, fullName: s.fullName, signedAt: s.signedAt },
+              annotations: await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, s.id),
+            }))
+          );
+
+          const { signedPdfBytes } = await stampSignedPdf(
+            Buffer.from(downloaded.data),
+            signersWithAnnotations,
+            envelope.id,
+          );
+
+          const signedFileName = `signed_${Date.now()}.pdf`;
+          const signedPdfUrl = await uploadFile(signedFileName, Buffer.from(signedPdfBytes));
+          await storage.updateEnvelope(envelope.id, { signedPdfUrl });
+        }
+      } catch (pdfErr) {
+        console.error("PDF signing failed:", pdfErr);
+      }
+    }
+
+    if (allSigned) {
+      const emailCfg = await loadEmailSettings();
+      const baseUrl = `${req.protocol}://${req.get("host")}`;
+
+      const updatedEnvelope = await storage.getEnvelope(envelope.id);
+      await sendCompletionNotifications(
+        { ...envelope, signedPdfUrl: updatedEnvelope?.signedPdfUrl || null },
+        allSigners,
+        baseUrl,
+        emailCfg,
+      );
 
       if (envelope.webhookUrl) {
         await dispatchWebhook(envelope.webhookUrl, {
-          event: "envelope.queried",
+          event: "envelope.signed",
           envelopeId: envelope.id,
           externalRef: envelope.externalRef,
-          status: "queried",
-          queryFrom: signer.email,
-          queryMessage: message,
+          status: "signed",
         });
       }
-
-      res.json({ success: true });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
     }
-  });
 
-  app.post("/api/sign/:token/sign", async (req, res) => {
-    try {
-      const signer = await storage.getSignerByToken(req.params.token);
-      if (!signer) return res.status(404).json({ message: "Invalid link" });
-      if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
-      if (signer.signedAt) return res.status(400).json({ message: "Already signed" });
+    res.json({ success: true, allSigned });
+  }));
 
-      const envelope = await storage.getEnvelope(signer.envelopeId);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+  app.get("/api/sign/:token/download", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
+    if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
+    if (!signer.signedAt) return res.status(400).json({ message: "Document not yet signed" });
 
-      const existingAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, signer.id);
-      const initialedPages = new Set(existingAnnotations.filter(a => a.type === "initial").map(a => a.pageNumber));
+    const envelope = await storage.getEnvelope(signer.envelopeId);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
 
-      if (initialedPages.size < envelope.totalPages) {
-        return res.status(400).json({ message: `Please initial all ${envelope.totalPages} pages before signing.` });
-      }
+    const pdfUrl = envelope.signedPdfUrl || envelope.originalPdfUrl;
+    if (!pdfUrl) return res.status(404).json({ message: "No PDF available" });
 
-      const txResult = await db.transaction(async (tx) => {
-        const claimed = await storage.atomicClaimSign(signer.id, tx);
-        if (!claimed) {
-          throw new Error("ALREADY_SIGNED");
-        }
-
-        await storage.createAnnotation({
-          envelopeId: envelope.id,
-          signerId: signer.id,
-          pageNumber: envelope.totalPages,
-          xPos: 0.5,
-          yPos: 0.9,
-          type: "signature",
-          value: signer.fullName,
-        }, tx);
-
-        const txSigners = await storage.getSignersByEnvelope(envelope.id, tx);
-        const txAllSigned = txSigners.every(s => s.signedAt !== null);
-
-        if (txAllSigned) {
-          await storage.updateEnvelope(envelope.id, { status: "signed" }, tx);
-        }
-
-        await storage.createAuditEvent({
-          envelopeId: envelope.id,
-          eventType: "Document signed",
-          actorEmail: signer.email,
-          ipAddress: req.ip || null,
-          metadata: null,
-        }, tx);
-
-        return { allSigned: txAllSigned, allSigners: txSigners };
-      }).catch((err) => {
-        if (err.message === "ALREADY_SIGNED") {
-          return null as null;
-        }
-        throw err;
-      });
-
-      if (!txResult) {
-        return res.status(400).json({ message: "Already signed" });
-      }
-
-      const { allSigned, allSigners } = txResult;
-
-      if (allSigned && envelope.originalPdfUrl) {
-        try {
-          const downloaded = await downloadFile(envelope.originalPdfUrl);
-          if (downloaded) {
-            const signersWithAnnotations = await Promise.all(
-              allSigners.map(async (s) => ({
-                signer: { id: s.id, fullName: s.fullName, signedAt: s.signedAt },
-                annotations: await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, s.id),
-              }))
-            );
-
-            const { signedPdfBytes } = await stampSignedPdf(
-              Buffer.from(downloaded.data),
-              signersWithAnnotations,
-              envelope.id,
-            );
-
-            const signedFileName = `signed_${Date.now()}.pdf`;
-            const signedPdfUrl = await uploadFile(signedFileName, Buffer.from(signedPdfBytes));
-            await storage.updateEnvelope(envelope.id, { signedPdfUrl });
-          }
-        } catch (pdfErr) {
-          console.error("PDF signing failed:", pdfErr);
-        }
-      }
-
-      if (allSigned) {
-        const emailCfg = await loadEmailSettings();
-        const baseUrl = `${req.protocol}://${req.get("host")}`;
-
-        const updatedEnvelope = await storage.getEnvelope(envelope.id);
-        await sendCompletionNotifications(
-          { ...envelope, signedPdfUrl: updatedEnvelope?.signedPdfUrl || null },
-          allSigners,
-          baseUrl,
-          emailCfg,
-        );
-
-        if (envelope.webhookUrl) {
-          await dispatchWebhook(envelope.webhookUrl, {
-            event: "envelope.signed",
-            envelopeId: envelope.id,
-            externalRef: envelope.externalRef,
-            status: "signed",
-          });
-        }
-      }
-
-      res.json({ success: true, allSigned });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
+    const fileName = pdfUrl.replace(/^.*\//, "");
+    if (!fileName || fileName.includes("..")) {
+      return res.status(403).json({ message: "Access denied" });
     }
-  });
 
-  app.get("/api/sign/:token/download", async (req, res) => {
-    try {
-      const signer = await storage.getSignerByToken(req.params.token);
-      if (!signer) return res.status(404).json({ message: "Invalid link" });
-      if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
-      if (!signer.signedAt) return res.status(400).json({ message: "Document not yet signed" });
-
-      const envelope = await storage.getEnvelope(signer.envelopeId);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
-
-      const pdfUrl = envelope.signedPdfUrl || envelope.originalPdfUrl;
-      if (!pdfUrl) return res.status(404).json({ message: "No PDF available" });
-
-      const fileName = pdfUrl.replace(/^.*\//, "");
-      if (!fileName || fileName.includes("..")) {
-        return res.status(403).json({ message: "Access denied" });
-      }
-
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename="signed_${envelope.subject.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf"`);
-      const streamed = await streamFileToResponse(`/uploads/${fileName}`, res);
-      if (!streamed && !res.headersSent) {
-        return res.status(404).json({ message: "File not found" });
-      }
-    } catch (err: any) {
-      if (!res.headersSent) {
-        res.status(500).json({ message: err.message });
-      }
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="signed_${envelope.subject.replace(/[^a-zA-Z0-9_-]/g, "_")}.pdf"`);
+    const streamed = await streamFileToResponse(`/uploads/${fileName}`, res);
+    if (!streamed && !res.headersSent) {
+      return res.status(404).json({ message: "File not found" });
     }
-  });
+  }));
 
-  app.post("/api/v1/envelopes/create", async (req, res) => {
-    try {
-      const parsed = createApiEnvelopeRequestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: "Invalid request data", errors: parsed.error.flatten().fieldErrors });
-      }
-      const { subject, signerEmail, signerName, signers, externalRef, pdfUrl, pdfBase64, webhookUrl } = parsed.data;
+  app.post("/api/v1/envelopes/create", asyncHandler(async (req, res) => {
+    const parsed = createApiEnvelopeRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid request data", errors: parsed.error.flatten().fieldErrors });
+    }
+    const { subject, signerEmail, signerName, signers, externalRef, pdfUrl, pdfBase64, webhookUrl } = parsed.data;
 
-      let savedPdfUrl: string | null = pdfUrl || null;
-      let totalPages = 1;
+    let savedPdfUrl: string | null = pdfUrl || null;
+    let totalPages = 1;
 
-      if (pdfBase64) {
-        let pdfBuffer: Buffer;
-        try {
-          pdfBuffer = Buffer.from(pdfBase64, "base64");
-          totalPages = await getPageCount(pdfBuffer);
-        } catch (e: any) {
-          return res.status(400).json({ message: "Invalid PDF data: " + e.message });
-        }
-
-        const fileName = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.pdf`;
-        savedPdfUrl = await uploadFile(fileName, pdfBuffer);
-      }
-
-      const signerList = (signers && signers.length > 0)
-        ? signers
-        : [{ email: signerEmail!, fullName: signerName || signerEmail! }];
-
-      let envelope;
+    if (pdfBase64) {
+      let pdfBuffer: Buffer;
       try {
-        envelope = await db.transaction(async (tx) => {
-        const env = await storage.createEnvelope({
-          subject,
-          externalRef: externalRef || null,
-          webhookUrl: webhookUrl || null,
-          originalPdfUrl: savedPdfUrl,
-          signedPdfUrl: null,
-          totalPages,
-          status: "draft",
-          gmailThreadId: null,
-        }, tx);
-
-        for (const s of signerList) {
-          await storage.createSigner({
-            envelopeId: env.id,
-            email: s.email,
-            fullName: s.fullName,
-            accessToken: generateToken(),
-          }, tx);
-        }
-
-        await storage.createAuditEvent({
-          envelopeId: env.id,
-          eventType: "Envelope created via API",
-          actorEmail: null,
-          ipAddress: req.ip || null,
-          metadata: JSON.stringify({ source: "ArchiDoc", signerCount: signerList.length }),
-        }, tx);
-
-        return env;
-        });
-      } catch (txErr) {
-        if (savedPdfUrl && pdfBase64) {
-          await deleteFile(savedPdfUrl);
-        }
-        throw txErr;
+        pdfBuffer = Buffer.from(pdfBase64, "base64");
+        totalPages = await getPageCount(pdfBuffer);
+      } catch (e: any) {
+        return res.status(400).json({ message: "Invalid PDF data: " + e.message });
       }
 
-      const full = await storage.getEnvelope(envelope.id);
-      res.json(full);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      const fileName = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.pdf`;
+      savedPdfUrl = await uploadFile(fileName, pdfBuffer);
     }
-  });
 
-  app.use("/uploads", async (req, res, next) => {
+    const signerList = (signers && signers.length > 0)
+      ? signers
+      : [{ email: signerEmail!, fullName: signerName || signerEmail! }];
+
+    let envelope;
+    try {
+      envelope = await db.transaction(async (tx) => {
+      const env = await storage.createEnvelope({
+        subject,
+        externalRef: externalRef || null,
+        webhookUrl: webhookUrl || null,
+        originalPdfUrl: savedPdfUrl,
+        signedPdfUrl: null,
+        totalPages,
+        status: "draft",
+        gmailThreadId: null,
+      }, tx);
+
+      for (const s of signerList) {
+        await storage.createSigner({
+          envelopeId: env.id,
+          email: s.email,
+          fullName: s.fullName,
+          accessToken: generateToken(),
+        }, tx);
+      }
+
+      await storage.createAuditEvent({
+        envelopeId: env.id,
+        eventType: "Envelope created via API",
+        actorEmail: null,
+        ipAddress: req.ip || null,
+        metadata: JSON.stringify({ source: "ArchiDoc", signerCount: signerList.length }),
+      }, tx);
+
+      return env;
+      });
+    } catch (txErr) {
+      if (savedPdfUrl && pdfBase64) {
+        await deleteFile(savedPdfUrl);
+      }
+      throw txErr;
+    }
+
+    const full = await storage.getEnvelope(envelope.id);
+    res.json(full);
+  }));
+
+  app.use("/uploads", asyncHandler(async (req, res) => {
     const fileName = req.path.replace(/^\/+/, "");
     if (!fileName || fileName.includes("..") || fileName.includes("/")) {
       return res.status(403).json({ message: "Access denied" });
     }
-    try {
-      const streamed = await streamFileToResponse(`/uploads/${fileName}`, res);
-      if (!streamed) {
-        return res.status(404).json({ message: "File not found" });
+    const streamed = await streamFileToResponse(`/uploads/${fileName}`, res);
+    if (!streamed) {
+      return res.status(404).json({ message: "File not found" });
+    }
+  }));
+
+  app.get("/api/settings", asyncHandler(async (_req, res) => {
+    const allSettings = await storage.getAllSettings();
+    res.json(allSettings);
+  }));
+
+  app.get("/api/settings/:key", asyncHandler(async (req, res) => {
+    const setting = await storage.getSetting(req.params.key);
+    if (!setting) return res.status(404).json({ error: "Setting not found" });
+    res.json(setting);
+  }));
+
+  app.post("/api/envelopes/:id/soft-delete", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const { reason } = req.body || {};
+    if (!reason || typeof reason !== "string" || reason.trim().length === 0) {
+      return res.status(400).json({ message: "A reason for deletion is required" });
+    }
+    const envelope = await storage.softDeleteEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    await storage.createAuditEvent({
+      envelopeId: id,
+      eventType: "Envelope deleted",
+      actorEmail: (req.user as any)?.email || null,
+      ipAddress: req.ip || null,
+      metadata: JSON.stringify({ reason: reason.trim() }),
+    });
+    res.json(envelope);
+  }));
+
+  app.post("/api/envelopes/:id/restore", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const envelope = await storage.restoreEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    res.json(envelope);
+  }));
+
+  app.get("/api/rollback-versions", asyncHandler(async (_req, res) => {
+    const versions = await storage.getRollbackVersions();
+    res.json(versions);
+  }));
+
+  app.post("/api/rollback-versions", asyncHandler(async (req, res) => {
+    const parsed = insertRollbackVersionSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+    const version = await storage.createRollbackVersion(parsed.data);
+    res.json(version);
+  }));
+
+  app.patch("/api/rollback-versions/:id", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const allowedFields: Record<string, unknown> = {};
+    if (req.body.versionLabel !== undefined) allowedFields.versionLabel = req.body.versionLabel;
+    if (req.body.note !== undefined) allowedFields.note = req.body.note;
+    if (req.body.status !== undefined) {
+      if (!["active", "superseded"].includes(req.body.status)) {
+        return res.status(400).json({ message: "Invalid status. Must be 'active' or 'superseded'" });
       }
-    } catch {
-      if (!res.headersSent) {
-        res.status(404).json({ message: "File not found" });
+      allowedFields.status = req.body.status;
+    }
+    const updated = await storage.updateRollbackVersion(id, allowedFields);
+    if (!updated) return res.status(404).json({ message: "Version not found" });
+    res.json(updated);
+  }));
+
+  app.delete("/api/rollback-versions/:id", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    await storage.deleteRollbackVersion(id);
+    res.json({ success: true });
+  }));
+
+  app.get("/api/backups", asyncHandler(async (_req, res) => {
+    const allBackups = await storage.getBackups();
+    res.json(allBackups);
+  }));
+
+  app.post("/api/backups", asyncHandler(async (_req, res) => {
+    const allEnvelopes = await storage.getEnvelopes();
+    const allSettings = await storage.getAllSettings();
+    const versions = await storage.getRollbackVersions();
+
+    const backupData = {
+      exportedAt: new Date().toISOString(),
+      envelopes: allEnvelopes,
+      settings: allSettings,
+      rollbackVersions: versions,
+    };
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `archisign-backup-manual-${timestamp}.json`;
+    await uploadBackup(filename, JSON.stringify(backupData, null, 2));
+
+    const backup = await storage.createBackup({ filename });
+    res.json(backup);
+  }));
+
+  app.get("/api/backups/:id/download", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const allBackups = await storage.getBackups();
+    const backup = allBackups.find(b => b.id === id);
+    if (!backup) return res.status(404).json({ message: "Backup not found" });
+    const backupData = await downloadBackup(backup.filename);
+    if (!backupData) {
+      return res.status(404).json({ message: "Backup file not found" });
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename="${backup.filename}"`);
+    res.send(backupData);
+  }));
+
+  app.delete("/api/backups/:id", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const allBackups = await storage.getBackups();
+    const backup = allBackups.find(b => b.id === id);
+    if (backup) {
+      await deleteBackupFile(backup.filename);
+    }
+    await storage.deleteBackup(id);
+    res.json({ success: true });
+  }));
+
+  app.put("/api/settings", asyncHandler(async (req, res) => {
+    const settingsArray = req.body;
+    if (!Array.isArray(settingsArray)) {
+      return res.status(400).json({ error: "Expected array of settings" });
+    }
+    const results = [];
+    for (const s of settingsArray) {
+      if (!s.key || !s.value || !s.label) {
+        continue;
       }
+      const result = await storage.upsertSetting(s);
+      results.push(result);
     }
-  });
-
-  app.get("/api/settings", async (_req, res) => {
-    try {
-      const allSettings = await storage.getAllSettings();
-      res.json(allSettings);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.get("/api/settings/:key", async (req, res) => {
-    try {
-      const setting = await storage.getSetting(req.params.key);
-      if (!setting) return res.status(404).json({ error: "Setting not found" });
-      res.json(setting);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  app.post("/api/envelopes/:id/soft-delete", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
-      const { reason } = req.body || {};
-      if (!reason || typeof reason !== "string" || reason.trim().length === 0) {
-        return res.status(400).json({ message: "A reason for deletion is required" });
-      }
-      const envelope = await storage.softDeleteEnvelope(id);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
-      await storage.createAuditEvent({
-        envelopeId: id,
-        eventType: "Envelope deleted",
-        actorEmail: (req.user as any)?.email || null,
-        ipAddress: req.ip || null,
-        metadata: JSON.stringify({ reason: reason.trim() }),
-      });
-      res.json(envelope);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.post("/api/envelopes/:id/restore", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
-      const envelope = await storage.restoreEnvelope(id);
-      if (!envelope) return res.status(404).json({ message: "Envelope not found" });
-      res.json(envelope);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.get("/api/rollback-versions", async (_req, res) => {
-    try {
-      const versions = await storage.getRollbackVersions();
-      res.json(versions);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.post("/api/rollback-versions", async (req, res) => {
-    try {
-      const parsed = insertRollbackVersionSchema.safeParse(req.body);
-      if (!parsed.success) return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
-      const version = await storage.createRollbackVersion(parsed.data);
-      res.json(version);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.patch("/api/rollback-versions/:id", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
-      const allowedFields: Record<string, unknown> = {};
-      if (req.body.versionLabel !== undefined) allowedFields.versionLabel = req.body.versionLabel;
-      if (req.body.note !== undefined) allowedFields.note = req.body.note;
-      if (req.body.status !== undefined) {
-        if (!["active", "superseded"].includes(req.body.status)) {
-          return res.status(400).json({ message: "Invalid status. Must be 'active' or 'superseded'" });
-        }
-        allowedFields.status = req.body.status;
-      }
-      const updated = await storage.updateRollbackVersion(id, allowedFields);
-      if (!updated) return res.status(404).json({ message: "Version not found" });
-      res.json(updated);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.delete("/api/rollback-versions/:id", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
-      await storage.deleteRollbackVersion(id);
-      res.json({ success: true });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.get("/api/backups", async (_req, res) => {
-    try {
-      const allBackups = await storage.getBackups();
-      res.json(allBackups);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.post("/api/backups", async (_req, res) => {
-    try {
-      const allEnvelopes = await storage.getEnvelopes();
-      const allSettings = await storage.getAllSettings();
-      const versions = await storage.getRollbackVersions();
-
-      const backupData = {
-        exportedAt: new Date().toISOString(),
-        envelopes: allEnvelopes,
-        settings: allSettings,
-        rollbackVersions: versions,
-      };
-
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filename = `archisign-backup-manual-${timestamp}.json`;
-      await uploadBackup(filename, JSON.stringify(backupData, null, 2));
-
-      const backup = await storage.createBackup({ filename });
-      res.json(backup);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.get("/api/backups/:id/download", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
-      const allBackups = await storage.getBackups();
-      const backup = allBackups.find(b => b.id === id);
-      if (!backup) return res.status(404).json({ message: "Backup not found" });
-      const backupData = await downloadBackup(backup.filename);
-      if (!backupData) {
-        return res.status(404).json({ message: "Backup file not found" });
-      }
-      res.setHeader("Content-Type", "application/json");
-      res.setHeader("Content-Disposition", `attachment; filename="${backup.filename}"`);
-      res.send(backupData);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.delete("/api/backups/:id", async (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
-      const allBackups = await storage.getBackups();
-      const backup = allBackups.find(b => b.id === id);
-      if (backup) {
-        await deleteBackupFile(backup.filename);
-      }
-      await storage.deleteBackup(id);
-      res.json({ success: true });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.put("/api/settings", async (req, res) => {
-    try {
-      const settingsArray = req.body;
-      if (!Array.isArray(settingsArray)) {
-        return res.status(400).json({ error: "Expected array of settings" });
-      }
-      const results = [];
-      for (const s of settingsArray) {
-        if (!s.key || !s.value || !s.label) {
-          continue;
-        }
-        const result = await storage.upsertSetting(s);
-        results.push(result);
-      }
-      res.json(results);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
+    res.json(results);
+  }));
 
   return httpServer;
 }

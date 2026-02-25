@@ -64,6 +64,8 @@ server/
   db.ts          - Drizzle/PostgreSQL connection
   gmail.ts       - Gmail API integration (send email, get profile)
   seed.ts        - Email settings seeder (7 default settings, no sample data)
+  middleware/asyncHandler.ts            - Async route handler wrapper (forwards errors to Express error handler)
+  middleware/validators.ts             - Route param validators (validateId middleware)
   services/PdfService.ts               - PDF manipulation service (getPageCount, stampSignedPdf)
   services/SecurityService.ts          - Cryptographic & auth utilities (tokens, OTP, signing links)
   services/NotificationService.ts      - Email templates, webhook dispatch, completion notifications

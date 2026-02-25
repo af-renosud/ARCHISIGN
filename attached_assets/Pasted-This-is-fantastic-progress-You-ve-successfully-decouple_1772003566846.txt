@@ -1,0 +1,47 @@
+This is fantastic progress. You’ve successfully decoupled the three most complex and high-risk domains (PDFs, Cryptography, and External Notifications) from your core HTTP routing.
+
+We are now knocking on the door of the 1,000-line barrier for routes.ts.
+
+According to our initial Cartography Report, the next biggest source of bloat in the backend isn't business logic—it's Boilerplate. The report noted:
+
+try/catch error wrapping duplicated in ~25 locations.
+
+ID parsing and validation (parseInt, checking for NaN, returning 400) duplicated in ~7 locations.
+
+By implementing a centralized asyncHandler wrapper and a few parameter validation middlewares, your route handlers will shrink to exactly what they are supposed to be: pure request/response orchestrators.
+
+Here is the Phase 4 Audit & Execution Prompt. Copy and paste this directly into your ARCHISIGN AI agent.
+
+Phase 4: Shared Middleware Extraction Prompt
+Role: Senior Node.js Architect.
+Task: Execute Phase 4 Refactoring (Shared Middleware) based on the Cartography Report.
+
+Instructions:
+We are going to eliminate the repetitive try/catch error handling and parameter validation boilerplate from server/routes.ts.
+
+Step 1: Create server/middleware/asyncHandler.ts
+
+Implement a standard Express async wrapper function (e.g., const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)). This will catch any unhandled promise rejections and forward them to the global error handler.
+
+Step 2: Create server/middleware/validators.ts
+
+Create reusable middleware functions for parameter validation. For example, validateEnvelopeId and validateSignerId that parse the IDs from req.params, verify they are valid numbers/strings, and return a clean 400 Bad Request if they are missing or malformed.
+
+Step 3: Refactor server/routes.ts
+
+Import asyncHandler and your new validation middlewares.
+
+Wrap your async route handlers in asyncHandler(...).
+
+Remove the ~25 redundant try { ... } catch (error) { console.error(...); res.status(500).json(...) } blocks from inside the route handlers. Let the asyncHandler catch the errors.
+
+Replace the inline const envelopeId = parseInt(req.params.id); if (isNaN(envelopeId)) return res.status(400)... logic (~7 locations) by injecting your new validateEnvelopeId middleware directly into the route definitions (e.g., router.get('/:id', validateEnvelopeId, asyncHandler(async (req, res) => { ... }))).
+
+Strict Constraints:
+
+DO NOT modify any core business logic, database queries, or the newly extracted service calls.
+
+Ensure that the global error handler at the bottom of the file (or in your Express setup) is equipped to format and return the errors caught by asyncHandler.
+
+Output:
+Please provide the code for the two new middleware files, and a brief summary showing a before/after of one of the refactored routes to demonstrate the boilerplate reduction, along with the final line count of routes.ts.
