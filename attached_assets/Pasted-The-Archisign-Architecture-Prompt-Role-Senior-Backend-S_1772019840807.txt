@@ -1,0 +1,39 @@
+The "Archisign Architecture" Prompt
+Role: Senior Backend & Security Architect.
+Task: Create the definitive ARCHISIGN_ARCHITECTURE.md file in the root directory.
+
+Context: We have just completed a massive, 5-phase surgical refactoring of the Archisign e-signature app. We extracted PDF manipulation, cryptographic logic, and webhook/email orchestration out of a massive routing monolith into dedicated services. We must now codify these patterns.
+
+Instructions:
+Please generate an ARCHISIGN_ARCHITECTURE.md file containing the following strictly enforced rules. Format it professionally using Markdown headers and bullet points.
+
+1. PDF Manipulation (PdfService)
+
+Rule: Never import pdf-lib directly into a route handler.
+
+Standard: All PDF loading, page counting, coordinate math, and document stamping must be encapsulated as pure, testable functions inside server/services/PdfService.ts.
+
+2. Cryptography & Security (SecurityService)
+
+Rule: Never generate tokens, hash OTPs, or build signing links inline.
+
+Standard: All cryptographic primitives (including crypto.timingSafeEqual for verification) must live inside server/services/SecurityService.ts.
+
+3. Side-Effects & Notifications (NotificationService)
+
+Rule: Never configure nodemailer or dispatch raw fetch webhooks inside a route handler.
+
+Standard: All emails and webhooks must be dispatched through server/services/NotificationService.ts. Webhooks must utilize the established HMAC SHA-256 signing and exponential backoff retry logic.
+
+4. Route Handlers & Middleware
+
+Rule: Never write repetitive try/catch blocks or inline req.params parsing in route handlers.
+
+Standard: All async routes must be wrapped in asyncHandler. All ID validation must use the shared validators.ts middleware. server/routes.ts must remain under 1,000 lines and act purely as a traffic controller.
+
+5. The AI Directive
+
+Rule: Add a final section titled "AI Agent Instructions." State clearly: "Before proposing any code changes, new routes, or security modifications, you MUST read this file. You are strictly forbidden from placing PDF logic, email dispatching, or cryptographic hashing directly inside Express route handlers."
+
+Output:
+Generate the complete markdown for the ARCHISIGN_ARCHITECTURE.md file.

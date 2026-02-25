@@ -3,6 +3,7 @@
 ## Overview
 Archisign is a specialized internal tool for a French architecture firm (Ma&icirc;tre d'&OElig;uvre) to handle external sign-offs (clients, contractors, partners) for architectural plans and contracts. It integrates with Gmail for email communication and provides a secure, tokenized signing workflow with OTP verification and full audit trails.
 
+See `ARCHISIGN_ARCHITECTURE.md` for enforced engineering standards, service boundaries, and AI agent directives.
 See `ARCHITECTURE.md` for detailed system architecture, database schema, and API documentation.
 
 ## Architecture
