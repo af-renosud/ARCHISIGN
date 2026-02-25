@@ -21,7 +21,7 @@ See `ARCHITECTURE.md` for detailed system architecture, database schema, and API
 3. **External Signer Interface** - Tokenized URL, OTP verification, page-by-page initials, final signature
 4. **Query Loop** - Signers can request clarification, triggering Gmail threads
 5. **ArchiDoc API** - POST /api/v1/envelopes/create for service-to-service integration
-6. **Webhook Callbacks** - Notify ArchiDoc on status changes
+6. **Webhook Callbacks** - HMAC SHA-256 signed webhooks to ArchiDoc with exponential backoff retries
 7. **Settings Page** - Admin-editable email copy text stored in DB
 
 ## Database Schema
@@ -108,29 +108,20 @@ shared/
 
 ## Security & Integrity Hardening
 
-### Phase 4 (Completed)
-- **Object Storage Migration**: All PDFs and backups stored in Replit Object Storage (GCS-backed)
-- **Persistent Files**: Files survive deployments and container restarts
-- **fileStorage.ts**: Abstraction layer for upload/download/stream/delete with automatic bucket/prefix parsing
-- **Multer temp cleanup**: Uploaded files streamed to Object Storage, temp files cleaned up in `finally` blocks
-- **Streaming serving**: `/uploads` route streams from Object Storage — memory-efficient for large PDFs
+### Code Refactoring (5 Phases — All Completed)
+- **Phase 1 — PdfService**: All pdf-lib operations extracted to `services/PdfService.ts`
+- **Phase 2 — SecurityService**: All crypto primitives extracted to `services/SecurityService.ts` (timing-safe OTP verification)
+- **Phase 3 — NotificationService**: All email templates and webhook dispatch extracted to `services/NotificationService.ts`
+- **Phase 4 — Middleware**: `asyncHandler` (eliminates 29 try/catch blocks) and `validateId` (eliminates 7 inline checks) extracted to `middleware/`
+- **Phase 5 — Webhook Security**: HMAC SHA-256 payload signing via `x-archisign-signature` header; exponential backoff retries (3 attempts, 1s/3s delays, 10s timeout)
+- **Result**: `routes.ts` reduced from 1,355 → 915 lines (32.5% reduction); all domain logic in testable services
+- **Standards**: See `ARCHISIGN_ARCHITECTURE.md` for enforced engineering rules and AI agent directives
 
-### Phase 1 (Completed)
-- Path traversal protection on /uploads route (filename validation, no path traversal)
-- OTP generation via crypto.randomInt() + SHA-256 hashing before DB storage
-- All synchronous file I/O converted to async fs/promises
-- Log sanitization: accessToken, otpCode, otpExpiresAt redacted from response logs
-
-### Phase 2 (Completed)
-- **ACID Transactions**: Envelope creation and signing flow wrapped in db.transaction()
-- **N+1 Query Fix**: Batch signer fetch with inArray() instead of per-envelope queries
-- **Double-Sign Prevention**: atomicClaimSign() with conditional UPDATE (WHERE signedAt IS NULL)
-- **Clean Transaction Boundaries**: PDF file generation after transaction commit
-
-### Phase 3 (Completed)
-- **Schema Validation**: All routes use Zod schemas for input validation
-- **Graceful Shutdown**: SIGTERM/SIGINT handling with 10-second forced-exit timeout
-- **Error Handling**: Email failures prevent envelope status change; webhook errors isolated
+### Infrastructure Hardening (4 Phases — All Completed)
+- **Phase 1**: Path traversal protection, OTP hashing (SHA-256), async I/O, log sanitization
+- **Phase 2**: ACID transactions, N+1 query fix, atomic double-sign prevention
+- **Phase 3**: Zod schema validation, graceful shutdown, email-failure-safe send flow
+- **Phase 4**: Object Storage migration (GCS-backed), streaming file serving, Multer temp cleanup
 
 ## Environment Variables & Secrets
 | Variable                         | Type   | Required | Description                                      |
@@ -145,6 +136,8 @@ shared/
 | SESSION_SECRET                   | secret | Auto     | Express session secret (auto-configured)         |
 
 ## Recent Changes
+- 2026-02-25: Completed 5-phase code refactoring: PdfService, SecurityService, NotificationService extraction; asyncHandler/validateId middleware; webhook HMAC SHA-256 signing with exponential backoff retries; routes.ts 1,355→915 lines
+- 2026-02-25: Created ARCHISIGN_ARCHITECTURE.md engineering standards document with AI agent directives
 - 2026-02-17: Added signed PDF delivery: download button on confirmation screen + signed PDF attached to completion email with secure download link
 - 2026-02-17: Added envelope resend feature with "Resend Invitations" button for sent/viewed/queried statuses
 - 2026-02-15: Reduced dashboard auto-refresh from 30s to 10s for faster status updates; made Completed stat card clickable for filtering
