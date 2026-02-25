@@ -64,6 +64,7 @@ server/
   db.ts          - Drizzle/PostgreSQL connection
   gmail.ts       - Gmail API integration (send email, get profile)
   seed.ts        - Email settings seeder (7 default settings, no sample data)
+  services/PdfService.ts               - PDF manipulation service (getPageCount, stampSignedPdf)
   replit_integrations/auth/            - Replit Auth OIDC module (passport, sessions, user storage)
   replit_integrations/object_storage/  - Object Storage client (GCS credentials, ACL)
 
