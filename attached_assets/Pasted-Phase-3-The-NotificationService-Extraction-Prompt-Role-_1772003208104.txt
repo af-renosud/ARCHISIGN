@@ -1,0 +1,36 @@
+Phase 3: The NotificationService Extraction Prompt
+Role: Senior Backend Architect.
+Task: Execute Phase 3 Refactoring (Notification & Webhook Orchestration) based on the Cartography Report.
+
+Instructions:
+We are going to extract all email sending, template generation, and external webhook dispatching out of the monolithic server/routes.ts file and into a dedicated service.
+
+Step 1: Create the Service (server/services/NotificationService.ts)
+Create this new file and implement the following methods:
+
+dispatchWebhook(event: string, payload: any, webhookUrl: string): Promise<boolean> — Extract the existing sendWebhook() logic (the fetch POST with the 10-second timeout).
+
+sendSigningInvitation(signer: any, envelope: any, signingLink: string): Promise<void> — Consolidate the email logic used when an envelope is first sent.
+
+sendCompletionNotifications(envelope: any, signers: any[], signedPdfUrl: string): Promise<void> — Extract the massive block of code from the Finalization route that emails all signers and the firm once the document is fully executed.
+
+Helper: Consolidate the duplicated loadEmailSettings() and Gmail profile fetching so the service handles its own SMTP/API connections natively.
+
+Step 2: Refactor server/routes.ts
+
+Import NotificationService.
+
+Delete the loose sendWebhook() function.
+
+Replace the massive inline email generation blocks in the envelope creation and finalization routes with single calls to NotificationService.sendSigningInvitation() and NotificationService.sendCompletionNotifications().
+
+Replace all inline webhook calls with NotificationService.dispatchWebhook().
+
+Strict Constraints:
+
+DO NOT modify the database transactions. The notifications should still be fired after the DB confirms the state change.
+
+DO NOT add HMAC signing to the webhooks yet. We are just moving the existing logic in this phase; we will upgrade its security in Phase 5.
+
+Output:
+Please provide the complete code for server/services/NotificationService.ts, and a summary of the lines removed/modified in server/routes.ts.
