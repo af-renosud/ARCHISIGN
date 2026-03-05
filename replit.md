@@ -11,7 +11,7 @@ See `ARCHITECTURE.md` for detailed system architecture, database schema, and API
 - **Backend**: Express.js + TypeScript
 - **Database**: PostgreSQL (Replit-hosted, Drizzle ORM)
 - **Email**: Gmail API via Replit Google Mail connector
-- **PDF**: pdf-lib for document processing
+- **PDF**: pdf-lib + @pdf-lib/fontkit for document processing (custom cursive font embedding)
 - **File Storage**: Replit Object Storage (GCS-backed, persistent across deploys)
 - **Auth**: Replit Auth (OIDC) for admin, Token+OTP for external signers
 
@@ -27,7 +27,7 @@ See `ARCHITECTURE.md` for detailed system architecture, database schema, and API
 ## Database Schema
 - `envelopes` - Documents sent for signing (soft-delete via `deleted_at` column)
 - `signers` - External parties who sign (token + OTP auth)
-- `annotations` - Initials/signatures per page (signerId FK, xPos, yPos, type, value)
+- `annotations` - Initials/signatures per page (signerId FK, xPos, yPos, width, height, type, value, placed)
 - `communication_logs` - Query messages between parties
 - `audit_events` - Full audit trail (nullable envelopeId for system events)
 - `settings` - Key-value configuration (email copy text, firm name, etc.)
@@ -42,8 +42,9 @@ client/src/
   pages/dashboard.tsx        - Admin dashboard (30s auto-refresh)
   pages/envelope-new.tsx     - Create envelope form (PDF upload + signers)
   pages/envelope-detail.tsx  - Envelope detail + tabs (overview, signers, communication, audit)
+  pages/envelope-field-editor.tsx - Admin drag-and-drop field placement editor (signature, initial, date fields)
   pages/signer-verify.tsx    - External OTP verification
-  pages/signer-document.tsx  - Document signing interface (page-by-page initials + signature)
+  pages/signer-document.tsx  - Document signing interface (page-by-page initials + script-font signature)
   pages/settings.tsx         - Admin settings (email copy text, firm name)
   pages/rollback-ledger.tsx  - Rollback version ledger
   pages/data-recovery.tsx    - Deleted envelopes + backup management
@@ -136,6 +137,7 @@ shared/
 | SESSION_SECRET                   | secret | Auto     | Express session secret (auto-configured)         |
 
 ## Recent Changes
+- 2026-03-05: Added visual replica signature feature (DocuSign-style): admin drag-and-drop field placement editor for positioning signature/initial/date fields on document pages at envelope setup; script-font (Dancing Script) auto-generated signatures from signer's name; PdfService embeds cursive signature + DIGITAL ENVELOPE metadata on stamped PDFs; signer-document page shows admin-placed field positions with signature preview
 - 2026-02-25: Completed 5-phase code refactoring: PdfService, SecurityService, NotificationService extraction; asyncHandler/validateId middleware; webhook HMAC SHA-256 signing with exponential backoff retries; routes.ts 1,355→915 lines
 - 2026-02-25: Created ARCHISIGN_ARCHITECTURE.md engineering standards document with AI agent directives
 - 2026-02-17: Added signed PDF delivery: download button on confirmation screen + signed PDF attached to completion email with secure download link

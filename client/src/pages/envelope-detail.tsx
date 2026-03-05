@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Send, Copy, ExternalLink, FileText, Eye, Clock,
-  AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2, RefreshCw
+  AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2, RefreshCw, PenTool
 } from "lucide-react";
 import type { Envelope, Signer, CommunicationLog, AuditEvent } from "@shared/schema";
 import { format } from "date-fns";
@@ -150,10 +150,16 @@ export default function EnvelopeDetail() {
           </div>
           <div className="flex items-center gap-2">
             {envelope.status === "draft" && (
-              <Button onClick={() => sendMutation.mutate()} disabled={sendMutation.isPending} data-testid="button-send-envelope">
-                <Send className="h-4 w-4 mr-2" />
-                {sendMutation.isPending ? "Sending..." : "Send for Signing"}
-              </Button>
+              <>
+                <Button variant="outline" onClick={() => navigate(`/envelopes/${id}/fields`)} data-testid="button-place-fields">
+                  <PenTool className="h-4 w-4 mr-2" />
+                  Place Fields
+                </Button>
+                <Button onClick={() => sendMutation.mutate()} disabled={sendMutation.isPending} data-testid="button-send-envelope">
+                  <Send className="h-4 w-4 mr-2" />
+                  {sendMutation.isPending ? "Sending..." : "Send for Signing"}
+                </Button>
+              </>
             )}
             {["sent", "viewed", "queried"].includes(envelope.status) && (
               <Button variant="outline" onClick={() => resendMutation.mutate()} disabled={resendMutation.isPending} data-testid="button-resend-envelope">

@@ -12,6 +12,7 @@ import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
 import EnvelopeNew from "@/pages/envelope-new";
 import EnvelopeDetail from "@/pages/envelope-detail";
+import EnvelopeFieldEditor from "@/pages/envelope-field-editor";
 import SignerVerify from "@/pages/signer-verify";
 import SignerDocument from "@/pages/signer-document";
 import SettingsPage from "@/pages/settings";
@@ -51,6 +52,7 @@ function AdminRouter() {
       <Route path="/" component={Dashboard} />
       <Route path="/envelopes/new" component={EnvelopeNew} />
       <Route path="/envelopes/:id" component={EnvelopeDetail} />
+      <Route path="/envelopes/:id/fields" component={EnvelopeFieldEditor} />
       <Route path="/settings" component={SettingsPage} />
       <Route path="/pre-deployment" component={PreDeployment} />
       <Route path="/rollback-ledger" component={RollbackLedger} />

@@ -29,6 +29,9 @@ export interface IStorage {
 
   createAnnotation(data: InsertAnnotation, executor?: DbExecutor): Promise<Annotation>;
   getAnnotationsByEnvelopeAndSigner(envelopeId: number, signerId: number, executor?: DbExecutor): Promise<Annotation[]>;
+  getAnnotationsByEnvelope(envelopeId: number): Promise<Annotation[]>;
+  updateAnnotation(id: number, data: Partial<Annotation>): Promise<Annotation | undefined>;
+  deleteAnnotation(id: number): Promise<void>;
 
   createCommunicationLog(data: InsertCommunicationLog): Promise<CommunicationLog>;
   getCommunicationLogs(envelopeId: number): Promise<CommunicationLog[]>;
@@ -131,6 +134,19 @@ export class DatabaseStorage implements IStorage {
     return executor.select().from(annotations).where(
       and(eq(annotations.envelopeId, envelopeId), eq(annotations.signerId, signerId))
     );
+  }
+
+  async getAnnotationsByEnvelope(envelopeId: number): Promise<Annotation[]> {
+    return db.select().from(annotations).where(eq(annotations.envelopeId, envelopeId));
+  }
+
+  async updateAnnotation(id: number, data: Partial<Annotation>): Promise<Annotation | undefined> {
+    const [updated] = await db.update(annotations).set(data).where(eq(annotations.id, id)).returning();
+    return updated;
+  }
+
+  async deleteAnnotation(id: number): Promise<void> {
+    await db.delete(annotations).where(eq(annotations.id, id));
   }
 
   async createCommunicationLog(data: InsertCommunicationLog): Promise<CommunicationLog> {

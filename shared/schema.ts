@@ -49,8 +49,11 @@ export const annotations = pgTable("annotations", {
   pageNumber: integer("page_number").notNull(),
   xPos: real("x_pos").notNull(),
   yPos: real("y_pos").notNull(),
+  width: real("width"),
+  height: real("height"),
   type: annotationTypeEnum("type").notNull(),
   value: text("value"),
+  placed: boolean("placed").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

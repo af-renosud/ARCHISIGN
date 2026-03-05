@@ -181,6 +181,73 @@ export async function registerRoutes(
     res.json(full);
   }));
 
+  app.get("/api/envelopes/:id/annotations", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    const allAnnotations = await storage.getAnnotationsByEnvelope(id);
+    res.json(allAnnotations);
+  }));
+
+  const annotationCreateSchema = z.object({
+    signerId: z.number().int().positive(),
+    pageNumber: z.number().int().positive(),
+    xPos: z.number().min(0).max(1),
+    yPos: z.number().min(0).max(1),
+    width: z.number().min(0.01).max(1).optional(),
+    height: z.number().min(0.01).max(1).optional(),
+    type: z.enum(["initial", "signature", "date"]),
+  });
+  const annotationUpdateSchema = z.object({
+    xPos: z.number().min(0).max(1).optional(),
+    yPos: z.number().min(0).max(1).optional(),
+    width: z.number().min(0.01).max(1).optional().nullable(),
+    height: z.number().min(0.01).max(1).optional().nullable(),
+    pageNumber: z.number().int().positive().optional(),
+  });
+
+  app.post("/api/envelopes/:id/annotations", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    if (envelope.status !== "draft") return res.status(400).json({ message: "Can only place fields on draft envelopes" });
+    const parsed = annotationCreateSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid annotation data", errors: parsed.error.flatten().fieldErrors });
+    const { signerId, pageNumber, xPos, yPos, width, height, type } = parsed.data;
+    if (!envelope.signers.some(s => s.id === signerId)) return res.status(400).json({ message: "Signer does not belong to this envelope" });
+    if (pageNumber > envelope.totalPages) return res.status(400).json({ message: "Page number exceeds document pages" });
+    const annotation = await storage.createAnnotation({
+      envelopeId: id, signerId, pageNumber, xPos, yPos,
+      width: width ?? null, height: height ?? null, type, value: null, placed: true,
+    });
+    res.json(annotation);
+  }));
+
+  app.put("/api/envelopes/:id/annotations/:annotationId", validateId, asyncHandler(async (req, res) => {
+    const envelopeId = (req as any).validatedId;
+    const annotationId = parseInt(req.params.annotationId);
+    if (isNaN(annotationId)) return res.status(400).json({ message: "Invalid annotation ID" });
+    const envelope = await storage.getEnvelope(envelopeId);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    if (envelope.status !== "draft") return res.status(400).json({ message: "Can only edit fields on draft envelopes" });
+    const parsed = annotationUpdateSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid update data", errors: parsed.error.flatten().fieldErrors });
+    const updated = await storage.updateAnnotation(annotationId, parsed.data);
+    if (!updated) return res.status(404).json({ message: "Annotation not found" });
+    res.json(updated);
+  }));
+
+  app.delete("/api/envelopes/:id/annotations/:annotationId", validateId, asyncHandler(async (req, res) => {
+    const envelopeId = (req as any).validatedId;
+    const annotationId = parseInt(req.params.annotationId);
+    if (isNaN(annotationId)) return res.status(400).json({ message: "Invalid annotation ID" });
+    const envelope = await storage.getEnvelope(envelopeId);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    if (envelope.status !== "draft") return res.status(400).json({ message: "Can only remove fields on draft envelopes" });
+    await storage.deleteAnnotation(annotationId);
+    res.json({ success: true });
+  }));
+
   app.post("/api/envelopes/:id/send", asyncHandler(async (req, res) => {
     const id = parseInt(req.params.id);
     const envelope = await storage.getEnvelope(id);
@@ -440,8 +507,20 @@ export async function registerRoutes(
 
     const existingAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, signer.id);
     const initialedPages = existingAnnotations
-      .filter(a => a.type === "initial")
+      .filter(a => a.type === "initial" && a.value !== null)
       .map(a => a.pageNumber);
+
+    const placedFields = existingAnnotations
+      .filter(a => a.placed)
+      .map(a => ({
+        id: a.id,
+        type: a.type,
+        pageNumber: a.pageNumber,
+        xPos: a.xPos,
+        yPos: a.yPos,
+        width: a.width,
+        height: a.height,
+      }));
 
     res.json({
       envelope: {
@@ -463,6 +542,7 @@ export async function registerRoutes(
       },
       totalPages: envelope.totalPages,
       initialed: [...new Set(initialedPages)],
+      placedFields,
     });
   }));
 
@@ -477,15 +557,26 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Page number is required" });
     }
 
-    await storage.createAnnotation({
-      envelopeId: signer.envelopeId,
-      signerId: signer.id,
-      pageNumber,
-      xPos: 0.9,
-      yPos: 0.95,
-      type: "initial",
-      value: signer.fullName.split(" ").map(n => n[0]).join("").toUpperCase(),
-    });
+    const allAnnotations = await storage.getAnnotationsByEnvelope(signer.envelopeId);
+    const placedInitial = allAnnotations.find(
+      a => a.placed && a.type === "initial" && a.pageNumber === pageNumber && a.signerId === signer.id
+    );
+
+    const initials = signer.fullName.split(" ").map(n => n[0]).join("").toUpperCase();
+
+    if (placedInitial) {
+      await storage.updateAnnotation(placedInitial.id, { value: initials });
+    } else {
+      await storage.createAnnotation({
+        envelopeId: signer.envelopeId,
+        signerId: signer.id,
+        pageNumber,
+        xPos: 0.9,
+        yPos: 0.95,
+        type: "initial",
+        value: initials,
+      });
+    }
 
     await storage.createAuditEvent({
       envelopeId: signer.envelopeId,
@@ -572,21 +663,43 @@ export async function registerRoutes(
       return res.status(400).json({ message: `Please initial all ${envelope.totalPages} pages before signing.` });
     }
 
+    const allEnvelopeAnnotations = await storage.getAnnotationsByEnvelope(envelope.id);
+    const placedSignature = allEnvelopeAnnotations.find(
+      a => a.placed && a.type === "signature" && a.signerId === signer.id
+    );
+    const placedDateFields = allEnvelopeAnnotations.filter(
+      a => a.placed && a.type === "date" && a.signerId === signer.id
+    );
+
     const txResult = await db.transaction(async (tx) => {
       const claimed = await storage.atomicClaimSign(signer.id, tx);
       if (!claimed) {
         throw new Error("ALREADY_SIGNED");
       }
 
-      await storage.createAnnotation({
-        envelopeId: envelope.id,
-        signerId: signer.id,
-        pageNumber: envelope.totalPages,
-        xPos: 0.5,
-        yPos: 0.9,
-        type: "signature",
-        value: signer.fullName,
-      }, tx);
+      const signDateStr = new Date().toLocaleDateString("en-GB", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      });
+
+      for (const dateField of placedDateFields) {
+        await storage.updateAnnotation(dateField.id, { value: signDateStr });
+      }
+
+      if (placedSignature) {
+        await storage.updateAnnotation(placedSignature.id, { value: signer.fullName });
+      } else {
+        await storage.createAnnotation({
+          envelopeId: envelope.id,
+          signerId: signer.id,
+          pageNumber: envelope.totalPages,
+          xPos: 0.5,
+          yPos: 0.9,
+          type: "signature",
+          value: signer.fullName,
+        }, tx);
+      }
 
       const txSigners = await storage.getSignersByEnvelope(envelope.id, tx);
       const txAllSigned = txSigners.every(s => s.signedAt !== null);
@@ -776,14 +889,21 @@ export async function registerRoutes(
   }));
 
   app.get("/api/settings", asyncHandler(async (_req, res) => {
-    const allSettings = await storage.getAllSettings();
-    res.json(allSettings);
+    res.json(await storage.getAllSettings());
   }));
-
   app.get("/api/settings/:key", asyncHandler(async (req, res) => {
     const setting = await storage.getSetting(req.params.key);
     if (!setting) return res.status(404).json({ error: "Setting not found" });
     res.json(setting);
+  }));
+  app.put("/api/settings", asyncHandler(async (req, res) => {
+    if (!Array.isArray(req.body)) return res.status(400).json({ error: "Expected array of settings" });
+    const results = [];
+    for (const s of req.body) {
+      if (!s.key || !s.value || !s.label) continue;
+      results.push(await storage.upsertSetting(s));
+    }
+    res.json(results);
   }));
 
   app.post("/api/envelopes/:id/soft-delete", validateId, asyncHandler(async (req, res) => {
@@ -795,15 +915,13 @@ export async function registerRoutes(
     const envelope = await storage.softDeleteEnvelope(id);
     if (!envelope) return res.status(404).json({ message: "Envelope not found" });
     await storage.createAuditEvent({
-      envelopeId: id,
-      eventType: "Envelope deleted",
+      envelopeId: id, eventType: "Envelope deleted",
       actorEmail: (req.user as any)?.email || null,
       ipAddress: req.ip || null,
       metadata: JSON.stringify({ reason: reason.trim() }),
     });
     res.json(envelope);
   }));
-
   app.post("/api/envelopes/:id/restore", validateId, asyncHandler(async (req, res) => {
     const id = (req as any).validatedId;
     const envelope = await storage.restoreEnvelope(id);
@@ -812,103 +930,62 @@ export async function registerRoutes(
   }));
 
   app.get("/api/rollback-versions", asyncHandler(async (_req, res) => {
-    const versions = await storage.getRollbackVersions();
-    res.json(versions);
+    res.json(await storage.getRollbackVersions());
   }));
-
   app.post("/api/rollback-versions", asyncHandler(async (req, res) => {
     const parsed = insertRollbackVersionSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
-    const version = await storage.createRollbackVersion(parsed.data);
-    res.json(version);
+    res.json(await storage.createRollbackVersion(parsed.data));
   }));
-
   app.patch("/api/rollback-versions/:id", validateId, asyncHandler(async (req, res) => {
     const id = (req as any).validatedId;
     const allowedFields: Record<string, unknown> = {};
     if (req.body.versionLabel !== undefined) allowedFields.versionLabel = req.body.versionLabel;
     if (req.body.note !== undefined) allowedFields.note = req.body.note;
     if (req.body.status !== undefined) {
-      if (!["active", "superseded"].includes(req.body.status)) {
-        return res.status(400).json({ message: "Invalid status. Must be 'active' or 'superseded'" });
-      }
+      if (!["active", "superseded"].includes(req.body.status)) return res.status(400).json({ message: "Invalid status" });
       allowedFields.status = req.body.status;
     }
     const updated = await storage.updateRollbackVersion(id, allowedFields);
     if (!updated) return res.status(404).json({ message: "Version not found" });
     res.json(updated);
   }));
-
   app.delete("/api/rollback-versions/:id", validateId, asyncHandler(async (req, res) => {
-    const id = (req as any).validatedId;
-    await storage.deleteRollbackVersion(id);
+    await storage.deleteRollbackVersion((req as any).validatedId);
     res.json({ success: true });
   }));
 
   app.get("/api/backups", asyncHandler(async (_req, res) => {
-    const allBackups = await storage.getBackups();
-    res.json(allBackups);
+    res.json(await storage.getBackups());
   }));
-
   app.post("/api/backups", asyncHandler(async (_req, res) => {
-    const allEnvelopes = await storage.getEnvelopes();
-    const allSettings = await storage.getAllSettings();
-    const versions = await storage.getRollbackVersions();
-
     const backupData = {
       exportedAt: new Date().toISOString(),
-      envelopes: allEnvelopes,
-      settings: allSettings,
-      rollbackVersions: versions,
+      envelopes: await storage.getEnvelopes(),
+      settings: await storage.getAllSettings(),
+      rollbackVersions: await storage.getRollbackVersions(),
     };
-
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const filename = `archisign-backup-manual-${timestamp}.json`;
     await uploadBackup(filename, JSON.stringify(backupData, null, 2));
-
-    const backup = await storage.createBackup({ filename });
-    res.json(backup);
+    res.json(await storage.createBackup({ filename }));
   }));
-
   app.get("/api/backups/:id/download", validateId, asyncHandler(async (req, res) => {
     const id = (req as any).validatedId;
-    const allBackups = await storage.getBackups();
-    const backup = allBackups.find(b => b.id === id);
+    const backup = (await storage.getBackups()).find(b => b.id === id);
     if (!backup) return res.status(404).json({ message: "Backup not found" });
     const backupData = await downloadBackup(backup.filename);
-    if (!backupData) {
-      return res.status(404).json({ message: "Backup file not found" });
-    }
+    if (!backupData) return res.status(404).json({ message: "Backup file not found" });
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", `attachment; filename="${backup.filename}"`);
     res.send(backupData);
   }));
-
   app.delete("/api/backups/:id", validateId, asyncHandler(async (req, res) => {
     const id = (req as any).validatedId;
-    const allBackups = await storage.getBackups();
-    const backup = allBackups.find(b => b.id === id);
-    if (backup) {
-      await deleteBackupFile(backup.filename);
-    }
+    const backup = (await storage.getBackups()).find(b => b.id === id);
+    if (backup) await deleteBackupFile(backup.filename);
     await storage.deleteBackup(id);
     res.json({ success: true });
-  }));
-
-  app.put("/api/settings", asyncHandler(async (req, res) => {
-    const settingsArray = req.body;
-    if (!Array.isArray(settingsArray)) {
-      return res.status(400).json({ error: "Expected array of settings" });
-    }
-    const results = [];
-    for (const s of settingsArray) {
-      if (!s.key || !s.value || !s.label) {
-        continue;
-      }
-      const result = await storage.upsertSetting(s);
-      results.push(result);
-    }
-    res.json(results);
   }));
 
   return httpServer;

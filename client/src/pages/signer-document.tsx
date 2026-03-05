@@ -14,11 +14,22 @@ import {
 } from "lucide-react";
 import type { Signer, Envelope } from "@shared/schema";
 
+interface PlacedField {
+  id: number;
+  type: "initial" | "signature" | "date";
+  pageNumber: number;
+  xPos: number;
+  yPos: number;
+  width: number | null;
+  height: number | null;
+}
+
 type DocumentInfo = {
   envelope: Envelope;
   signer: Signer & { authenticationId?: string | null };
   totalPages: number;
   initialed: number[];
+  placedFields?: PlacedField[];
 };
 
 function StepperProgress({ currentStep, totalSteps, initialedPages }: {
@@ -85,12 +96,20 @@ export default function SignerDocument() {
 
   const totalPages = docInfo?.totalPages ?? 0;
   const initialedPages = docInfo?.initialed ?? [];
+  const placedFields = docInfo?.placedFields ?? [];
   const totalSteps = totalPages + 1;
   const isFinalStep = wizardStep > totalPages;
   const currentPage = isFinalStep ? totalPages : wizardStep;
   const isCurrentPageInitialed = initialedPages.includes(currentPage);
   const allPagesInitialed = totalPages > 0 && initialedPages.length >= totalPages;
   const canSign = allPagesInitialed;
+
+  const currentPageInitialField = placedFields.find(
+    f => f.type === "initial" && f.pageNumber === currentPage
+  );
+  const currentPageSignatureField = placedFields.find(
+    f => f.type === "signature" && f.pageNumber === currentPage
+  );
 
   const findNextUninitialed = useCallback((afterPage: number, pages: number[]) => {
     for (let p = afterPage + 1; p <= totalPages; p++) {
@@ -228,19 +247,28 @@ export default function SignerDocument() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background p-4">
         <div className="w-full max-w-lg space-y-6">
-          <div className="border-[3px] border-red-600 p-6 space-y-1" data-testid="digital-envelope-box">
-            <p className="text-base font-bold text-blue-700 dark:text-blue-400 tracking-wide" data-testid="text-digital-envelope-title">
-              DIGITAL ENVELOPE
+          <div className="border-[3px] border-red-600 p-6 space-y-3" data-testid="digital-envelope-box">
+            <p
+              className="text-2xl italic text-blue-800 dark:text-blue-300"
+              style={{ fontFamily: "'Dancing Script', cursive" }}
+              data-testid="text-script-signature"
+            >
+              {docInfo.signer.fullName}
             </p>
-            <p className="text-sm font-semibold text-blue-700 dark:text-blue-400" data-testid="text-signed-by">
-              SIGNED BY: {docInfo.signer.fullName.toUpperCase()}
-            </p>
-            <p className="text-sm font-semibold text-blue-700 dark:text-blue-400" data-testid="text-date-signed">
-              DATE: {formattedDate.toUpperCase()}
-            </p>
-            <p className="text-sm font-semibold text-blue-700 dark:text-blue-400" data-testid="text-auth-id">
-              AUTHENTICATION: {authId}
-            </p>
+            <div className="border-t border-gray-300 pt-2 space-y-0.5">
+              <p className="text-xs font-bold text-blue-700 dark:text-blue-400 tracking-wide" data-testid="text-digital-envelope-title">
+                DIGITAL ENVELOPE
+              </p>
+              <p className="text-xs font-semibold text-blue-700 dark:text-blue-400" data-testid="text-signed-by">
+                SIGNED BY: {docInfo.signer.fullName.toUpperCase()}
+              </p>
+              <p className="text-xs font-semibold text-blue-700 dark:text-blue-400" data-testid="text-date-signed">
+                DATE: {formattedDate.toUpperCase()}
+              </p>
+              <p className="text-xs font-semibold text-blue-700 dark:text-blue-400" data-testid="text-auth-id">
+                AUTHENTICATION: {authId}
+              </p>
+            </div>
           </div>
 
           <Card>
@@ -275,7 +303,7 @@ export default function SignerDocument() {
     ? "All pages have been reviewed and initialed. You may now sign the document or request clarification."
     : isCurrentPageInitialed
       ? "You have already initialed this page. Use the navigation to continue, or click the next step."
-      : "Please review the content on this page. When you are ready, click \"Initial This Page\" at the bottom-right of the document to confirm you have read it.";
+      : "Please review the content on this page. When you are ready, click the initial field on the document to confirm you have read it.";
 
   const handlePrevStep = () => {
     setWizardStep((s) => Math.max(1, s - 1));
@@ -289,8 +317,15 @@ export default function SignerDocument() {
     }
   };
 
+  const signerInitials = docInfo.signer.fullName.split(" ").map(n => n[0]).join("").toUpperCase();
+
   return (
     <div className="min-h-screen bg-background">
+      <link
+        href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@400;700&display=swap"
+        rel="stylesheet"
+      />
+
       <div className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur-sm">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 p-3 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
@@ -375,24 +410,78 @@ export default function SignerDocument() {
                     </div>
                   )}
 
-                  <div className="absolute bottom-4 right-4">
-                    {isCurrentPageInitialed ? (
-                      <Badge variant="default" className="gap-1" data-testid={`badge-initialed-page-${currentPage}`}>
-                        <CheckCircle2 className="h-3 w-3" />
-                        Initialed
-                      </Badge>
-                    ) : (
+                  {currentPageInitialField && !isCurrentPageInitialed && (
+                    <div
+                      className="absolute"
+                      style={{
+                        left: `${currentPageInitialField.xPos * 100}%`,
+                        top: `${currentPageInitialField.yPos * 100}%`,
+                        width: currentPageInitialField.width ? `${currentPageInitialField.width * 100}%` : "auto",
+                      }}
+                    >
                       <Button
                         size="sm"
                         onClick={() => initialMutation.mutate(currentPage)}
                         disabled={initialMutation.isPending}
+                        className="shadow-lg"
                         data-testid={`button-initial-page-${currentPage}`}
                       >
                         <PenTool className="h-3.5 w-3.5 mr-1.5" />
-                        {initialMutation.isPending ? "Adding..." : "Initial This Page"}
+                        {initialMutation.isPending ? "Adding..." : `Initial [${signerInitials}]`}
                       </Button>
-                    )}
-                  </div>
+                    </div>
+                  )}
+
+                  {currentPageInitialField && isCurrentPageInitialed && (
+                    <div
+                      className="absolute"
+                      style={{
+                        left: `${currentPageInitialField.xPos * 100}%`,
+                        top: `${currentPageInitialField.yPos * 100}%`,
+                      }}
+                    >
+                      <Badge variant="default" className="gap-1 shadow-sm" data-testid={`badge-initialed-page-${currentPage}`}>
+                        <CheckCircle2 className="h-3 w-3" />
+                        {signerInitials}
+                      </Badge>
+                    </div>
+                  )}
+
+                  {!currentPageInitialField && (
+                    <div className="absolute bottom-4 right-4">
+                      {isCurrentPageInitialed ? (
+                        <Badge variant="default" className="gap-1" data-testid={`badge-initialed-page-${currentPage}`}>
+                          <CheckCircle2 className="h-3 w-3" />
+                          Initialed
+                        </Badge>
+                      ) : (
+                        <Button
+                          size="sm"
+                          onClick={() => initialMutation.mutate(currentPage)}
+                          disabled={initialMutation.isPending}
+                          data-testid={`button-initial-page-${currentPage}`}
+                        >
+                          <PenTool className="h-3.5 w-3.5 mr-1.5" />
+                          {initialMutation.isPending ? "Adding..." : "Initial This Page"}
+                        </Button>
+                      )}
+                    </div>
+                  )}
+
+                  {currentPageSignatureField && (
+                    <div
+                      className="absolute border-2 border-dashed border-red-400 rounded-md bg-red-50/30 dark:bg-red-950/20 flex items-center justify-center"
+                      style={{
+                        left: `${currentPageSignatureField.xPos * 100}%`,
+                        top: `${currentPageSignatureField.yPos * 100}%`,
+                        width: currentPageSignatureField.width ? `${currentPageSignatureField.width * 100}%` : "25%",
+                        height: currentPageSignatureField.height ? `${currentPageSignatureField.height * 100}%` : "8%",
+                      }}
+                      data-testid="signature-placeholder"
+                    >
+                      <span className="text-xs text-red-500 font-medium">Sign Here</span>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -427,7 +516,19 @@ export default function SignerDocument() {
               <h2 className="text-xl font-semibold" data-testid="text-ready-to-sign">Ready to Sign</h2>
               <p className="text-sm text-muted-foreground">
                 You have reviewed and initialed all {totalPages} pages of "{docInfo.envelope.subject}".
-                Click "Sign Document" below to apply your legally binding signature.
+              </p>
+              <div className="border-2 border-dashed border-red-400 rounded-lg p-4 mx-auto max-w-sm bg-red-50/30 dark:bg-red-950/20">
+                <p className="text-xs text-muted-foreground mb-2">Your signature will appear as:</p>
+                <p
+                  className="text-2xl text-blue-800 dark:text-blue-300 italic"
+                  style={{ fontFamily: "'Dancing Script', cursive" }}
+                  data-testid="text-signature-preview"
+                >
+                  {docInfo.signer.fullName}
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Click "Sign Now" below to apply your legally binding signature.
               </p>
             </CardContent>
           </Card>
@@ -450,7 +551,7 @@ export default function SignerDocument() {
             data-testid="button-final-sign"
           >
             <PenTool className="h-5 w-5 mr-2" />
-            Sign Document
+            Sign Now
           </Button>
         </div>
       </div>
@@ -497,6 +598,15 @@ export default function SignerDocument() {
             <p className="text-sm text-muted-foreground">
               You are about to sign "{docInfo.envelope.subject}". This action is legally binding and cannot be undone.
             </p>
+            <div className="border-2 border-red-500 rounded-lg p-4 bg-white dark:bg-gray-950">
+              <p
+                className="text-2xl text-blue-800 dark:text-blue-300 italic text-center"
+                style={{ fontFamily: "'Dancing Script', cursive" }}
+                data-testid="text-confirm-signature-preview"
+              >
+                {docInfo.signer.fullName}
+              </p>
+            </div>
             <div className="p-4 rounded-md bg-muted space-y-2">
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Document</span>
@@ -519,10 +629,11 @@ export default function SignerDocument() {
             <Button
               onClick={() => signMutation.mutate()}
               disabled={signMutation.isPending}
+              className="bg-[#F97316] border-[#F97316] text-white"
               data-testid="button-confirm-sign"
             >
               <PenTool className="h-4 w-4 mr-2" />
-              {signMutation.isPending ? "Signing..." : "Sign Document"}
+              {signMutation.isPending ? "Signing..." : "Sign Now"}
             </Button>
           </DialogFooter>
         </DialogContent>
