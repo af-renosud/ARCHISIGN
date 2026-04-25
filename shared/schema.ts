@@ -6,11 +6,15 @@ import { z } from "zod";
 export * from "./models/auth";
 
 export const envelopeStatusEnum = pgEnum("envelope_status", [
-  "draft", "sent", "viewed", "queried", "signed", "declined"
+  "draft", "sent", "viewed", "queried", "signed", "declined", "expired", "void"
 ]);
 
 export const annotationTypeEnum = pgEnum("annotation_type", [
   "initial", "signature", "date"
+]);
+
+export const webhookDeliveryStateEnum = pgEnum("webhook_delivery_state", [
+  "pending", "succeeded", "dead_lettered"
 ]);
 
 export const envelopes = pgTable("envelopes", {
@@ -24,6 +28,12 @@ export const envelopes = pgTable("envelopes", {
   totalPages: integer("total_pages").notNull().default(1),
   webhookUrl: text("webhook_url"),
   gmailThreadId: text("gmail_thread_id"),
+  expiresAt: timestamp("expires_at"),
+  declineReason: text("decline_reason"),
+  origin: text("origin"),
+  retentionBreachAt: timestamp("retention_breach_at"),
+  retentionIncidentRef: text("retention_incident_ref"),
+  retentionDetectedAt: timestamp("retention_detected_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   deletedAt: timestamp("deleted_at"),
@@ -38,8 +48,32 @@ export const signers = pgTable("signers", {
   otpCode: text("otp_code"),
   otpExpiresAt: timestamp("otp_expires_at"),
   otpVerified: boolean("otp_verified").notNull().default(false),
+  otpIssuedAt: timestamp("otp_issued_at"),
+  otpVerifiedAt: timestamp("otp_verified_at"),
+  signerIpAddress: text("signer_ip_address"),
+  signerUserAgent: text("signer_user_agent"),
   lastViewedAt: timestamp("last_viewed_at"),
   signedAt: timestamp("signed_at"),
+  accessTokenRotatedAt: timestamp("access_token_rotated_at"),
+  previousAccessTokenHash: text("previous_access_token_hash"),
+});
+
+export const webhookDeliveries = pgTable("webhook_deliveries", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  eventId: text("event_id").notNull().unique(),
+  envelopeId: integer("envelope_id").references(() => envelopes.id, { onDelete: "set null" }),
+  event: text("event").notNull(),
+  webhookUrl: text("webhook_url").notNull(),
+  payload: text("payload").notNull(),
+  state: webhookDeliveryStateEnum("state").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastAttemptAt: timestamp("last_attempt_at"),
+  lastError: text("last_error"),
+  lastStatusCode: integer("last_status_code"),
+  succeededAt: timestamp("succeeded_at"),
+  deadLetteredAt: timestamp("dead_lettered_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
 export const annotations = pgTable("annotations", {
@@ -140,10 +174,19 @@ export const auditEventRelations = relations(auditEvents, ({ one }) => ({
 }));
 
 export const insertEnvelopeSchema = createInsertSchema(envelopes).omit({ id: true, createdAt: true, updatedAt: true });
-export const insertSignerSchema = createInsertSchema(signers).omit({ id: true, lastViewedAt: true, signedAt: true, otpCode: true, otpExpiresAt: true, otpVerified: true });
+export const insertSignerSchema = createInsertSchema(signers).omit({
+  id: true, lastViewedAt: true, signedAt: true,
+  otpCode: true, otpExpiresAt: true, otpVerified: true,
+  otpIssuedAt: true, otpVerifiedAt: true,
+  signerIpAddress: true, signerUserAgent: true,
+  accessTokenRotatedAt: true, previousAccessTokenHash: true,
+});
 export const insertAnnotationSchema = createInsertSchema(annotations).omit({ id: true, createdAt: true });
 export const insertCommunicationLogSchema = createInsertSchema(communicationLogs).omit({ id: true, timestamp: true });
 export const insertAuditEventSchema = createInsertSchema(auditEvents).omit({ id: true, timestamp: true });
+export const insertWebhookDeliverySchema = createInsertSchema(webhookDeliveries).omit({
+  id: true, createdAt: true, updatedAt: true, succeededAt: true, deadLetteredAt: true, lastAttemptAt: true,
+});
 
 export const createEnvelopeRequestSchema = z.object({
   subject: z.string().min(1, "Subject is required"),
@@ -158,7 +201,7 @@ export const createSignerRequestSchema = z.object({
 });
 
 export const createApiEnvelopeRequestSchema = z.object({
-  subject: z.string().min(1, "Subject is required"),
+  subject: z.string().min(1, "Subject is required").optional(),
   signerEmail: z.string().email("Invalid signer email").optional(),
   signerName: z.string().optional(),
   signers: z.array(z.object({
@@ -168,11 +211,33 @@ export const createApiEnvelopeRequestSchema = z.object({
   externalRef: z.string().nullish(),
   pdfUrl: z.string().nullish(),
   pdfBase64: z.string().nullish(),
+  pdfFetchUrl: z.string().url("Invalid pdfFetchUrl").nullish(),
   webhookUrl: z.string().url("Invalid webhook URL").nullish().or(z.literal("")),
+  expiresAt: z.string().datetime({ offset: true }).nullish(),
+  metadata: z.record(z.unknown()).nullish(),
+  identityVerification: z.object({
+    method: z.literal("otp_email"),
+  }).nullish(),
+  fields: z.array(z.object({
+    signerEmail: z.string().email().optional(),
+    signerIndex: z.number().int().nonnegative().optional(),
+    pageNumber: z.number().int().positive(),
+    type: z.enum(["initial", "signature", "date"]),
+    xPos: z.number(),
+    yPos: z.number(),
+    width: z.number().positive(),
+    height: z.number().positive(),
+  })).nullish(),
+  origin: z.string().nullish(),
 }).refine(
   (data) => (data.signers && data.signers.length > 0) || data.signerEmail,
   { message: "At least one signer is required: provide 'signers' array or 'signerEmail'", path: ["signers"] }
+).refine(
+  (data) => !!(data.pdfFetchUrl || data.pdfUrl || data.pdfBase64),
+  { message: "PDF source required: provide 'pdfFetchUrl', 'pdfUrl', or 'pdfBase64'", path: ["pdfFetchUrl"] }
 );
+
+export const sendEnvelopeRequestSchema = z.object({}).passthrough();
 
 export type Envelope = typeof envelopes.$inferSelect;
 export type InsertEnvelope = z.infer<typeof insertEnvelopeSchema>;
@@ -184,3 +249,5 @@ export type CommunicationLog = typeof communicationLogs.$inferSelect;
 export type InsertCommunicationLog = z.infer<typeof insertCommunicationLogSchema>;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type InsertAuditEvent = z.infer<typeof insertAuditEventSchema>;
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+export type InsertWebhookDelivery = z.infer<typeof insertWebhookDeliverySchema>;

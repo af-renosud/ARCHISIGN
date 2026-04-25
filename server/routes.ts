@@ -15,6 +15,7 @@ import { generateToken, generateOtp, hashOtp, verifyOtp, buildSigningLink, gener
 import { dispatchWebhook, sendSigningInvitation, sendResendInvitation, sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
 import { asyncHandler } from "./middleware/asyncHandler";
 import { validateId } from "./middleware/validators";
+import { buildV1EnvelopesRouter, buildSignedPdfFetchHandler } from "./routes/v1Envelopes";
 
 const upload = multer({
   dest: "uploads/",
@@ -41,15 +42,9 @@ export async function registerRoutes(
       return next();
     }
     if (p.startsWith("/api/v1/")) {
-      const apiKey = req.headers["x-api-key"] || req.query.api_key;
-      const expectedKey = process.env.ARCHIDOC_API_KEY;
-      if (expectedKey && apiKey !== expectedKey) {
-        console.warn(`[AUTH] Invalid API key on ${req.method} ${req.path}`);
-        return res.status(401).json({ message: "Invalid or missing API key" });
-      }
-      if (!expectedKey) {
-        console.warn(`[AUTH] ARCHIDOC_API_KEY not configured — /api/v1/* routes are unprotected`);
-      }
+      // Auth for /api/v1/* is handled by the apiKeyAuth middleware on the
+      // v1 router (Inter-App Contract v1.0 §3.4). The signed-pdf-fetch
+      // endpoint is unauthenticated by API key — its URL signature is the auth.
       return next();
     }
     if (p.startsWith("/api/login") || p.startsWith("/api/logout") || p.startsWith("/api/callback") || p.startsWith("/api/auth/")) {
@@ -806,76 +801,11 @@ export async function registerRoutes(
     }
   }));
 
-  app.post("/api/v1/envelopes/create", asyncHandler(async (req, res) => {
-    const parsed = createApiEnvelopeRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ message: "Invalid request data", errors: parsed.error.flatten().fieldErrors });
-    }
-    const { subject, signerEmail, signerName, signers, externalRef, pdfUrl, pdfBase64, webhookUrl } = parsed.data;
-
-    let savedPdfUrl: string | null = pdfUrl || null;
-    let totalPages = 1;
-
-    if (pdfBase64) {
-      let pdfBuffer: Buffer;
-      try {
-        pdfBuffer = Buffer.from(pdfBase64, "base64");
-        totalPages = await getPageCount(pdfBuffer);
-      } catch (e: any) {
-        return res.status(400).json({ message: "Invalid PDF data: " + e.message });
-      }
-
-      const fileName = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.pdf`;
-      savedPdfUrl = await uploadFile(fileName, pdfBuffer);
-    }
-
-    const signerList = (signers && signers.length > 0)
-      ? signers
-      : [{ email: signerEmail!, fullName: signerName || signerEmail! }];
-
-    let envelope;
-    try {
-      envelope = await db.transaction(async (tx) => {
-      const env = await storage.createEnvelope({
-        subject,
-        externalRef: externalRef || null,
-        webhookUrl: webhookUrl || null,
-        originalPdfUrl: savedPdfUrl,
-        signedPdfUrl: null,
-        totalPages,
-        status: "draft",
-        gmailThreadId: null,
-      }, tx);
-
-      for (const s of signerList) {
-        await storage.createSigner({
-          envelopeId: env.id,
-          email: s.email,
-          fullName: s.fullName,
-          accessToken: generateToken(),
-        }, tx);
-      }
-
-      await storage.createAuditEvent({
-        envelopeId: env.id,
-        eventType: "Envelope created via API",
-        actorEmail: null,
-        ipAddress: req.ip || null,
-        metadata: JSON.stringify({ source: "ArchiDoc", signerCount: signerList.length }),
-      }, tx);
-
-      return env;
-      });
-    } catch (txErr) {
-      if (savedPdfUrl && pdfBase64) {
-        await deleteFile(savedPdfUrl);
-      }
-      throw txErr;
-    }
-
-    const full = await storage.getEnvelope(envelope.id);
-    res.json(full);
-  }));
+  // /api/v1/* — Inter-App Contract v1.0 routes.
+  // The signed-pdf-fetch endpoint is mounted before the API-key-protected
+  // router because its URL signature is the auth.
+  app.get("/api/v1/envelopes/:envelopeId/signed-pdf-fetch", buildSignedPdfFetchHandler());
+  app.use("/api/v1", buildV1EnvelopesRouter());
 
   app.use("/uploads", asyncHandler(async (req, res) => {
     const fileName = req.path.replace(/^\/+/, "");

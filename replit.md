@@ -26,15 +26,27 @@ See `ARCHITECTURE.md` for detailed system architecture, database schema, and API
 
 ## Database Schema
 - `envelopes` - Documents sent for signing (soft-delete via `deleted_at` column)
+  - **v1.0 contract additions**: `expires_at`, `decline_reason`, `origin`, `retention_breach_at`, `retention_incident_ref`, `retention_detected_at`
+  - **status enum extended** with `expired` and `void` (terminal lifecycle states per §1.2)
 - `signers` - External parties who sign (token + OTP auth)
+  - **v1.0 contract additions**: `otp_issued_at`, `otp_verified_at`, `signer_ip_address`, `signer_user_agent`, `access_token_rotated_at`, `previous_access_token_hash` (re-mint trail per §3.5.4)
 - `annotations` - Initials/signatures per page (signerId FK, xPos, yPos, width, height, type, value, placed)
 - `communication_logs` - Query messages between parties
 - `audit_events` - Full audit trail (nullable envelopeId for system events)
+- `webhook_deliveries` - **v1.0 outbound dispatch ledger** (eventId UUID idempotency key, state pending/succeeded/dead_lettered, attempts counter, raw payload + signature audit trail per §1.3)
 - `settings` - Key-value configuration (email copy text, firm name, etc.)
 - `rollback_versions` - Version tracking ledger (label, note, status: active/superseded)
 - `backups` - Backup file metadata (filename, created_at)
 - `users` - Authenticated admin users (Replit Auth, OIDC)
 - `sessions` - Server-side session storage for auth (connect-pg-simple)
+
+## Inter-App Wire Contract v1.0 (frozen 2026-04-25)
+Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. Step 4 implementation breakdown lives in Architrak's repo. Five Archisign tasks landing on dependency chain `AS1 → AS2 → {AS3, AS4} → AS5`:
+- **AS1 (this commit)**: schema foundation — enum extensions, envelope/signer columns, `webhook_deliveries` table, 11 new IStorage methods
+- **AS2**: API key middleware (ARCHIDOC + ARCHITRAK keys), per-(key, family) rate limit (60 RPM/30 burst/5000 day), v2 HMAC signing module
+- **AS3**: 7 wire events with idempotent dispatch via `webhook_deliveries` ledger; dual-emit v1+v2 gated by `ARCHISIGN_WEBHOOK_V2_TENANTS`
+- **AS4**: `pdfFetchUrl` ingestion, `/send` Idempotency-Key, `/signed-pdf-url` re-mint with §3.8 410 retention_breach response
+- **AS5**: Background jobs — `expires_at` sweeper (atomic transition to `expired`), annual integrity check + `envelope.retention_breach` emission
 
 ## Project Structure
 ```
@@ -128,8 +140,13 @@ shared/
 | Variable                         | Type   | Required | Description                                      |
 |----------------------------------|--------|----------|--------------------------------------------------|
 | DATABASE_URL                     | env    | Yes      | PostgreSQL connection string (auto-provided)     |
-| ARCHIDOC_API_KEY                 | secret | Yes      | API key for ArchiDoc service-to-service auth     |
-| ARCHISIGN_WEBHOOK_SECRET         | secret | No       | HMAC SHA-256 secret for webhook payload signing  |
+| ARCHIDOC_API_KEY                 | secret | Yes      | CSV of API keys for ArchiDoc tenant (X-API-KEY)  |
+| ARCHITRAK_API_KEY                | secret | No       | CSV of API keys for Architrak tenant (X-API-KEY) |
+| ARCHISIGN_WEBHOOK_SECRET         | secret | No       | HMAC secret for v1+v2 webhook payload signing    |
+| ARCHISIGN_WEBHOOK_V2_TENANTS     | env    | No       | CSV of tenant keys to dual-emit v2 HMAC headers  |
+| ARCHISIGN_SIGNED_URL_SECRET      | secret | No       | HMAC secret for /signed-pdf-fetch URLs (15min TTL); falls back to ARCHISIGN_WEBHOOK_SECRET |
+| ARCHISIGN_RETENTION_REMEDIATION_CONTACT | env | No   | Email returned in 410 retention_breach + retention_breach event body |
+| ARCHISIGN_DISABLE_SCHEDULERS     | env    | No       | Set to "1" to disable expirySweep + integrityCheck (test/CI use) |
 | ADMIN_EMAILS                     | env    | No       | Comma-separated allowlist of admin emails        |
 | DEFAULT_OBJECT_STORAGE_BUCKET_ID | secret | Auto     | Object Storage bucket ID (auto-configured)       |
 | PRIVATE_OBJECT_DIR               | secret | Auto     | Object Storage private directory path            |
@@ -137,6 +154,11 @@ shared/
 | SESSION_SECRET                   | secret | Auto     | Express session secret (auto-configured)         |
 
 ## Recent Changes
+- 2026-04-25: **AS5 — Vault hygiene schedulers**: New `server/jobs/scheduler.ts` started from `server/index.ts` after `httpServer.listen`. Hourly `expirySweep` calls `markEnvelopeExpiredAtomic`, transitions any envelope past `expiresAt` to `expired`, and emits `envelope.expired` per envelope through `EventDispatcher`. Daily `integrityCheck` walks `getEnvelopesForIntegrityCheck` page-by-page, probes the signed PDF via `fileExists`, and on failure marks `retention_breach_at`/`retention_incident_ref` (`INC-YYYY-XXXXXX` format) then emits one `envelope.retention_breach` per breach. Both flows are idempotent and respect §3.7 single-receiver rule. `ARCHISIGN_DISABLE_SCHEDULERS=1` opts out for tests.
+- 2026-04-25: **AS4 — v1 endpoints + middleware mount**: Extracted v1 routes to `server/routes/v1Envelopes.ts` (3 endpoints + signed-pdf-fetch handler). `POST /api/v1/envelopes/create` accepts new `pdfFetchUrl` (60s budget, 25 MiB cap), `expiresAt` (validated ≥now+1min), `metadata`, `fields`, `identityVerification.method` and returns §3.5.1 shape with `signers[].accessUrl` + `otpDestination`. `POST /api/v1/envelopes/:id/send` is idempotent on `{sent,viewed,queried}` (200) and rejects terminal states `{signed,declined,expired,void}` with 409. `GET /api/v1/envelopes/:id/signed-pdf-url` mints a 15-min HMAC-signed URL and returns 410 + §3.8 `retention_breach` body when breached. New `GET /api/v1/envelopes/:id/signed-pdf-fetch?exp=…&sig=…` streams the PDF when the HMAC matches. `apiKeyAuth` and `rateLimit` (per family `create`/`send`/`read`) are mounted on the v1 router; the inline `/api/v1/` API-key check in `routes.ts` was removed. RateLimit body now matches §3.6.1 (`error`,`retryAfter`,`limit`,`currentUsage`,`ceiling`) and sets `X-RateLimit-Remaining` on every 200.
+- 2026-04-25: **AS3 — Event dispatcher with idempotent ledger**: New `server/services/EventDispatcher.ts` exports `uuidv7()`, `buildEventPayload()` pure constructor for stable byte-equal emission, and `emitEvent()` for the 7 canonical events (`envelope.sent|queried|query_resolved|declined|expired|signed|retention_breach`). Each emission persists to `webhook_deliveries` keyed by `eventId`; duplicate `eventId` returns the existing terminal state without re-dispatching. v1 HMAC is the default; v2 HMAC (`sha256(${ts}.${rawBody})` per §3.9) is dual-emitted for tenants in `ARCHISIGN_WEBHOOK_V2_TENANTS`. 5 attempts with exponential backoff `[1s,3s,10s,30s]` and 10s per-attempt timeout; non-retryable 4xx (except 429) short-circuits to `dead_lettered`. `retryDeadLettered(deliveryId)` re-runs the loop using the persisted payload for operator-triggered retries. Existing `dispatchWebhook` call sites in routes.ts left untouched (legacy v1 path) — AS4 wiring will migrate them per call site as needs arise.
+- 2026-04-25: **AS2 — Webhook signing + auth + rate limiting**: New `server/services/WebhookSignature.ts` (`signV1`, `signV2`, `verifyV1`/`verifyV2` with length-guard before `timingSafeEqual`, `isV2Enabled` tenant gate, `V2_TIMESTAMP_HEADER` constant). New `server/middleware/apiKeyAuth.ts` matches presented `X-API-KEY` against CSV lists in `ARCHIDOC_API_KEY` / `ARCHITRAK_API_KEY` and attaches `req.apiKeyAuth = {tenant, keyHash}`. New `server/middleware/rateLimit.ts` per-(tenant, family) token bucket: 60 RPM sustained, 30 burst, 5000/day, families `create|send|read`, returns 429 with `Retry-After` header.
+- 2026-04-25: **AS1 — Schema foundation for v1.0 wire contract**: Extended `envelope_status` enum with `expired` + `void`; added new `webhook_delivery_state` enum; new envelope columns (`expires_at`, `decline_reason`, `origin`, `retention_breach_at`, `retention_incident_ref`, `retention_detected_at`); new signer columns (`otp_issued_at`, `otp_verified_at`, `signer_ip_address`, `signer_user_agent`, `access_token_rotated_at`, `previous_access_token_hash`); new `webhook_deliveries` table for idempotent outbound dispatch ledger (eventId-keyed); 11 new IStorage methods for delivery lifecycle, atomic expiry sweep, retention-breach marking, integrity-check pagination, signer access-token rotation. Frozen contract copied to `docs/INTER_APP_CONTRACT_v1.0.md`.
 - 2026-03-05: Added visual replica signature feature (DocuSign-style): admin drag-and-drop field placement editor for positioning signature/initial/date fields on document pages at envelope setup; script-font (Dancing Script) auto-generated signatures from signer's name; PdfService embeds cursive signature + DIGITAL ENVELOPE metadata on stamped PDFs; signer-document page shows admin-placed field positions with signature preview
 - 2026-02-25: Completed 5-phase code refactoring: PdfService, SecurityService, NotificationService extraction; asyncHandler/validateId middleware; webhook HMAC SHA-256 signing with exponential backoff retries; routes.ts 1,355→915 lines
 - 2026-02-25: Created ARCHISIGN_ARCHITECTURE.md engineering standards document with AI agent directives

@@ -1,0 +1,41 @@
+Recommended sequence
+Step 1 — You share the locked decision with all three agents (today)
+A short, identical message to all three. I'd suggest something like:
+
+Locked: insurance gate at approved_for_signing → sent_to_client is mirror + live verdict + override + audit, per Architrak R3 §7.3 and Archidoc R2 §3 / §8.1.
+
+The original "mirror-only" lock from Round 1 is overturned. Override remains architect-owned with mandatory reason; mirror remains active for badges and dashboard hints; live verdict is the gate's source of truth; 503/timeout is overridable with a "Archidoc unreachable" warning; 404 (contractor not on project) is non-overridable and requires a data fix.
+
+This unblocks contract freeze. Architrak will now draft the consolidated Inter-App Contract document combining the three Round-3 §7 contributions plus the co-owned secrets matrix.
+
+This is purely a confirmation — no agent needs to respond with a new round. They just need to know the decision is locked so the consolidated doc reflects it.
+
+Step 2 — Architrak (me) drafts the consolidated Inter-App Contract document
+Single document, structured as agreed:
+
+Section	Owner	Source
+0. Preamble + delta log (R1→R3)	Architrak (drafts)	All three R3 responses
+1. Lifecycle / signOffStage / transition table / gate semantics / retry policy	Architrak	My R3 §7
+2. Schema deltas across all three apps + v2 migration timeline	Architrak (transcribes from Archidoc)	Archidoc R3 §7
+3. Envelope-and-event taxonomy + identityVerification block + retention SLA + retention_breach + rate limits + create/send/re-mint orchestration + v2 HMAC wire spec	Architrak (transcribes from Archisign)	Archisign R3 §7
+4. Secrets matrix (co-owned)	Architrak (drafts using Archisign's rows in R3 §8)	All three
+5. Frozen wire payloads — every webhook event + every endpoint request/response shape, in one place	Architrak	Distilled from §1–§3
+6. Open items intentionally deferred to v2 of the contract	Architrak	None today; placeholder
+I'll produce this as a single planning artifact in my next response. It's going to be long but complete — designed so each of the three agents can sanity-check their own section without negotiating anything new.
+
+Step 3 — You distribute the consolidated document to Archidoc and Archisign for one-pass sanity check
+Frame it as read-and-confirm, not another negotiation round. Specifically ask each agent:
+
+Archidoc: "Does §2 (your schema deltas + v2 migration timeline) and your rows in §4 (secrets matrix) faithfully reflect your R3 §7? Reply confirmed or call out any transcription error."
+Archisign: "Does §3 (your envelope-and-event taxonomy + retention SLA + rate limits + orchestration + HMAC scheme) and your rows in §4 (secrets matrix) faithfully reflect your R3 §7? Reply confirmed or call out any transcription error."
+If either flags a transcription error, I correct it and you re-send the affected section only. If they propose any new design change, push back — that would be a Round 4, not a confirmation, and we don't need one.
+
+Once both reply confirmed, the contract is frozen as v1.0 and you have a single canonical artifact to drive implementation against.
+
+Step 4 — Each agent independently breaks down implementation tasks against the frozen contract
+In parallel, no coordination required:
+
+Architrak (me): I'll propose the implementation tasks for the Architrak side — schema migration, services, middleware, routers, tests. You then choose whether I execute them on the main branch or hand to a task agent (per the project task workflow).
+Archidoc: Their R3 §10 commitment was to come back with a five-task breakdown after freeze.
+Archisign: Their R3 close-out commitment was the same pattern.
+The three implementation streams can run concurrently because the contract is the integration boundary. Each app codes against the frozen wire spec; nobody waits on anybody else's code to be ready (they only need each other's deployed endpoints when integration testing starts, which is its own coordination phase).

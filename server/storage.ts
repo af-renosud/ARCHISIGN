@@ -1,6 +1,6 @@
 import {
   envelopes, signers, annotations, communicationLogs, auditEvents, settings,
-  rollbackVersions, backups,
+  rollbackVersions, backups, webhookDeliveries,
   type Envelope, type InsertEnvelope,
   type Signer, type InsertSigner,
   type Annotation, type InsertAnnotation,
@@ -9,9 +9,10 @@ import {
   type Setting, type InsertSetting,
   type RollbackVersion, type InsertRollbackVersion,
   type Backup, type InsertBackup,
+  type WebhookDelivery, type InsertWebhookDelivery,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, sql, isNull, isNotNull, inArray } from "drizzle-orm";
+import { eq, desc, and, sql, isNull, isNotNull, inArray, lt } from "drizzle-orm";
 
 export type DbExecutor = typeof db;
 
@@ -56,6 +57,35 @@ export interface IStorage {
   getBackups(): Promise<Backup[]>;
   createBackup(data: InsertBackup): Promise<Backup>;
   deleteBackup(id: number): Promise<void>;
+
+  createWebhookDelivery(data: InsertWebhookDelivery, executor?: DbExecutor): Promise<WebhookDelivery>;
+  /**
+   * Atomically claim a delivery row by eventId. Uses INSERT ... ON CONFLICT DO NOTHING.
+   * Returns the inserted row when this caller wins the race, or null when another caller
+   * has already claimed it. Caller must then re-fetch with getWebhookDeliveryByEventId
+   * to inspect the existing state.
+   */
+  claimWebhookDelivery(data: InsertWebhookDelivery): Promise<WebhookDelivery | null>;
+  getWebhookDeliveryByEventId(eventId: string): Promise<WebhookDelivery | undefined>;
+  getWebhookDelivery(id: number): Promise<WebhookDelivery | undefined>;
+  markWebhookDeliveryAttempt(id: number, statusCode: number | null, errorMessage: string | null): Promise<WebhookDelivery | undefined>;
+  markWebhookDeliverySucceeded(id: number, statusCode: number): Promise<WebhookDelivery | undefined>;
+  markWebhookDeliveryDeadLettered(id: number, errorMessage: string): Promise<WebhookDelivery | undefined>;
+  listDeadLetteredDeliveries(): Promise<WebhookDelivery[]>;
+  resetDeliveryForRetry(id: number): Promise<WebhookDelivery | undefined>;
+
+  /**
+   * Atomically transition an envelope from `draft` to `sent`.
+   * Returns the updated envelope row when this caller wins the transition,
+   * or null when the envelope was not in `draft` (already sent / terminal /
+   * concurrent caller won). Allows /send first-send semantics to be race-tight
+   * even under concurrent requests.
+   */
+  atomicClaimEnvelopeSend(envelopeId: number, now: Date): Promise<Envelope | null>;
+  markEnvelopeExpiredAtomic(now: Date): Promise<Envelope[]>;
+  markEnvelopeRetentionBreach(envelopeId: number, incidentRef: string, detectedAt: Date): Promise<Envelope | undefined>;
+  getEnvelopesForIntegrityCheck(limit: number, offset: number): Promise<Envelope[]>;
+  rotateSignerAccessToken(signerId: number, newToken: string, previousTokenHash: string, executor?: DbExecutor): Promise<Signer | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -235,6 +265,159 @@ export class DatabaseStorage implements IStorage {
 
   async deleteBackup(id: number): Promise<void> {
     await db.delete(backups).where(eq(backups.id, id));
+  }
+
+  async createWebhookDelivery(data: InsertWebhookDelivery, executor: DbExecutor = db): Promise<WebhookDelivery> {
+    const [delivery] = await executor.insert(webhookDeliveries).values(data).returning();
+    return delivery;
+  }
+
+  async claimWebhookDelivery(data: InsertWebhookDelivery): Promise<WebhookDelivery | null> {
+    const [delivery] = await db.insert(webhookDeliveries)
+      .values(data)
+      .onConflictDoNothing({ target: webhookDeliveries.eventId })
+      .returning();
+    return delivery ?? null;
+  }
+
+  async getWebhookDeliveryByEventId(eventId: string): Promise<WebhookDelivery | undefined> {
+    const [delivery] = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.eventId, eventId));
+    return delivery;
+  }
+
+  async getWebhookDelivery(id: number): Promise<WebhookDelivery | undefined> {
+    const [delivery] = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, id));
+    return delivery;
+  }
+
+  async markWebhookDeliveryAttempt(id: number, statusCode: number | null, errorMessage: string | null): Promise<WebhookDelivery | undefined> {
+    const [updated] = await db.update(webhookDeliveries)
+      .set({
+        attempts: sql`${webhookDeliveries.attempts} + 1`,
+        lastAttemptAt: new Date(),
+        lastStatusCode: statusCode,
+        lastError: errorMessage,
+        updatedAt: new Date(),
+      })
+      .where(eq(webhookDeliveries.id, id))
+      .returning();
+    return updated;
+  }
+
+  async markWebhookDeliverySucceeded(id: number, statusCode: number): Promise<WebhookDelivery | undefined> {
+    const now = new Date();
+    const [updated] = await db.update(webhookDeliveries)
+      .set({
+        state: "succeeded",
+        succeededAt: now,
+        lastStatusCode: statusCode,
+        lastError: null,
+        updatedAt: now,
+      })
+      .where(eq(webhookDeliveries.id, id))
+      .returning();
+    return updated;
+  }
+
+  async markWebhookDeliveryDeadLettered(id: number, errorMessage: string): Promise<WebhookDelivery | undefined> {
+    const now = new Date();
+    const [updated] = await db.update(webhookDeliveries)
+      .set({
+        state: "dead_lettered",
+        deadLetteredAt: now,
+        lastError: errorMessage,
+        updatedAt: now,
+      })
+      .where(eq(webhookDeliveries.id, id))
+      .returning();
+    return updated;
+  }
+
+  async listDeadLetteredDeliveries(): Promise<WebhookDelivery[]> {
+    return db.select().from(webhookDeliveries)
+      .where(eq(webhookDeliveries.state, "dead_lettered"))
+      .orderBy(desc(webhookDeliveries.deadLetteredAt));
+  }
+
+  async resetDeliveryForRetry(id: number): Promise<WebhookDelivery | undefined> {
+    const [updated] = await db.update(webhookDeliveries)
+      .set({
+        state: "pending",
+        deadLetteredAt: null,
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(webhookDeliveries.id, id))
+      .returning();
+    return updated;
+  }
+
+  async atomicClaimEnvelopeSend(envelopeId: number, now: Date): Promise<Envelope | null> {
+    const [updated] = await db.update(envelopes)
+      .set({ status: "sent", updatedAt: now })
+      .where(and(
+        eq(envelopes.id, envelopeId),
+        eq(envelopes.status, "draft"),
+        isNull(envelopes.deletedAt),
+      ))
+      .returning();
+    return updated ?? null;
+  }
+
+  async markEnvelopeExpiredAtomic(now: Date): Promise<Envelope[]> {
+    const updated = await db.update(envelopes)
+      .set({ status: "expired", updatedAt: now })
+      .where(and(
+        isNotNull(envelopes.expiresAt),
+        lt(envelopes.expiresAt, now),
+        sql`${envelopes.status} NOT IN ('signed', 'declined', 'expired', 'void')`,
+        isNull(envelopes.deletedAt),
+      ))
+      .returning();
+    return updated;
+  }
+
+  async markEnvelopeRetentionBreach(envelopeId: number, incidentRef: string, detectedAt: Date): Promise<Envelope | undefined> {
+    const [updated] = await db.update(envelopes)
+      .set({
+        retentionBreachAt: detectedAt,
+        retentionIncidentRef: incidentRef,
+        retentionDetectedAt: detectedAt,
+        updatedAt: detectedAt,
+      })
+      .where(eq(envelopes.id, envelopeId))
+      .returning();
+    return updated;
+  }
+
+  async getEnvelopesForIntegrityCheck(limit: number, offset: number): Promise<Envelope[]> {
+    return db.select().from(envelopes)
+      .where(and(
+        eq(envelopes.status, "signed"),
+        isNotNull(envelopes.signedPdfUrl),
+        isNull(envelopes.retentionBreachAt),
+        isNull(envelopes.deletedAt),
+      ))
+      .orderBy(envelopes.id)
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async rotateSignerAccessToken(signerId: number, newToken: string, previousTokenHash: string, executor: DbExecutor = db): Promise<Signer | undefined> {
+    const [updated] = await executor.update(signers)
+      .set({
+        accessToken: newToken,
+        previousAccessTokenHash: previousTokenHash,
+        accessTokenRotatedAt: new Date(),
+        otpCode: null,
+        otpExpiresAt: null,
+        otpVerified: false,
+        otpIssuedAt: null,
+        otpVerifiedAt: null,
+      })
+      .where(eq(signers.id, signerId))
+      .returning();
+    return updated;
   }
 }
 

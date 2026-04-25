@@ -4,6 +4,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
 import { pool } from "./db";
+import { startSchedulers, stopSchedulers } from "./jobs/scheduler";
 
 const app = express();
 const httpServer = createServer(app);
@@ -128,6 +129,7 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      startSchedulers();
     },
   );
 
@@ -136,6 +138,8 @@ app.use((req, res, next) => {
     if (shuttingDown) return;
     shuttingDown = true;
     log(`${signal} received – shutting down gracefully`);
+
+    stopSchedulers();
 
     httpServer.close(() => {
       log("HTTP server closed");
