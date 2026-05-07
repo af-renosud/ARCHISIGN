@@ -108,6 +108,54 @@ export default function EnvelopeFieldEditor() {
   } | null>(null);
   const [expandedSigners, setExpandedSigners] = useState<Set<number>>(new Set());
 
+  const [undoStack, setUndoStack] = useState<PlacedField[][]>([]);
+  const [redoStack, setRedoStack] = useState<PlacedField[][]>([]);
+  const preDragSnapshotRef = useRef<PlacedField[] | null>(null);
+  const HISTORY_LIMIT = 50;
+
+  const pushHistory = useCallback((snapshot: PlacedField[]) => {
+    setUndoStack((prev) => {
+      const next = [...prev, snapshot];
+      if (next.length > HISTORY_LIMIT) next.splice(0, next.length - HISTORY_LIMIT);
+      return next;
+    });
+    setRedoStack([]);
+  }, []);
+
+  const undo = useCallback(() => {
+    setUndoStack((prevUndo) => {
+      if (prevUndo.length === 0) return prevUndo;
+      const snapshot = prevUndo[prevUndo.length - 1];
+      setFields((curFields) => {
+        setRedoStack((prevRedo) => {
+          const next = [...prevRedo, curFields];
+          if (next.length > HISTORY_LIMIT) next.splice(0, next.length - HISTORY_LIMIT);
+          return next;
+        });
+        return snapshot;
+      });
+      setSelectedFieldIndex(null);
+      return prevUndo.slice(0, -1);
+    });
+  }, []);
+
+  const redo = useCallback(() => {
+    setRedoStack((prevRedo) => {
+      if (prevRedo.length === 0) return prevRedo;
+      const snapshot = prevRedo[prevRedo.length - 1];
+      setFields((curFields) => {
+        setUndoStack((prevUndo) => {
+          const next = [...prevUndo, curFields];
+          if (next.length > HISTORY_LIMIT) next.splice(0, next.length - HISTORY_LIMIT);
+          return next;
+        });
+        return snapshot;
+      });
+      setSelectedFieldIndex(null);
+      return prevRedo.slice(0, -1);
+    });
+  }, []);
+
   const canvasScrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const overlayRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -398,6 +446,7 @@ export default function EnvelopeFieldEditor() {
       }
       const defaults = FIELD_DEFAULTS[type];
       setFields((prev) => {
+        pushHistory(prev);
         const next = [
           ...prev,
           {
@@ -416,18 +465,21 @@ export default function EnvelopeFieldEditor() {
         return next;
       });
     },
-    [selectedSignerId, currentPage, editorMode, maxUnlockedPage, toast]
+    [selectedSignerId, currentPage, editorMode, maxUnlockedPage, toast, pushHistory]
   );
 
   const removeField = useCallback((index: number) => {
-    setFields((prev) => prev.filter((_, i) => i !== index));
+    setFields((prev) => {
+      pushHistory(prev);
+      return prev.filter((_, i) => i !== index);
+    });
     setSelectedFieldIndex((cur) => {
       if (cur === null) return cur;
       if (cur === index) return null;
       if (cur > index) return cur - 1;
       return cur;
     });
-  }, []);
+  }, [pushHistory]);
 
   // Click vs drag distinction.
   const handleMouseDown = useCallback(
@@ -447,6 +499,7 @@ export default function EnvelopeFieldEditor() {
       setDragStartPos({ x: e.clientX, y: e.clientY });
       setDragMoved(false);
       setDraggingField(index);
+      preDragSnapshotRef.current = fields;
     },
     [fields]
   );
@@ -488,10 +541,35 @@ export default function EnvelopeFieldEditor() {
         if (row) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
       });
     }
+    if (draggingField !== null && dragMoved && preDragSnapshotRef.current) {
+      pushHistory(preDragSnapshotRef.current);
+    }
+    preDragSnapshotRef.current = null;
     setDraggingField(null);
     setDragStartPos(null);
     setDragMoved(false);
-  }, [draggingField, dragMoved]);
+  }, [draggingField, dragMoved, pushHistory]);
+
+  // Keyboard: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z or Cmd/Ctrl+Y = redo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((key === "z" && e.shiftKey) || key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
 
   // Keyboard: Delete / Backspace removes selected field when not typing in an input.
   useEffect(() => {
@@ -518,6 +596,7 @@ export default function EnvelopeFieldEditor() {
   };
 
   const handleSaveClick = () => {
+    setRedoStack([]);
     if (!envelope) {
       saveMutation.mutate();
       return;
