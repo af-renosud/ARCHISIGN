@@ -5,3 +5,6 @@ server/public
 vite.config.ts.*
 *.tar.gz
 backups/
+test-results/
+playwright-report/
+.cache/ms-playwright/
