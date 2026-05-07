@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import type { Setting } from "@shared/schema";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -28,6 +30,7 @@ const formSchema = z.object({
   message: z.string().optional(),
   signerName: z.string().min(1, "Signer name is required"),
   signerEmail: z.string().email("Valid email required"),
+  signaturePlacementMode: z.enum(["fixed_bottom_centre", "admin_placed"]),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -38,6 +41,8 @@ export default function EnvelopeNew() {
   const [additionalSigners, setAdditionalSigners] = useState<Array<{ name: string; email: string }>>([]);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
 
+  const { data: settings } = useQuery<Setting[]>({ queryKey: ["/api/settings"] });
+
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -47,8 +52,19 @@ export default function EnvelopeNew() {
       message: "",
       signerName: "",
       signerEmail: "",
+      signaturePlacementMode: "fixed_bottom_centre",
     },
   });
+
+  useEffect(() => {
+    if (!settings) return;
+    const def = settings.find((s) => s.key === "default_signature_placement_mode")?.value;
+    if (def === "admin_placed" || def === "fixed_bottom_centre") {
+      if (!form.formState.dirtyFields.signaturePlacementMode) {
+        form.setValue("signaturePlacementMode", def);
+      }
+    }
+  }, [settings, form]);
 
   const createMutation = useMutation({
     mutationFn: async (values: FormValues) => {
@@ -63,6 +79,7 @@ export default function EnvelopeNew() {
         ...additionalSigners.filter(s => s.name && s.email),
       ];
       formData.append("signers", JSON.stringify(allSigners));
+      formData.append("signaturePlacementMode", values.signaturePlacementMode);
 
       if (pdfFile) {
         formData.append("pdf", pdfFile);
@@ -176,6 +193,51 @@ export default function EnvelopeNew() {
                           {...field}
                           data-testid="input-message"
                         />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="signaturePlacementMode"
+                  render={({ field }) => (
+                    <FormItem className="space-y-2">
+                      <FormLabel>Signature Placement</FormLabel>
+                      <FormControl>
+                        <RadioGroup
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          className="grid gap-2"
+                        >
+                          <label
+                            htmlFor="placement-fixed"
+                            className="flex items-start gap-3 rounded-md border p-3 cursor-pointer hover-elevate"
+                            data-testid="radio-placement-fixed_bottom_centre"
+                          >
+                            <RadioGroupItem id="placement-fixed" value="fixed_bottom_centre" className="mt-0.5" />
+                            <div className="space-y-0.5">
+                              <p className="text-sm font-medium">Fixed (bottom centre)</p>
+                              <p className="text-xs text-muted-foreground">
+                                Signatures are stamped automatically at the bottom centre of the last page.
+                              </p>
+                            </div>
+                          </label>
+                          <label
+                            htmlFor="placement-admin"
+                            className="flex items-start gap-3 rounded-md border p-3 cursor-pointer hover-elevate"
+                            data-testid="radio-placement-admin_placed"
+                          >
+                            <RadioGroupItem id="placement-admin" value="admin_placed" className="mt-0.5" />
+                            <div className="space-y-0.5">
+                              <p className="text-sm font-medium">Admin placed (free placement)</p>
+                              <p className="text-xs text-muted-foreground">
+                                Open the field editor after creation to drop signature, initial, and date fields anywhere on the document.
+                              </p>
+                            </div>
+                          </label>
+                        </RadioGroup>
                       </FormControl>
                       <FormMessage />
                     </FormItem>

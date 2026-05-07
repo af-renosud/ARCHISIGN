@@ -122,7 +122,15 @@ export async function registerRoutes(
     if (!envelopeParsed.success) {
       return res.status(400).json({ message: "Invalid envelope data", errors: envelopeParsed.error.flatten().fieldErrors });
     }
-    const { subject, externalRef, webhookUrl, message } = envelopeParsed.data;
+    const { subject, externalRef, webhookUrl, message, signaturePlacementMode } = envelopeParsed.data;
+
+    let resolvedPlacementMode: "fixed_bottom_centre" | "admin_placed" = signaturePlacementMode ?? "fixed_bottom_centre";
+    if (!signaturePlacementMode) {
+      const defaultPlacement = await storage.getSetting("default_signature_placement_mode");
+      if (defaultPlacement?.value === "admin_placed" || defaultPlacement?.value === "fixed_bottom_centre") {
+        resolvedPlacementMode = defaultPlacement.value;
+      }
+    }
 
     let rawSigners: unknown[];
     try {
@@ -171,6 +179,7 @@ export async function registerRoutes(
         totalPages,
         status: "draft",
         gmailThreadId: null,
+        signaturePlacementMode: resolvedPlacementMode,
       }, tx);
 
       for (const s of signersData) {

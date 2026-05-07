@@ -6,7 +6,7 @@ import fsPromises from "fs/promises";
 
 async function seedSettings() {
   const existingSettings = await db.select({ count: sql<number>`count(*)` }).from(settings);
-  if (existingSettings[0].count > 0) return;
+  const alreadySeeded = existingSettings[0].count > 0;
 
   const defaultSettings = [
     { key: "firm_name", value: "Archisign", label: "Firm Name", category: "email" },
@@ -16,7 +16,18 @@ async function seedSettings() {
     { key: "email_invitation_body", value: "You have been invited to review and sign a document. Please click the button below to access the secure signing portal.", label: "Invitation Email Body", category: "email" },
     { key: "email_otp_body", value: "Please use the verification code below to access the document. This code expires in 10 minutes.", label: "OTP Email Body Text", category: "email" },
     { key: "email_completion_body", value: "All parties have completed signing the document. The signed document is now available for download.", label: "Completion Notification Body", category: "email" },
+    { key: "default_signature_placement_mode", value: "fixed_bottom_centre", label: "Default Signature Placement", category: "envelope" },
   ];
+
+  if (alreadySeeded) {
+    const existingDefault = await storage.getSetting("default_signature_placement_mode");
+    if (!existingDefault) {
+      const placement = defaultSettings.find((s) => s.key === "default_signature_placement_mode");
+      if (placement) await storage.upsertSetting(placement);
+      console.log("Default signature placement setting backfilled.");
+    }
+    return;
+  }
 
   for (const s of defaultSettings) {
     await storage.upsertSetting(s);

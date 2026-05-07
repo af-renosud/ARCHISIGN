@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Loader2, Save } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { Setting } from "@shared/schema";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 export default function Settings() {
   const { toast } = useToast();
@@ -65,6 +66,8 @@ export default function Settings() {
   }
 
   const emailSettings = settings?.filter((s) => s.category === "email") || [];
+  const envelopeSettings = settings?.filter((s) => s.category === "envelope") || [];
+  const placementValue = formValues["default_signature_placement_mode"] ?? "fixed_bottom_centre";
 
   const shortFields = ["firm_name", "email_invitation_subject_prefix", "email_footer_text"];
 
@@ -111,6 +114,54 @@ export default function Settings() {
             ))}
           </CardContent>
         </Card>
+
+        {envelopeSettings.find((s) => s.key === "default_signature_placement_mode") && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Envelope Defaults</CardTitle>
+              <CardDescription>
+                Pre-fill new envelopes with your firm's preferred signature placement. Admins can still override per envelope.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Label data-testid="label-setting-default_signature_placement_mode">
+                Default Signature Placement
+              </Label>
+              <RadioGroup
+                value={placementValue}
+                onValueChange={(v) => updateValue("default_signature_placement_mode", v)}
+                className="grid gap-2"
+              >
+                <label
+                  htmlFor="default-placement-fixed"
+                  className="flex items-start gap-3 rounded-md border p-3 cursor-pointer hover-elevate"
+                  data-testid="radio-default-placement-fixed_bottom_centre"
+                >
+                  <RadioGroupItem id="default-placement-fixed" value="fixed_bottom_centre" className="mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="text-sm font-medium">Fixed (bottom centre)</p>
+                    <p className="text-xs text-muted-foreground">
+                      New envelopes are stamped automatically at the bottom centre of the last page.
+                    </p>
+                  </div>
+                </label>
+                <label
+                  htmlFor="default-placement-admin"
+                  className="flex items-start gap-3 rounded-md border p-3 cursor-pointer hover-elevate"
+                  data-testid="radio-default-placement-admin_placed"
+                >
+                  <RadioGroupItem id="default-placement-admin" value="admin_placed" className="mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="text-sm font-medium">Admin placed (free placement)</p>
+                    <p className="text-xs text-muted-foreground">
+                      New envelopes start in the field editor so you can drop fields anywhere on the document.
+                    </p>
+                  </div>
+                </label>
+              </RadioGroup>
+            </CardContent>
+          </Card>
+        )}
 
         <div className="flex justify-end">
           <Button

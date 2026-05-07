@@ -198,6 +198,7 @@ export const createEnvelopeRequestSchema = z.object({
   externalRef: z.string().nullish(),
   message: z.string().nullish(),
   webhookUrl: z.string().url("Invalid webhook URL").nullish().or(z.literal("")),
+  signaturePlacementMode: z.enum(["fixed_bottom_centre", "admin_placed"]).optional(),
 });
 
 export const createSignerRequestSchema = z.object({
