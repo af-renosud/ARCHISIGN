@@ -294,10 +294,17 @@ export default function EnvelopeFieldEditor() {
     [fieldsOnPage, selectedSignerId, placementMode, fields]
   );
 
-  const visiblePages = useMemo(() => {
-    if (editorMode === "free") return Array.from({ length: totalPages }, (_, i) => i + 1);
-    return Array.from({ length: Math.min(maxUnlockedPage, totalPages) }, (_, i) => i + 1);
-  }, [editorMode, totalPages, maxUnlockedPage]);
+  // All pages always render; in Guided mode, pages beyond maxUnlockedPage are
+  // dimmed and field interaction is blocked, but the continuous canvas is preserved.
+  const visiblePages = useMemo(
+    () => Array.from({ length: totalPages }, (_, i) => i + 1),
+    [totalPages]
+  );
+
+  const isPageLocked = useCallback(
+    (page: number) => editorMode === "guided" && page > maxUnlockedPage,
+    [editorMode, maxUnlockedPage]
+  );
 
   // Scroll-driven currentPage sync in both Guided and Free modes.
   useEffect(() => {
@@ -851,7 +858,7 @@ export default function EnvelopeFieldEditor() {
           {Array.from({ length: totalPages }, (_, i) => {
             const pageNum = i + 1;
             const summary = pageSummary(pageNum);
-            const isLocked = editorMode === "guided" && pageNum > maxUnlockedPage;
+            const locked = isPageLocked(pageNum);
             const isActive = pageNum === currentPage;
             const isLastPageWithLockedSig =
               pageNum === totalPages && placementMode === "fixed_bottom_centre";
@@ -860,35 +867,50 @@ export default function EnvelopeFieldEditor() {
                 key={pageNum}
                 type="button"
                 onClick={() => goToRailPage(pageNum)}
-                className={`relative w-full aspect-[8.5/11] rounded border-2 transition-all flex flex-col items-center justify-center gap-1 text-xs font-medium ${
+                className={`relative w-full aspect-[8.5/11] rounded border-2 transition-all overflow-hidden ${
                   isActive
-                    ? "border-primary bg-primary/10 shadow"
-                    : isLocked
-                      ? "border-dashed border-muted-foreground/30 bg-muted/40 text-muted-foreground/50"
-                      : "border-muted-foreground/20 bg-background hover:border-primary/50 hover:bg-muted/40"
-                }`}
+                    ? "border-primary shadow"
+                    : locked
+                      ? "border-dashed border-muted-foreground/30 opacity-60"
+                      : "border-muted-foreground/20 hover:border-primary/50"
+                } bg-white dark:bg-gray-900`}
                 data-testid={`button-page-rail-${pageNum}`}
               >
-                <span>P{pageNum}</span>
+                {envelope.originalPdfUrl ? (
+                  <iframe
+                    src={`${envelope.originalPdfUrl}#page=${pageNum}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+                    className="absolute inset-0 w-full h-full border-0 pointer-events-none"
+                    title={`Thumbnail page ${pageNum}`}
+                    data-testid={`rail-thumbnail-${pageNum}`}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center text-[10px] text-muted-foreground/60">
+                    No PDF
+                  </div>
+                )}
+                <div className="absolute inset-0 bg-background/40 dark:bg-background/30 pointer-events-none" />
+                <span className="absolute bottom-1 left-1 text-[10px] font-semibold bg-background/90 px-1 rounded">
+                  P{pageNum}
+                </span>
+                <div className="absolute bottom-1 right-1 flex gap-0.5">
+                  {(["signature", "initial", "date"] as FieldType[]).map((t) =>
+                    summary.counts[t] > 0 ? (
+                      <span key={t} className={`h-1.5 w-1.5 rounded-full ${FIELD_DOT_COLORS[t]} ring-1 ring-background`} />
+                    ) : null
+                  )}
+                </div>
                 {isLastPageWithLockedSig && (
                   <span
-                    className="absolute left-1/4 right-1/4 bottom-1 h-1.5 rounded-sm bg-green-500/40 border border-green-600/50"
+                    className="absolute left-1/4 right-1/4 bottom-4 h-2 rounded-sm bg-green-500/40 border border-green-600/60 pointer-events-none"
                     data-testid={`rail-locked-sig-ghost-${pageNum}`}
                     title="Signature will be stamped here"
                   />
                 )}
-                <div className="flex gap-0.5">
-                  {(["signature", "initial", "date"] as FieldType[]).map((t) =>
-                    summary.counts[t] > 0 ? (
-                      <span key={t} className={`h-1.5 w-1.5 rounded-full ${FIELD_DOT_COLORS[t]}`} />
-                    ) : null
-                  )}
-                </div>
                 {summary.completeForSelected && (
-                  <Check className="h-3 w-3 text-green-600 absolute top-1 right-1" data-testid={`rail-complete-${pageNum}`} />
+                  <Check className="h-3.5 w-3.5 text-green-600 absolute top-1 right-1 bg-background rounded-full" data-testid={`rail-complete-${pageNum}`} />
                 )}
-                {isLocked && (
-                  <Lock className="h-3 w-3 text-muted-foreground/50 absolute top-1 left-1" />
+                {locked && (
+                  <Lock className="h-3 w-3 text-muted-foreground/70 absolute top-1 left-1 bg-background/90 rounded" />
                 )}
               </button>
             );
@@ -931,6 +953,9 @@ export default function EnvelopeFieldEditor() {
               {visiblePages.map((pageNum) => {
                 const onPage = fieldsOnPage(pageNum);
                 const isActive = pageNum === currentPage;
+                const locked = isPageLocked(pageNum);
+                const isFrontier =
+                  editorMode === "guided" && pageNum === maxUnlockedPage && maxUnlockedPage < totalPages;
                 return (
                   <div
                     key={pageNum}
@@ -943,11 +968,17 @@ export default function EnvelopeFieldEditor() {
                       }
                     }}
                     data-testid={`page-frame-${pageNum}`}
+                    data-locked={locked ? "true" : "false"}
                     className="space-y-1"
                   >
                     <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
-                      <span className="font-medium" data-testid={`label-page-frame-${pageNum}`}>
+                      <span className="font-medium flex items-center gap-1.5" data-testid={`label-page-frame-${pageNum}`}>
                         Page {pageNum}
+                        {locked && (
+                          <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                            <Lock className="h-3 w-3" /> locked
+                          </span>
+                        )}
                       </span>
                       {pageSummary(pageNum).total > 0 && (
                         <span>{pageSummary(pageNum).total} field{pageSummary(pageNum).total === 1 ? "" : "s"}</span>
@@ -956,7 +987,7 @@ export default function EnvelopeFieldEditor() {
                     <div
                       className={`relative bg-white dark:bg-gray-900 rounded-lg shadow-sm border-2 transition-colors ${
                         isActive ? "border-primary" : "border-transparent"
-                      }`}
+                      } ${locked ? "opacity-60" : ""}`}
                       style={{ aspectRatio: "8.5/11" }}
                     >
                       {envelope.originalPdfUrl ? (
@@ -978,7 +1009,14 @@ export default function EnvelopeFieldEditor() {
                           else overlayRefs.current.delete(pageNum);
                         }}
                         className="absolute inset-0 rounded-lg"
-                        style={{ cursor: draggingField !== null ? "grabbing" : "default" }}
+                        style={{
+                          cursor: locked
+                            ? "not-allowed"
+                            : draggingField !== null
+                              ? "grabbing"
+                              : "default",
+                          pointerEvents: locked ? "none" : "auto",
+                        }}
                         onMouseMove={(e) => handleMouseMove(e, pageNum)}
                         onMouseUp={handleMouseUp}
                         onMouseLeave={handleMouseUp}
@@ -1022,7 +1060,13 @@ export default function EnvelopeFieldEditor() {
                                 cursor: draggingField === f.index ? "grabbing" : "grab",
                               }}
                               onMouseDown={(e) => handleMouseDown(e, f.index)}
-                              data-testid={`field-${f.type}-${f.index}`}
+                              data-testid={
+                                isSelected
+                                  ? `field-overlay-selected-${f.index}`
+                                  : `field-${f.type}-${f.index}`
+                              }
+                              data-field-type={f.type}
+                              data-field-index={f.index}
                             >
                               <GripVertical className="h-3 w-3 opacity-40" />
                               <Icon className="h-3 w-3" />
@@ -1031,33 +1075,43 @@ export default function EnvelopeFieldEditor() {
                           );
                         })}
                       </div>
+
+                      {locked && (
+                        <div
+                          className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                          data-testid={`page-lock-veil-${pageNum}`}
+                        >
+                          <div className="bg-background/90 border rounded-md px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 shadow">
+                            <Lock className="h-3 w-3" />
+                            Confirm earlier pages to unlock
+                          </div>
+                        </div>
+                      )}
                     </div>
+
+                    {isFrontier && (
+                      <div
+                        className="mt-3 rounded-lg border-2 border-dashed border-primary/40 bg-primary/5 p-4 text-center space-y-2"
+                        data-testid="guided-next-prompt"
+                      >
+                        <p className="text-sm font-semibold">
+                          Page {maxUnlockedPage} is your current working page.
+                        </p>
+                        <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                          Confirm it complete to unlock page {maxUnlockedPage + 1} for editing.
+                        </p>
+                        <Button
+                          onClick={() => setConfirmPageOpen(maxUnlockedPage)}
+                          data-testid="button-confirm-page-complete"
+                        >
+                          <CheckCircle2 className="h-4 w-4 mr-2" />
+                          Page {maxUnlockedPage} complete — continue to page {maxUnlockedPage + 1}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
-
-              {editorMode === "guided" && maxUnlockedPage < totalPages && (
-                <div
-                  className="rounded-lg border-2 border-dashed border-primary/40 bg-primary/5 p-6 text-center space-y-3"
-                  data-testid="guided-next-prompt"
-                >
-                  <Lock className="h-6 w-6 text-primary mx-auto" />
-                  <p className="text-sm font-semibold">
-                    Page {maxUnlockedPage} is the current working page.
-                  </p>
-                  <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                    When you have placed all the fields you need on this page, confirm it
-                    complete to unlock page {maxUnlockedPage + 1}.
-                  </p>
-                  <Button
-                    onClick={() => setConfirmPageOpen(maxUnlockedPage)}
-                    data-testid="button-confirm-page-complete"
-                  >
-                    <CheckCircle2 className="h-4 w-4 mr-2" />
-                    Page {maxUnlockedPage} complete — continue to page {maxUnlockedPage + 1}
-                  </Button>
-                </div>
-              )}
 
               {editorMode === "guided" && maxUnlockedPage >= totalPages && (
                 <div
