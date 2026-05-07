@@ -268,30 +268,30 @@ export default function EnvelopeFieldEditor() {
 
       let completeForSelected = false;
       if (selectedSignerId != null) {
+        // Deterministic per-signer requirements:
+        //  R1 — every page must carry an initial from the selected signer.
+        //  R2 — the LAST page must carry a signature from the selected signer
+        //       when placement is admin_placed (in fixed_bottom_centre the
+        //       signature is auto-stamped server-side, so no field is required).
+        const requireInitial = true;
+        const requireSignature =
+          placementMode === "admin_placed" && page === totalPages;
+
         const hasInitial = onPage.some(
           (f) => f.type === "initial" && f.signerId === selectedSignerId
         );
         const hasSignature = onPage.some(
           (f) => f.type === "signature" && f.signerId === selectedSignerId
         );
-        // Pages where the signer needs a signature placed:
-        //  - admin_placed mode: any page they've put a signature box on must keep it
-        //  - fixed_bottom_centre: signature is auto-stamped on the last page only
-        const signerPlacedSignatureHere =
-          placementMode === "admin_placed" &&
-          fields.some(
-            (f) =>
-              f.type === "signature" &&
-              f.signerId === selectedSignerId &&
-              f.pageNumber === page
-          );
-        const signatureRequiredHere = signerPlacedSignatureHere;
-        completeForSelected = hasInitial && (!signatureRequiredHere || hasSignature);
+
+        completeForSelected =
+          (!requireInitial || hasInitial) &&
+          (!requireSignature || hasSignature);
       }
 
       return { counts, completeForSelected, total: onPage.length };
     },
-    [fieldsOnPage, selectedSignerId, placementMode, fields]
+    [fieldsOnPage, selectedSignerId, placementMode, totalPages]
   );
 
   // All pages always render; in Guided mode, pages beyond maxUnlockedPage are
@@ -305,6 +305,33 @@ export default function EnvelopeFieldEditor() {
     (page: number) => editorMode === "guided" && page > maxUnlockedPage,
     [editorMode, maxUnlockedPage]
   );
+
+  // Guided-mode scroll guard: clamp the canvas scrollTop so the user cannot
+  // advance past the bottom of the highest unlocked page until they confirm.
+  // Also keeps `currentPage` from advancing into locked territory.
+  const scrollGuardRaf = useRef<number | null>(null);
+  const handleCanvasScroll = useCallback(() => {
+    if (editorMode !== "guided") return;
+    const scroller = canvasScrollRef.current;
+    const frontier = pageRefs.current.get(maxUnlockedPage);
+    if (!scroller || !frontier) return;
+    const maxScroll =
+      frontier.offsetTop + frontier.offsetHeight - scroller.clientHeight + 24;
+    if (scroller.scrollTop > Math.max(0, maxScroll)) {
+      if (scrollGuardRaf.current != null) cancelAnimationFrame(scrollGuardRaf.current);
+      scrollGuardRaf.current = requestAnimationFrame(() => {
+        scroller.scrollTop = Math.max(0, maxScroll);
+      });
+    }
+  }, [editorMode, maxUnlockedPage]);
+
+  // Whenever gating tightens (Free→Guided clamp, or load-time restore),
+  // snap the scroll position back inside the unlocked region.
+  useEffect(() => {
+    if (editorMode !== "guided") return;
+    const id = requestAnimationFrame(() => handleCanvasScroll());
+    return () => cancelAnimationFrame(id);
+  }, [editorMode, maxUnlockedPage, handleCanvasScroll]);
 
   // Scroll-driven currentPage sync in both Guided and Free modes.
   useEffect(() => {
@@ -618,7 +645,15 @@ export default function EnvelopeFieldEditor() {
               onValueChange={(v) => {
                 const next = v as EditorMode;
                 setEditorMode(next);
-                if (next === "free") setMaxUnlockedPage(totalPages);
+                if (next === "free") {
+                  setMaxUnlockedPage(totalPages);
+                } else {
+                  // Free → Guided: clamp gating back to the current page so
+                  // earlier progress is preserved but later pages re-lock.
+                  setMaxUnlockedPage((prev) =>
+                    Math.min(prev, Math.max(currentPage, 1))
+                  );
+                }
               }}
             >
               <SelectTrigger data-testid="select-editor-mode">
@@ -947,6 +982,7 @@ export default function EnvelopeFieldEditor() {
             ref={canvasScrollRef}
             className="flex-1 overflow-auto p-4 bg-muted/20"
             onClick={handleCanvasBgClick}
+            onScroll={handleCanvasScroll}
             data-testid="canvas-scroll"
           >
             <div className="mx-auto flex flex-col gap-6" style={{ maxWidth: "800px" }}>
