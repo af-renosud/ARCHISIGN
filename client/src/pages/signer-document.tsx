@@ -110,6 +110,18 @@ export default function SignerDocument() {
     f => f.type === "initial" && f.pageNumber === currentPage
   );
 
+  const signaturePlacementMode = docInfo?.envelope.signaturePlacementMode ?? "fixed_bottom_centre";
+  const adminPlacedSignatureField = placedFields.find(
+    f => f.type === "signature" && f.pageNumber === currentPage
+  );
+  // The locked bottom-centre preview only appears on the last page (where
+  // PdfService stamps the signature box). Geometry mirrors PdfService:
+  // 25% page width, ≈10mm padding from the page bottom.
+  const showFixedBottomPreview =
+    signaturePlacementMode === "fixed_bottom_centre" && currentPage === totalPages && totalPages > 0;
+  const showAdminPlacedSignaturePreview =
+    signaturePlacementMode === "admin_placed" && !!adminPlacedSignatureField;
+
   const findNextUninitialed = useCallback((afterPage: number, pages: number[]) => {
     for (let p = afterPage + 1; p <= totalPages; p++) {
       if (!pages.includes(p)) return p;
@@ -503,6 +515,56 @@ export default function SignerDocument() {
                             <CheckCircle2 className="h-3 w-3" />
                             {signerInitials}
                           </Badge>
+                        </div>
+                      )}
+
+                      {showFixedBottomPreview && (
+                        <div
+                          className="absolute pointer-events-none border-2 border-dashed border-red-500 bg-red-50/40 dark:bg-red-950/30 rounded-sm flex flex-col items-center justify-center px-2"
+                          style={{
+                            left: "37.5%",
+                            width: "25%",
+                            bottom: "3.5%",
+                            height: "9%",
+                          }}
+                          data-testid="preview-signature-fixed-bottom"
+                        >
+                          <p className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-400 font-semibold">
+                            Signature will appear here
+                          </p>
+                          <p
+                            className="text-base sm:text-lg text-blue-800 dark:text-blue-300 italic truncate max-w-full"
+                            style={{ fontFamily: "'Dancing Script', cursive" }}
+                          >
+                            {docInfo.signer.fullName}
+                          </p>
+                        </div>
+                      )}
+
+                      {showAdminPlacedSignaturePreview && adminPlacedSignatureField && (
+                        <div
+                          className="absolute pointer-events-none border-2 border-dashed border-red-500 bg-red-50/40 dark:bg-red-950/30 rounded-sm flex flex-col items-center justify-center px-2"
+                          style={{
+                            left: `${adminPlacedSignatureField.xPos * 100}%`,
+                            top: `${adminPlacedSignatureField.yPos * 100}%`,
+                            width: adminPlacedSignatureField.width
+                              ? `${adminPlacedSignatureField.width * 100}%`
+                              : "25%",
+                            height: adminPlacedSignatureField.height
+                              ? `${adminPlacedSignatureField.height * 100}%`
+                              : "9%",
+                          }}
+                          data-testid="preview-signature-admin-placed"
+                        >
+                          <p className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-400 font-semibold">
+                            Signature will appear here
+                          </p>
+                          <p
+                            className="text-base sm:text-lg text-blue-800 dark:text-blue-300 italic truncate max-w-full"
+                            style={{ fontFamily: "'Dancing Script', cursive" }}
+                          >
+                            {docInfo.signer.fullName}
+                          </p>
                         </div>
                       )}
 
