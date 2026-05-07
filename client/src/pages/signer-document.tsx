@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import {
-  CheckCircle2, PenTool, MessageSquare, ChevronLeft, ChevronRight,
+  CheckCircle2, PenTool, MessageSquare, ChevronLeft,
   FileText, Lock, ShieldCheck, Download
 } from "lucide-react";
 import type { Signer, Envelope } from "@shared/schema";
@@ -82,6 +82,8 @@ export default function SignerDocument() {
   const [queryDialogOpen, setQueryDialogOpen] = useState(false);
   const [queryMessage, setQueryMessage] = useState("");
   const [signDialogOpen, setSignDialogOpen] = useState(false);
+  const [flowStarted, setFlowStarted] = useState(false);
+  const [startConfirmOpen, setStartConfirmOpen] = useState(false);
   const hasRestoredStep = useRef(false);
 
   const { data: docInfo, isLoading, refetch } = useQuery<DocumentInfo>({
@@ -106,9 +108,6 @@ export default function SignerDocument() {
 
   const currentPageInitialField = placedFields.find(
     f => f.type === "initial" && f.pageNumber === currentPage
-  );
-  const currentPageSignatureField = placedFields.find(
-    f => f.type === "signature" && f.pageNumber === currentPage
   );
 
   const findNextUninitialed = useCallback((afterPage: number, pages: number[]) => {
@@ -195,6 +194,8 @@ export default function SignerDocument() {
 
     if (initialedPages.length > 0) {
       hasRestoredStep.current = true;
+      // Signer has resumed mid-flow — bypass the Start gate, they're already in.
+      setFlowStarted(true);
       if (allPagesInitialed) {
         setWizardStep(totalPages + 1);
       } else {
@@ -207,6 +208,13 @@ export default function SignerDocument() {
       hasRestoredStep.current = true;
     }
   }, [docInfo, totalPages, initialedPages, allPagesInitialed, findNextUninitialed]);
+
+  const confirmStart = () => {
+    setStartConfirmOpen(false);
+    setFlowStarted(true);
+    const firstUninitialed = findNextUninitialed(0, initialedPages) ?? 1;
+    setWizardStep(firstUninitialed);
+  };
 
   if (isLoading) {
     return (
@@ -302,19 +310,19 @@ export default function SignerDocument() {
   const stepInstruction = isFinalStep
     ? "All pages have been reviewed and initialed. You may now sign the document or request clarification."
     : isCurrentPageInitialed
-      ? "You have already initialed this page. Use the navigation to continue, or click the next step."
-      : "Please review the content on this page. When you are ready, click the initial field on the document to confirm you have read it.";
+      ? "You have already initialed this page. The next page will open automatically; use Previous to revisit an earlier initialed page."
+      : "Please review the content on this page, then click the initial field on the document. The next page will open automatically — there is no forward skip.";
 
-  const handlePrevStep = () => {
-    setWizardStep((s) => Math.max(1, s - 1));
-  };
-
-  const handleNextStep = () => {
-    if (allPagesInitialed) {
-      setWizardStep(totalPages + 1);
-    } else {
-      setWizardStep((s) => Math.min(totalSteps, s + 1));
+  // Back is only allowed to a page the signer has already initialed (rigid flow:
+  // forward skipping is forbidden, but the signer may revisit a previously initialed page).
+  const prevInitialedPage = (() => {
+    for (let p = wizardStep - 1; p >= 1; p--) {
+      if (initialedPages.includes(p)) return p;
     }
+    return null;
+  })();
+  const handlePrevStep = () => {
+    if (prevInitialedPage !== null) setWizardStep(prevInitialedPage);
   };
 
   const signerInitials = docInfo.signer.fullName.split(" ").map(n => n[0]).join("").toUpperCase();
@@ -344,197 +352,214 @@ export default function SignerDocument() {
       </div>
 
       <div className="max-w-5xl mx-auto p-4 space-y-4">
-        <div className="flex justify-center">
-          <StepperProgress
-            currentStep={wizardStep}
-            totalSteps={totalSteps}
-            initialedPages={initialedPages}
-          />
-        </div>
-
-        <div className="rounded-lg border bg-muted/40 px-4 py-3" data-testid="wizard-instruction-box">
-          <p className="text-sm font-semibold text-foreground" data-testid="text-step-label">
-            {stepLabel}
-          </p>
-          <p className="text-sm text-muted-foreground mt-1" data-testid="text-step-instruction">
-            {stepInstruction}
+        <div
+          className="rounded-lg border-2 border-primary/40 bg-primary/5 px-4 py-3 text-center"
+          data-testid="banner-top-instructions"
+        >
+          <p className="text-sm sm:text-base font-semibold text-foreground">
+            Review the document first and when you are ready to proceed click start. Initial each page first, then sign at the end.
           </p>
         </div>
 
-        {!isFinalStep && (
-          <>
-            <div className="flex items-center justify-between gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handlePrevStep}
-                disabled={wizardStep <= 1}
-                data-testid="button-prev-page"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              <span className="text-sm text-muted-foreground" data-testid="text-page-indicator">
-                Page {currentPage} of {totalPages}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleNextStep}
-                disabled={wizardStep >= totalSteps}
-                data-testid="button-next-page"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-            </div>
-
+        {!flowStarted && (
+          <div className="space-y-4" data-testid="review-mode-container">
             <Card>
               <CardContent className="p-0">
-                <div className="relative bg-muted rounded-md overflow-hidden" style={{ minHeight: "600px" }}>
-                  {docInfo.envelope.originalPdfUrl ? (
-                    <iframe
-                      src={`${docInfo.envelope.originalPdfUrl}#page=${currentPage}`}
-                      className="w-full border-0 rounded-md"
-                      style={{ height: "700px" }}
-                      title={`Document page ${currentPage}`}
-                      data-testid="pdf-viewer"
-                    />
-                  ) : (
-                    <div className="flex items-center justify-center h-full min-h-[600px] p-8">
-                      <div className="text-center space-y-4">
-                        <FileText className="h-16 w-16 text-muted-foreground/20 mx-auto" />
-                        <div>
-                          <p className="text-sm font-medium text-muted-foreground">Page {currentPage}</p>
-                          <p className="text-xs text-muted-foreground/60 mt-1">No PDF document attached</p>
-                        </div>
-                      </div>
+                {docInfo.envelope.originalPdfUrl ? (
+                  <iframe
+                    src={docInfo.envelope.originalPdfUrl}
+                    className="w-full border-0 rounded-md"
+                    style={{ height: "75vh", minHeight: "600px" }}
+                    title="Document review"
+                    data-testid="pdf-viewer-review"
+                  />
+                ) : (
+                  <div className="flex items-center justify-center min-h-[600px] p-8">
+                    <div className="text-center space-y-4">
+                      <FileText className="h-16 w-16 text-muted-foreground/20 mx-auto" />
+                      <p className="text-sm text-muted-foreground">No PDF document attached</p>
                     </div>
-                  )}
-
-                  {currentPageInitialField && !isCurrentPageInitialed && (
-                    <div
-                      className="absolute"
-                      style={{
-                        left: `${currentPageInitialField.xPos * 100}%`,
-                        top: `${currentPageInitialField.yPos * 100}%`,
-                        width: currentPageInitialField.width ? `${currentPageInitialField.width * 100}%` : "auto",
-                      }}
-                    >
-                      <Button
-                        size="sm"
-                        onClick={() => initialMutation.mutate(currentPage)}
-                        disabled={initialMutation.isPending}
-                        className="shadow-lg"
-                        data-testid={`button-initial-page-${currentPage}`}
-                      >
-                        <PenTool className="h-3.5 w-3.5 mr-1.5" />
-                        {initialMutation.isPending ? "Adding..." : `Initial [${signerInitials}]`}
-                      </Button>
-                    </div>
-                  )}
-
-                  {currentPageInitialField && isCurrentPageInitialed && (
-                    <div
-                      className="absolute"
-                      style={{
-                        left: `${currentPageInitialField.xPos * 100}%`,
-                        top: `${currentPageInitialField.yPos * 100}%`,
-                      }}
-                    >
-                      <Badge variant="default" className="gap-1 shadow-sm" data-testid={`badge-initialed-page-${currentPage}`}>
-                        <CheckCircle2 className="h-3 w-3" />
-                        {signerInitials}
-                      </Badge>
-                    </div>
-                  )}
-
-                  {!currentPageInitialField && (
-                    <div className="absolute bottom-4 right-4">
-                      {isCurrentPageInitialed ? (
-                        <Badge variant="default" className="gap-1" data-testid={`badge-initialed-page-${currentPage}`}>
-                          <CheckCircle2 className="h-3 w-3" />
-                          Initialed
-                        </Badge>
-                      ) : (
-                        <Button
-                          size="sm"
-                          onClick={() => initialMutation.mutate(currentPage)}
-                          disabled={initialMutation.isPending}
-                          data-testid={`button-initial-page-${currentPage}`}
-                        >
-                          <PenTool className="h-3.5 w-3.5 mr-1.5" />
-                          {initialMutation.isPending ? "Adding..." : "Initial This Page"}
-                        </Button>
-                      )}
-                    </div>
-                  )}
-
-                  {currentPageSignatureField && (
-                    <div
-                      className="absolute border-2 border-dashed border-red-400 rounded-md bg-red-50/30 dark:bg-red-950/20 flex items-center justify-center"
-                      style={{
-                        left: `${currentPageSignatureField.xPos * 100}%`,
-                        top: `${currentPageSignatureField.yPos * 100}%`,
-                        width: currentPageSignatureField.width ? `${currentPageSignatureField.width * 100}%` : "25%",
-                        height: currentPageSignatureField.height ? `${currentPageSignatureField.height * 100}%` : "8%",
-                      }}
-                      data-testid="signature-placeholder"
-                    >
-                      <span className="text-xs text-red-500 font-medium">Sign Here</span>
-                    </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
-            <div className="flex gap-1.5 flex-wrap justify-center">
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-                <Button
-                  key={page}
-                  variant={page === currentPage ? "default" : initialedPages.includes(page) ? "outline" : "secondary"}
-                  size="sm"
-                  className="w-9"
-                  onClick={() => setWizardStep(page)}
-                  data-testid={`button-page-${page}`}
-                >
-                  {initialedPages.includes(page) ? (
-                    <CheckCircle2 className="h-3 w-3" />
-                  ) : (
-                    page
-                  )}
-                </Button>
-              ))}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 pb-4">
+              <Button
+                variant="outline"
+                onClick={() => setQueryDialogOpen(true)}
+                data-testid="button-request-clarification"
+              >
+                <MessageSquare className="h-4 w-4 mr-2" />
+                Request Clarification
+              </Button>
+              <Button
+                size="lg"
+                onClick={() => setStartConfirmOpen(true)}
+                className="bg-[#F97316] border-[#F97316] text-white font-semibold text-base px-8 shadow-lg"
+                data-testid="button-start-signing"
+              >
+                <PenTool className="h-5 w-5 mr-2" />
+                Start
+              </Button>
             </div>
-          </>
+          </div>
         )}
 
-        {isFinalStep && (
-          <Card>
-            <CardContent className="p-8 text-center space-y-4">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/20 mx-auto">
-                <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
-              </div>
-              <h2 className="text-xl font-semibold" data-testid="text-ready-to-sign">Ready to Sign</h2>
-              <p className="text-sm text-muted-foreground">
-                You have reviewed and initialed all {totalPages} pages of "{docInfo.envelope.subject}".
-              </p>
-              <div className="border-2 border-dashed border-red-400 rounded-lg p-4 mx-auto max-w-sm bg-red-50/30 dark:bg-red-950/20">
-                <p className="text-xs text-muted-foreground mb-2">Your signature will appear as:</p>
-                <p
-                  className="text-2xl text-blue-800 dark:text-blue-300 italic"
-                  style={{ fontFamily: "'Dancing Script', cursive" }}
-                  data-testid="text-signature-preview"
-                >
-                  {docInfo.signer.fullName}
-                </p>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Click "Sign Now" below to apply your legally binding signature.
-              </p>
-            </CardContent>
-          </Card>
-        )}
+        {flowStarted && (
+          <>
+            <div className="flex justify-center">
+              <StepperProgress
+                currentStep={wizardStep}
+                totalSteps={totalSteps}
+                initialedPages={initialedPages}
+              />
+            </div>
 
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 pb-4" data-testid="action-buttons-row">
+            <div className="rounded-lg border bg-muted/40 px-4 py-3" data-testid="wizard-instruction-box">
+              <p className="text-sm font-semibold text-foreground" data-testid="text-step-label">
+                {stepLabel}
+              </p>
+              <p className="text-sm text-muted-foreground mt-1" data-testid="text-step-instruction">
+                {stepInstruction}
+              </p>
+            </div>
+
+            {!isFinalStep && (
+              <>
+                <div className="flex items-center justify-between gap-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePrevStep}
+                    disabled={prevInitialedPage === null}
+                    data-testid="button-prev-page"
+                  >
+                    <ChevronLeft className="h-4 w-4 mr-1" />
+                    Previous initialed page
+                  </Button>
+                  <span className="text-sm text-muted-foreground" data-testid="text-page-indicator">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <span className="text-xs text-muted-foreground italic">
+                    Initial to advance
+                  </span>
+                </div>
+
+                <Card>
+                  <CardContent className="p-0">
+                    <div className="relative bg-muted rounded-md overflow-hidden" style={{ minHeight: "600px" }}>
+                      {docInfo.envelope.originalPdfUrl ? (
+                        <iframe
+                          src={`${docInfo.envelope.originalPdfUrl}#page=${currentPage}`}
+                          className="w-full border-0 rounded-md"
+                          style={{ height: "700px" }}
+                          title={`Document page ${currentPage}`}
+                          data-testid="pdf-viewer"
+                        />
+                      ) : (
+                        <div className="flex items-center justify-center h-full min-h-[600px] p-8">
+                          <div className="text-center space-y-4">
+                            <FileText className="h-16 w-16 text-muted-foreground/20 mx-auto" />
+                            <div>
+                              <p className="text-sm font-medium text-muted-foreground">Page {currentPage}</p>
+                              <p className="text-xs text-muted-foreground/60 mt-1">No PDF document attached</p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {currentPageInitialField && !isCurrentPageInitialed && (
+                        <div
+                          className="absolute"
+                          style={{
+                            left: `${currentPageInitialField.xPos * 100}%`,
+                            top: `${currentPageInitialField.yPos * 100}%`,
+                            width: currentPageInitialField.width ? `${currentPageInitialField.width * 100}%` : "auto",
+                          }}
+                        >
+                          <Button
+                            size="sm"
+                            onClick={() => initialMutation.mutate(currentPage)}
+                            disabled={initialMutation.isPending}
+                            className="shadow-lg"
+                            data-testid={`button-initial-page-${currentPage}`}
+                          >
+                            <PenTool className="h-3.5 w-3.5 mr-1.5" />
+                            {initialMutation.isPending ? "Adding..." : `Initial [${signerInitials}]`}
+                          </Button>
+                        </div>
+                      )}
+
+                      {currentPageInitialField && isCurrentPageInitialed && (
+                        <div
+                          className="absolute"
+                          style={{
+                            left: `${currentPageInitialField.xPos * 100}%`,
+                            top: `${currentPageInitialField.yPos * 100}%`,
+                          }}
+                        >
+                          <Badge variant="default" className="gap-1 shadow-sm" data-testid={`badge-initialed-page-${currentPage}`}>
+                            <CheckCircle2 className="h-3 w-3" />
+                            {signerInitials}
+                          </Badge>
+                        </div>
+                      )}
+
+                      {!currentPageInitialField && (
+                        <div className="absolute bottom-4 right-4">
+                          {isCurrentPageInitialed ? (
+                            <Badge variant="default" className="gap-1" data-testid={`badge-initialed-page-${currentPage}`}>
+                              <CheckCircle2 className="h-3 w-3" />
+                              Initialed
+                            </Badge>
+                          ) : (
+                            <Button
+                              size="sm"
+                              onClick={() => initialMutation.mutate(currentPage)}
+                              disabled={initialMutation.isPending}
+                              data-testid={`button-initial-page-${currentPage}`}
+                            >
+                              <PenTool className="h-3.5 w-3.5 mr-1.5" />
+                              {initialMutation.isPending ? "Adding..." : "Initial This Page"}
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
+            )}
+
+            {isFinalStep && (
+              <Card>
+                <CardContent className="p-8 text-center space-y-4">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/20 mx-auto">
+                    <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
+                  </div>
+                  <h2 className="text-xl font-semibold" data-testid="text-ready-to-sign">Ready to Sign</h2>
+                  <p className="text-sm text-muted-foreground">
+                    You have reviewed and initialed all {totalPages} pages of "{docInfo.envelope.subject}".
+                  </p>
+                  <div className="border-2 border-dashed border-red-400 rounded-lg p-4 mx-auto max-w-sm bg-red-50/30 dark:bg-red-950/20">
+                    <p className="text-xs text-muted-foreground mb-2">Your signature will appear as:</p>
+                    <p
+                      className="text-2xl text-blue-800 dark:text-blue-300 italic"
+                      style={{ fontFamily: "'Dancing Script', cursive" }}
+                      data-testid="text-signature-preview"
+                    >
+                      {docInfo.signer.fullName}
+                    </p>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Click "Sign Now" below to apply your legally binding signature.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 pb-4" data-testid="action-buttons-row">
           <Button
             variant="outline"
             onClick={() => setQueryDialogOpen(true)}
@@ -553,8 +578,45 @@ export default function SignerDocument() {
             <PenTool className="h-5 w-5 mr-2" />
             Sign Now
           </Button>
-        </div>
+            </div>
+          </>
+        )}
       </div>
+
+      <Dialog open={startConfirmOpen} onOpenChange={setStartConfirmOpen}>
+        <DialogContent data-testid="dialog-start-confirm">
+          <DialogHeader>
+            <DialogTitle>Ready to sign — are you sure?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              You are about to enter the guided signing workflow. Once you start, you will be walked through
+              the document one page at a time. Each page must be initialed in sequence before you can apply
+              your final signature.
+            </p>
+            <p className="text-sm text-muted-foreground">
+              You may still go back to a page you have already initialed at any time.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setStartConfirmOpen(false)}
+              data-testid="button-cancel-start"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmStart}
+              className="bg-[#F97316] border-[#F97316] text-white"
+              data-testid="button-confirm-start"
+            >
+              <PenTool className="h-4 w-4 mr-2" />
+              Yes, start signing
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={queryDialogOpen} onOpenChange={setQueryDialogOpen}>
         <DialogContent>

@@ -93,11 +93,17 @@ export async function stampSignedPdf(
           : scriptLineHeight + padding + (metaLineHeight * 4) + padding;
         const margin = 10;
 
-        let boxX = ann.xPos * width;
-        let boxY = (1 - ann.yPos) * height - boxHeight;
+        // Force signature box to centre-horizontal, padded 10mm (≈28.35pt) from page bottom.
+        // Admin-placed xPos/yPos for signature fields are intentionally ignored to avoid
+        // obscuring underlying content (e.g. invoice totals) — see Task #6.
+        const MM_TO_PT = 2.83465;
+        const bottomPaddingPt = 10 * MM_TO_PT;
+        let boxX = (width - boxWidth) / 2;
+        let boxY = bottomPaddingPt;
         boxX = Math.max(margin, Math.min(boxX, width - boxWidth - margin));
         boxY = Math.max(margin, Math.min(boxY, height - boxHeight - margin));
 
+        // Border drawn fully opaque so the signature frame stays crisp.
         page.drawRectangle({
           x: boxX,
           y: boxY,
@@ -106,7 +112,8 @@ export async function stampSignedPdf(
           borderColor: rgb(0.8, 0, 0),
           borderWidth: 1.5,
           color: rgb(1, 1, 1),
-          opacity: 0.95,
+          opacity: 0.10,
+          borderOpacity: 1,
         });
 
         const textX = boxX + padding;
