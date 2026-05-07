@@ -102,7 +102,10 @@ export default function EnvelopeFieldEditor() {
   const [dragMoved, setDragMoved] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [confirmPageOpen, setConfirmPageOpen] = useState<number | null>(null);
-  const [savePromptOpen, setSavePromptOpen] = useState<{ missing: string[] } | null>(null);
+  const [savePromptOpen, setSavePromptOpen] = useState<{
+    missingSignature: string[];
+    pagesMissingInitial: { signer: string; pages: number[] }[];
+  } | null>(null);
   const [expandedSigners, setExpandedSigners] = useState<Set<number>>(new Set());
 
   const canvasScrollRef = useRef<HTMLDivElement>(null);
@@ -254,17 +257,41 @@ export default function EnvelopeFieldEditor() {
   );
 
   // Per-page summary for the rail (signer-aware via selectedSignerId).
+  // A page is "complete" for the selected signer when that signer has every
+  // field they need on this page: at minimum one initial, plus a signature
+  // on the page that bears the signature box when placement is admin_placed.
   const pageSummary = useCallback(
     (page: number) => {
       const onPage = fieldsOnPage(page);
       const counts: Record<FieldType, number> = { signature: 0, initial: 0, date: 0 };
       for (const f of onPage) counts[f.type] += 1;
-      const initialedBySelected =
-        selectedSignerId != null &&
-        onPage.some((f) => f.type === "initial" && f.signerId === selectedSignerId);
-      return { counts, initialedBySelected, total: onPage.length };
+
+      let completeForSelected = false;
+      if (selectedSignerId != null) {
+        const hasInitial = onPage.some(
+          (f) => f.type === "initial" && f.signerId === selectedSignerId
+        );
+        const hasSignature = onPage.some(
+          (f) => f.type === "signature" && f.signerId === selectedSignerId
+        );
+        // Pages where the signer needs a signature placed:
+        //  - admin_placed mode: any page they've put a signature box on must keep it
+        //  - fixed_bottom_centre: signature is auto-stamped on the last page only
+        const signerPlacedSignatureHere =
+          placementMode === "admin_placed" &&
+          fields.some(
+            (f) =>
+              f.type === "signature" &&
+              f.signerId === selectedSignerId &&
+              f.pageNumber === page
+          );
+        const signatureRequiredHere = signerPlacedSignatureHere;
+        completeForSelected = hasInitial && (!signatureRequiredHere || hasSignature);
+      }
+
+      return { counts, completeForSelected, total: onPage.length };
     },
-    [fieldsOnPage, selectedSignerId]
+    [fieldsOnPage, selectedSignerId, placementMode, fields]
   );
 
   const visiblePages = useMemo(() => {
@@ -272,9 +299,8 @@ export default function EnvelopeFieldEditor() {
     return Array.from({ length: Math.min(maxUnlockedPage, totalPages) }, (_, i) => i + 1);
   }, [editorMode, totalPages, maxUnlockedPage]);
 
-  // Scroll-driven currentPage in free mode + on rail-jump in either mode.
+  // Scroll-driven currentPage sync in both Guided and Free modes.
   useEffect(() => {
-    if (editorMode !== "free") return;
     const observer = new IntersectionObserver(
       (entries) => {
         let topMost: { page: number; ratio: number } | null = null;
@@ -295,7 +321,7 @@ export default function EnvelopeFieldEditor() {
     );
     pageRefs.current.forEach((el) => el && observer.observe(el));
     return () => observer.disconnect();
-  }, [editorMode, visiblePages.length]);
+  }, [visiblePages.length]);
 
   const scrollToPage = useCallback((page: number) => {
     const el = pageRefs.current.get(page);
@@ -458,16 +484,32 @@ export default function EnvelopeFieldEditor() {
   };
 
   const handleSaveClick = () => {
-    if (placementMode === "admin_placed" && envelope) {
-      const missing = envelope.signers
-        .filter((s) => !fields.some((f) => f.signerId === s.id && f.type === "signature"))
-        .map((s) => s.fullName);
-      if (missing.length > 0) {
-        setSavePromptOpen({ missing });
-        return;
-      }
+    if (!envelope) {
+      saveMutation.mutate();
+      return;
     }
-    saveMutation.mutate();
+    const missingSignature =
+      placementMode === "admin_placed"
+        ? envelope.signers
+            .filter((s) => !fields.some((f) => f.signerId === s.id && f.type === "signature"))
+            .map((s) => s.fullName)
+        : [];
+    const pagesMissingInitial: { signer: string; pages: number[] }[] = [];
+    for (const s of envelope.signers) {
+      const pages: number[] = [];
+      for (let p = 1; p <= totalPages; p++) {
+        const hasInitial = fields.some(
+          (f) => f.signerId === s.id && f.type === "initial" && f.pageNumber === p
+        );
+        if (!hasInitial) pages.push(p);
+      }
+      if (pages.length > 0) pagesMissingInitial.push({ signer: s.fullName, pages });
+    }
+    if (missingSignature.length === 0 && pagesMissingInitial.length === 0) {
+      saveMutation.mutate();
+      return;
+    }
+    setSavePromptOpen({ missingSignature, pagesMissingInitial });
   };
 
   const toggleSignerExpanded = (signerId: number) => {
@@ -842,8 +884,8 @@ export default function EnvelopeFieldEditor() {
                     ) : null
                   )}
                 </div>
-                {summary.initialedBySelected && (
-                  <Check className="h-3 w-3 text-green-600 absolute top-1 right-1" />
+                {summary.completeForSelected && (
+                  <Check className="h-3 w-3 text-green-600 absolute top-1 right-1" data-testid={`rail-complete-${pageNum}`} />
                 )}
                 {isLocked && (
                   <Lock className="h-3 w-3 text-muted-foreground/50 absolute top-1 left-1" />
@@ -1060,28 +1102,46 @@ export default function EnvelopeFieldEditor() {
         </DialogContent>
       </Dialog>
 
-      {/* Save warning dialog (admin_placed + missing signatures) */}
+      {/* Save warning dialog (missing signatures and/or missing initials) */}
       <Dialog open={savePromptOpen !== null} onOpenChange={(open) => !open && setSavePromptOpen(null)}>
         <DialogContent data-testid="dialog-save-warning">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-amber-500" />
-              Some signers have no signature field
+              Some fields are missing
             </DialogTitle>
             <DialogDescription>
-              Signature placement is set to <strong>Admin-placed</strong>, but the following
-              signer{savePromptOpen?.missing.length === 1 ? " has" : "s have"} no signature
-              field placed:
+              You can still save, but the following gaps may make it harder for signers to
+              complete the document:
             </DialogDescription>
           </DialogHeader>
-          <ul className="list-disc list-inside text-sm space-y-1">
-            {savePromptOpen?.missing.map((name) => (
-              <li key={name} data-testid={`save-warning-missing-${name}`}>{name}</li>
-            ))}
-          </ul>
+          {savePromptOpen?.missingSignature.length ? (
+            <div className="text-sm space-y-1" data-testid="save-warning-section-signature">
+              <p className="font-medium">
+                Signers with no signature field
+                <span className="text-xs text-muted-foreground ml-1">(admin-placed mode)</span>
+              </p>
+              <ul className="list-disc list-inside text-sm space-y-1">
+                {savePromptOpen.missingSignature.map((name) => (
+                  <li key={name} data-testid={`save-warning-missing-${name}`}>{name}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {savePromptOpen?.pagesMissingInitial.length ? (
+            <div className="text-sm space-y-1" data-testid="save-warning-section-initial">
+              <p className="font-medium">Pages with no initial</p>
+              <ul className="list-disc list-inside text-sm space-y-1">
+                {savePromptOpen.pagesMissingInitial.map(({ signer, pages }) => (
+                  <li key={signer} data-testid={`save-warning-noinitial-${signer}`}>
+                    {signer}: page{pages.length > 1 ? "s" : ""} {pages.join(", ")}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <p className="text-xs text-muted-foreground">
-            They will not be able to sign. Switch to <em>Bottom-centre (locked)</em> placement,
-            add a signature field for each missing signer, or save anyway.
+            Add the missing fields and try again, or save anyway.
           </p>
           <DialogFooter>
             <Button
