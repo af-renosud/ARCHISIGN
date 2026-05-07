@@ -95,7 +95,7 @@ export async function stampSignedPdf(
 
         // Force signature box to centre-horizontal, padded 10mm (≈28.35pt) from page bottom.
         // Admin-placed xPos/yPos for signature fields are intentionally ignored to avoid
-        // obscuring underlying content (e.g. invoice totals) — see Task #6.
+        // obscuring underlying content (e.g. invoice totals).
         const MM_TO_PT = 2.83465;
         const bottomPaddingPt = 10 * MM_TO_PT;
         let boxX = (width - boxWidth) / 2;
