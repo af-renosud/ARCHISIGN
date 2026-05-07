@@ -83,6 +83,21 @@ const FIELD_ICONS: Record<FieldType, typeof PenTool> = {
 };
 
 const CLICK_THRESHOLD_PX = 4;
+const MIN_FIELD_W = 0.03;
+const MIN_FIELD_H = 0.015;
+
+type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+const RESIZE_HANDLES: { handle: ResizeHandle; style: React.CSSProperties; cursor: string }[] = [
+  { handle: "nw", style: { left: 0, top: 0, transform: "translate(-50%, -50%)" }, cursor: "nwse-resize" },
+  { handle: "n", style: { left: "50%", top: 0, transform: "translate(-50%, -50%)" }, cursor: "ns-resize" },
+  { handle: "ne", style: { right: 0, top: 0, transform: "translate(50%, -50%)" }, cursor: "nesw-resize" },
+  { handle: "e", style: { right: 0, top: "50%", transform: "translate(50%, -50%)" }, cursor: "ew-resize" },
+  { handle: "se", style: { right: 0, bottom: 0, transform: "translate(50%, 50%)" }, cursor: "nwse-resize" },
+  { handle: "s", style: { left: "50%", bottom: 0, transform: "translate(-50%, 50%)" }, cursor: "ns-resize" },
+  { handle: "sw", style: { left: 0, bottom: 0, transform: "translate(-50%, 50%)" }, cursor: "nesw-resize" },
+  { handle: "w", style: { left: 0, top: "50%", transform: "translate(-50%, -50%)" }, cursor: "ew-resize" },
+];
 
 export default function EnvelopeFieldEditor() {
   const { id } = useParams<{ id: string }>();
@@ -100,6 +115,13 @@ export default function EnvelopeFieldEditor() {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [dragStartPos, setDragStartPos] = useState<{ x: number; y: number } | null>(null);
   const [dragMoved, setDragMoved] = useState(false);
+  const [resizing, setResizing] = useState<{
+    index: number;
+    handle: ResizeHandle;
+    startX: number;
+    startY: number;
+    startField: { xPos: number; yPos: number; width: number; height: number };
+  } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [confirmPageOpen, setConfirmPageOpen] = useState<number | null>(null);
   const [savePromptOpen, setSavePromptOpen] = useState<{
@@ -504,8 +526,58 @@ export default function EnvelopeFieldEditor() {
     [fields]
   );
 
+  const handleResizeMouseDown = useCallback(
+    (e: React.MouseEvent, index: number, handle: ResizeHandle) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const f = fields[index];
+      setResizing({
+        index,
+        handle,
+        startX: e.clientX,
+        startY: e.clientY,
+        startField: { xPos: f.xPos, yPos: f.yPos, width: f.width, height: f.height },
+      });
+      setSelectedFieldIndex(index);
+    },
+    [fields]
+  );
+
   const handleMouseMove = useCallback(
     (e: React.MouseEvent, page: number) => {
+      if (resizing !== null) {
+        const overlay = overlayRefs.current.get(page);
+        if (!overlay) return;
+        const rect = overlay.getBoundingClientRect();
+        const dx = (e.clientX - resizing.startX) / rect.width;
+        const dy = (e.clientY - resizing.startY) / rect.height;
+        const sf = resizing.startField;
+        const h = resizing.handle;
+        let xPos = sf.xPos;
+        let yPos = sf.yPos;
+        let width = sf.width;
+        let height = sf.height;
+        if (h.includes("e")) {
+          width = Math.max(MIN_FIELD_W, Math.min(1 - sf.xPos, sf.width + dx));
+        }
+        if (h.includes("w")) {
+          const newW = Math.max(MIN_FIELD_W, Math.min(sf.xPos + sf.width, sf.width - dx));
+          xPos = sf.xPos + sf.width - newW;
+          width = newW;
+        }
+        if (h.includes("s")) {
+          height = Math.max(MIN_FIELD_H, Math.min(1 - sf.yPos, sf.height + dy));
+        }
+        if (h.includes("n")) {
+          const newH = Math.max(MIN_FIELD_H, Math.min(sf.yPos + sf.height, sf.height - dy));
+          yPos = sf.yPos + sf.height - newH;
+          height = newH;
+        }
+        setFields((prev) =>
+          prev.map((f, i) => (i === resizing.index ? { ...f, xPos, yPos, width, height } : f))
+        );
+        return;
+      }
       if (draggingField === null) return;
       const overlay = overlayRefs.current.get(page);
       if (!overlay) return;
@@ -528,10 +600,17 @@ export default function EnvelopeFieldEditor() {
         )
       );
     },
-    [draggingField, dragOffset, dragStartPos, dragMoved]
+    [draggingField, dragOffset, dragStartPos, dragMoved, resizing]
   );
 
   const handleMouseUp = useCallback(() => {
+    if (resizing !== null) {
+      setResizing(null);
+      setDraggingField(null);
+      setDragStartPos(null);
+      setDragMoved(false);
+      return;
+    }
     if (draggingField !== null && !dragMoved) {
       // Treat as a click — select.
       setSelectedFieldIndex(draggingField);
@@ -548,7 +627,7 @@ export default function EnvelopeFieldEditor() {
     setDraggingField(null);
     setDragStartPos(null);
     setDragMoved(false);
-  }, [draggingField, dragMoved, pushHistory]);
+  }, [draggingField, dragMoved, resizing, pushHistory]);
 
   // Keyboard: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z or Cmd/Ctrl+Y = redo.
   useEffect(() => {
@@ -1186,6 +1265,16 @@ export default function EnvelopeFieldEditor() {
                               <GripVertical className="h-3 w-3 opacity-40" />
                               <Icon className="h-3 w-3" />
                               <span className="truncate max-w-[60px]">{signerName(f.signerId)}</span>
+                              {isSelected && !locked &&
+                                RESIZE_HANDLES.map((rh) => (
+                                  <div
+                                    key={rh.handle}
+                                    className="absolute h-2.5 w-2.5 rounded-sm border border-primary bg-background shadow"
+                                    style={{ ...rh.style, cursor: rh.cursor }}
+                                    onMouseDown={(ev) => handleResizeMouseDown(ev, f.index, rh.handle)}
+                                    data-testid={`resize-handle-${rh.handle}-${f.index}`}
+                                  />
+                                ))}
                             </div>
                           );
                         })}
