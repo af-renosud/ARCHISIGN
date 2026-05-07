@@ -37,10 +37,13 @@ export async function getPageCount(pdfBuffer: Buffer): Promise<number> {
   return pdfDoc.getPageCount();
 }
 
+export type SignaturePlacementMode = "fixed_bottom_centre" | "admin_placed";
+
 export async function stampSignedPdf(
   pdfBuffer: Buffer,
   signersWithAnnotations: SignerWithAnnotations[],
   envelopeId: number,
+  signaturePlacementMode: SignaturePlacementMode = "fixed_bottom_centre",
 ): Promise<{ signedPdfBytes: Uint8Array; documentHash: string }> {
   const { PDFDocument, rgb, StandardFonts } = await import("pdf-lib");
   const fontkit = (await import("@pdf-lib/fontkit")).default;
@@ -93,13 +96,19 @@ export async function stampSignedPdf(
           : scriptLineHeight + padding + (metaLineHeight * 4) + padding;
         const margin = 10;
 
-        // Force signature box to centre-horizontal, padded 10mm (≈28.35pt) from page bottom.
-        // Admin-placed xPos/yPos for signature fields are intentionally ignored to avoid
-        // obscuring underlying content (e.g. invoice totals).
-        const MM_TO_PT = 2.83465;
-        const bottomPaddingPt = 10 * MM_TO_PT;
-        let boxX = (width - boxWidth) / 2;
-        let boxY = bottomPaddingPt;
+        let boxX: number;
+        let boxY: number;
+        if (signaturePlacementMode === "admin_placed") {
+          // Honour admin-placed xPos/yPos. yPos uses top-origin (PDF uses bottom-origin).
+          boxX = ann.xPos * width;
+          boxY = (1 - ann.yPos) * height - boxHeight;
+        } else {
+          // Default: force signature box to centre-horizontal, padded 10mm (≈28.35pt) from page bottom.
+          const MM_TO_PT = 2.83465;
+          const bottomPaddingPt = 10 * MM_TO_PT;
+          boxX = (width - boxWidth) / 2;
+          boxY = bottomPaddingPt;
+        }
         boxX = Math.max(margin, Math.min(boxX, width - boxWidth - margin));
         boxY = Math.max(margin, Math.min(boxY, height - boxHeight - margin));
 

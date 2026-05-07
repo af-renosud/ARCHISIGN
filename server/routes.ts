@@ -96,6 +96,27 @@ export async function registerRoutes(
     res.json(envelope);
   }));
 
+  const patchEnvelopeSchema = z.object({
+    signaturePlacementMode: z.enum(["fixed_bottom_centre", "admin_placed"]).optional(),
+  });
+
+  app.patch("/api/envelopes/:id", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const parsed = patchEnvelopeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: "Invalid update", errors: parsed.error.flatten().fieldErrors });
+    }
+    const existing = await storage.getEnvelope(id);
+    if (!existing) return res.status(404).json({ message: "Envelope not found" });
+    if (existing.status !== "draft") {
+      return res.status(409).json({
+        message: "Envelope can only be edited while in draft status",
+      });
+    }
+    const updated = await storage.updateEnvelope(id, parsed.data);
+    res.json(updated);
+  }));
+
   app.post("/api/envelopes", upload.single("pdf"), asyncHandler(async (req, res) => {
     const envelopeParsed = createEnvelopeRequestSchema.safeParse(req.body);
     if (!envelopeParsed.success) {
@@ -740,6 +761,7 @@ export async function registerRoutes(
             Buffer.from(downloaded.data),
             signersWithAnnotations,
             envelope.id,
+            envelope.signaturePlacementMode ?? "fixed_bottom_centre",
           );
 
           const signedFileName = `signed_${Date.now()}.pdf`;

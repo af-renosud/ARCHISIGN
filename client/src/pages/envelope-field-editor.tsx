@@ -24,10 +24,13 @@ import {
   Trash2,
   GripVertical,
   Save,
+  Lock,
+  Move,
 } from "lucide-react";
 import type { Envelope, Signer, Annotation } from "@shared/schema";
 
 type FieldType = "signature" | "initial" | "date";
+type SignaturePlacementMode = "fixed_bottom_centre" | "admin_placed";
 
 interface PlacedField {
   id?: number;
@@ -70,6 +73,7 @@ export default function EnvelopeFieldEditor() {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const overlayRef = useRef<HTMLDivElement>(null);
   const [loaded, setLoaded] = useState(false);
+  const [placementMode, setPlacementMode] = useState<SignaturePlacementMode>("fixed_bottom_centre");
 
   const { data: envelope, isLoading } = useQuery<
     Envelope & { signers: Signer[] }
@@ -117,6 +121,33 @@ export default function EnvelopeFieldEditor() {
       setSelectedSignerId(envelope.signers[0].id);
     }
   }, [envelope, selectedSignerId]);
+
+  useEffect(() => {
+    if (envelope?.signaturePlacementMode) {
+      setPlacementMode(envelope.signaturePlacementMode as SignaturePlacementMode);
+    }
+  }, [envelope?.signaturePlacementMode]);
+
+  const placementModeMutation = useMutation({
+    mutationFn: async (vars: { mode: SignaturePlacementMode; previous: SignaturePlacementMode }) => {
+      await apiRequest("PATCH", `/api/envelopes/${id}`, { signaturePlacementMode: vars.mode });
+      return vars;
+    },
+    onSuccess: (vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
+      toast({
+        title: "Placement updated",
+        description:
+          vars.mode === "admin_placed"
+            ? "Signature will use the position you place on the document."
+            : "Signature will be locked to the bottom-centre of the last page.",
+      });
+    },
+    onError: (err: Error, vars) => {
+      setPlacementMode(vars.previous);
+      toast({ title: "Update failed", description: err.message, variant: "destructive" });
+    },
+  });
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -302,6 +333,45 @@ export default function EnvelopeFieldEditor() {
 
           <div>
             <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+              Signature Placement
+            </label>
+            <Select
+              value={placementMode}
+              onValueChange={(v) => {
+                const mode = v as SignaturePlacementMode;
+                const previous = placementMode;
+                setPlacementMode(mode);
+                placementModeMutation.mutate({ mode, previous });
+              }}
+              disabled={placementModeMutation.isPending}
+            >
+              <SelectTrigger data-testid="select-placement-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="fixed_bottom_centre" data-testid="option-mode-fixed">
+                  <span className="flex items-center gap-2">
+                    <Lock className="h-3.5 w-3.5" />
+                    Bottom-centre (locked)
+                  </span>
+                </SelectItem>
+                <SelectItem value="admin_placed" data-testid="option-mode-admin">
+                  <span className="flex items-center gap-2">
+                    <Move className="h-3.5 w-3.5" />
+                    Admin-placed (free)
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground/80 mt-1.5 leading-snug">
+              {placementMode === "admin_placed"
+                ? "Signature box uses the field position you drag below."
+                : "Signature box is forced to the page bottom regardless of where you drop the field."}
+            </p>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
               Add Field
             </label>
             <div className="flex flex-col gap-2">
@@ -433,6 +503,21 @@ export default function EnvelopeFieldEditor() {
                   onMouseLeave={handleMouseUp}
                   data-testid="field-overlay"
                 >
+                  {placementMode === "fixed_bottom_centre" &&
+                    currentPage === envelope.totalPages && (
+                      <div
+                        className="absolute border-2 border-dashed border-red-500 bg-red-50/40 dark:bg-red-950/20 rounded flex items-center justify-center text-[10px] font-medium text-red-700 dark:text-red-300 pointer-events-none"
+                        style={{
+                          left: "37.5%",
+                          width: "25%",
+                          bottom: "3%",
+                          height: "10%",
+                        }}
+                        data-testid="preview-locked-signature"
+                      >
+                        <Lock className="h-3 w-3 mr-1" /> Locked signature
+                      </div>
+                    )}
                   {currentPageFields.map((f) => {
                     const Icon = FIELD_ICONS[f.type];
                     return (

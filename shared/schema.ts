@@ -17,6 +17,10 @@ export const webhookDeliveryStateEnum = pgEnum("webhook_delivery_state", [
   "pending", "succeeded", "dead_lettered"
 ]);
 
+export const signaturePlacementModeEnum = pgEnum("signature_placement_mode", [
+  "fixed_bottom_centre", "admin_placed"
+]);
+
 export const envelopes = pgTable("envelopes", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   externalRef: text("external_ref"),
@@ -34,6 +38,7 @@ export const envelopes = pgTable("envelopes", {
   retentionBreachAt: timestamp("retention_breach_at"),
   retentionIncidentRef: text("retention_incident_ref"),
   retentionDetectedAt: timestamp("retention_detected_at"),
+  signaturePlacementMode: signaturePlacementModeEnum("signature_placement_mode").notNull().default("fixed_bottom_centre"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   deletedAt: timestamp("deleted_at"),
