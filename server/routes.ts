@@ -36,6 +36,51 @@ export async function registerRoutes(
   await setupAuth(app);
   registerAuthRoutes(app);
 
+  // E2E auth bypass — gated by env var, refuses to engage in production.
+  // When set, every request looks authenticated as a synthetic admin user so
+  // Playwright can drive admin-only routes without an OIDC round-trip.
+  if (
+    process.env.E2E_AUTH_BYPASS === "1" &&
+    (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test")
+  ) {
+    console.warn(
+      "[AUTH] E2E_AUTH_BYPASS is enabled — every request is treated as a synthetic admin user. Do not use in production.",
+    );
+    const { authStorage } = await import("./replit_integrations/auth/storage");
+    let upserted = false;
+    const E2E_USER_ID = "e2e-admin";
+    const E2E_USER_EMAIL = "e2e@archisign.test";
+    app.use(async (req, _res, next) => {
+      if (!upserted) {
+        try {
+          await authStorage.upsertUser({
+            id: E2E_USER_ID,
+            email: E2E_USER_EMAIL,
+            firstName: "E2E",
+            lastName: "Admin",
+            profileImageUrl: null,
+          });
+          upserted = true;
+        } catch {
+          // Best-effort; subsequent requests will retry.
+        }
+      }
+      (req as any).user = {
+        claims: {
+          sub: E2E_USER_ID,
+          email: E2E_USER_EMAIL,
+          first_name: "E2E",
+          last_name: "Admin",
+        },
+        access_token: "e2e",
+        refresh_token: "e2e",
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      };
+      (req as any).isAuthenticated = () => true;
+      next();
+    });
+  }
+
   const isAdminAuthorized: RequestHandler = (req, res, next) => {
     const p = req.path;
     if (p.startsWith("/api/sign/")) {
