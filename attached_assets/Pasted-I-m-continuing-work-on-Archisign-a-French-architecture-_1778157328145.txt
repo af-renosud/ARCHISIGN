@@ -1,0 +1,34 @@
+I'm continuing work on Archisign, a French-architecture e-signature microservice (React/Vite + Express/TS + Drizzle/Postgres + Replit Object Storage + Gmail). It implements the Inter-App Wire Contract v1.0 (frozen 2026-04-25, source of truth: docs/INTER_APP_CONTRACT_v1.0.md) with two sister apps: Archidoc (legacy v1 caller) and Architrak (born-v2 caller). Authoritative engineering rules are in ARCHISIGN_ARCHITECTURE.md; project overview + env-var table + AS1–AS5 changelog is in replit.md.
+
+State of play:
+
+AS1–AS5 are all complete, architect-approved (PASS), and concurrent-race-tested (3x parallel /send on a fresh draft → identical sentAt, 1 audit row, 1 webhook row, 1 unique event_id). Atomic draft → sent via atomicClaimEnvelopeSend (single-statement guarded UPDATE), idempotent ledger via claimWebhookDelivery (INSERT ON CONFLICT DO NOTHING on eventId), 7 wire events, v1+v2 HMAC signing, per-tenant rate limiting, hourly expiry sweep + daily integrity check schedulers.
+Production is published and live at https://archi-sign-pro.replit.app (confirmed: root serves UI; POST /api/v1/envelopes/create 401s without X-API-KEY).
+Architrak is hosted at https://architrak.replit.app and is requesting the production cutover credentials.
+Immediate task in the new chat:
+
+Architrak needs three production items from us. Generate the reply email/message to Architrak that delivers them, after we make the three small Build-mode decisions and provisioning steps:
+
+Production base URL — answer is https://archi-sign-pro.replit.app (no trailing slash). Endpoints: POST /api/v1/envelopes/create, POST /api/v1/envelopes/:envelopeId/send, GET /api/v1/envelopes/:envelopeId/signed-pdf-url.
+
+ARCHITRAK_API_KEY — currently UNSET on Archisign side. Need to mint a 32-byte url-safe random key, set it as the ARCHITRAK_API_KEY secret (CSV-supported for rotation), and hand the value to Architrak for storage as their ARCHISIGN_API_KEY.
+
+Webhook config — Architrak's inbound URL is https://architrak.replit.app/api/webhooks/archisign. Note: there is NO global webhook URL registry on Archisign; webhookUrl is per-envelope, passed in each /create request body. So nothing to "register" — just confirm the per-envelope mechanic. For the HMAC layer:
+
+ARCHISIGN_WEBHOOK_SECRET is currently SET (24-char dev value). Decide: rotate to a fresh production value (recommended, clean dev/prod split) or distribute as-is.
+ARCHISIGN_WEBHOOK_V2_TENANTS is currently UNSET. Must be set to whatever envelope.origin value Architrak's /create calls will use (conventionally architrak) — without this, Archisign emits v1 (no sha256= prefix, no timestamp header) and Architrak's born-v2 verifier will 401 every event.
+Three decisions needed from me before you provision:
+
+(a) Rotate ARCHISIGN_WEBHOOK_SECRET to a fresh production value, or distribute the existing 24-char one?
+(b) origin tag string Architrak should send (default architrak, confirm or override)?
+(c) Secure channel for delivering the API key + webhook secret to Architrak (1Password share link, Signal, encrypted email, etc.)?
+Reference facts already verified (don't re-derive):
+
+v1 vs v2 HMAC headers: single header X-Archisign-Signature, per-tenant switch (not concurrent co-emit — divergence from contract §3.9 wording, behaviourally fine for both Architrak born-v2 and Archidoc migration). v2 = sha256=<hex> + X-Archisign-Timestamp: <unix-ms>; v1 = bare <hex>, no timestamp.
+accessUrl rotation: /send never returns accessUrl in any branch and never rotates tokens today; §3.5.4 resend-after-expiry path is deferred to a future AS6 task. Architrak's G3 invariant trigger: envelope.expired webhook receipt.
+/send is idempotent on {sent, viewed, queried} (200), 409 on {signed, declined, expired, void}, atomic draft → sent with single side-effect emission.
+Workflow Start application is the only workflow; deployment is auto-published from main.
+User preferences: dense planning, no emojis in chat, no tool-name mentions, terse where possible, concise replies favoured over long ones. Don't restate context the user already gave.
+
+Start by asking me the three decisions above, then provision and draft the reply to Architrak.
+
