@@ -5,6 +5,7 @@ import {
   describeV2TenantConfig,
   isV2Enabled,
   resetV2TenantConfigCache,
+  validateV2TenantConfig,
 } from "../WebhookSignature";
 
 function withEnv(allowlist: string | undefined, disabled: string | undefined, fn: () => void) {
@@ -154,6 +155,87 @@ test("isV2Enabled: legacy allowlist takes precedence over disabled list when bot
     // allowlist mode wins; architrak is on the allowlist so it stays enabled regardless of disabled list
     assert.equal(isV2Enabled("architrak"), true);
     assert.equal(isV2Enabled("archidoc"), false);
+  });
+});
+
+test("validateV2TenantConfig: emits exactly one log line per call (default-on)", () => {
+  withEnv(undefined, undefined, () => {
+    const lines: string[] = [];
+    validateV2TenantConfig((line) => lines.push(line));
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /\[startup\] INFO:/);
+    assert.match(lines[0], /ON for all tenants by default/);
+  });
+});
+
+test("validateV2TenantConfig: emits exactly one WARN line on parse error", () => {
+  withEnv("{broken", undefined, () => {
+    const lines: string[] = [];
+    validateV2TenantConfig((line) => lines.push(line));
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /\[startup\] WARN:/);
+    assert.match(lines[0], /could not be parsed/);
+  });
+});
+
+test("validateV2TenantConfig: emits exactly one INFO line for legacy allowlist mode", () => {
+  withEnv("architrak,otherTenant", undefined, () => {
+    const lines: string[] = [];
+    validateV2TenantConfig((line) => lines.push(line));
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /\[startup\] INFO:/);
+    assert.match(lines[0], /architrak/);
+  });
+});
+
+test("validateV2TenantConfig: each call emits exactly one line (no accumulation across calls)", () => {
+  withEnv("architrak", undefined, () => {
+    const lines: string[] = [];
+    validateV2TenantConfig((line) => lines.push(line));
+    validateV2TenantConfig((line) => lines.push(line));
+    validateV2TenantConfig((line) => lines.push(line));
+    assert.equal(lines.length, 3);
+  });
+});
+
+test("parsed config is cached: isV2Enabled lookups after validateV2TenantConfig do not re-log or re-parse", () => {
+  withEnv("architrak", undefined, () => {
+    const lines: string[] = [];
+    validateV2TenantConfig((line) => lines.push(line));
+    assert.equal(lines.length, 1);
+
+    // Many subsequent isV2Enabled lookups must not invoke the log function again.
+    for (let i = 0; i < 100; i++) {
+      isV2Enabled("architrak");
+      isV2Enabled("archidoc");
+      isV2Enabled("anyTenant");
+    }
+    assert.equal(lines.length, 1, "isV2Enabled lookups must not produce additional log lines");
+
+    // Sanity: cached config still drives gating decisions correctly.
+    assert.equal(isV2Enabled("architrak"), true);
+    assert.equal(isV2Enabled("archidoc"), false);
+  });
+});
+
+test("parsed config is cached: env mutation after validate is ignored until cache reset", () => {
+  withEnv("architrak", undefined, () => {
+    const lines: string[] = [];
+    validateV2TenantConfig((line) => lines.push(line));
+    assert.equal(lines.length, 1);
+
+    // Mutate env behind the cache's back; isV2Enabled should still use the cached config.
+    process.env.ARCHISIGN_WEBHOOK_V2_TENANTS = "archidoc";
+    assert.equal(isV2Enabled("architrak"), true);
+    assert.equal(isV2Enabled("archidoc"), false);
+    assert.equal(lines.length, 1, "no boot banner re-emitted from isV2Enabled path");
+
+    // After explicit reset, a fresh validate picks up the new env and emits one new line.
+    resetV2TenantConfigCache();
+    validateV2TenantConfig((line) => lines.push(line));
+    assert.equal(lines.length, 2);
+    assert.equal(isV2Enabled("architrak"), false);
+    assert.equal(isV2Enabled("archidoc"), true);
   });
 });
 
