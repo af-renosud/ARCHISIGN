@@ -13,7 +13,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Send, Copy, ExternalLink, FileText, Eye, Clock,
-  AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2, RefreshCw, PenTool
+  AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2, RefreshCw, PenTool,
+  KeyRound, EyeOff
 } from "lucide-react";
 import type { Envelope, Signer, CommunicationLog, AuditEvent } from "@shared/schema";
 import { format } from "date-fns";
@@ -34,6 +35,43 @@ type EnvelopeDetail = Envelope & {
   auditEvents: AuditEvent[];
 };
 
+interface CredentialRowProps {
+  label: string;
+  value: string;
+  signerId: number;
+  field: string;
+  onCopy: (value: string, label: string) => void;
+  mono?: boolean;
+  sensitive?: boolean;
+}
+
+function CredentialRow({ label, value, signerId, field, onCopy, mono, sensitive }: CredentialRowProps) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs text-muted-foreground" data-testid={`label-cred-${field}-${signerId}`}>
+        {label}
+      </Label>
+      <div className="flex items-center gap-2">
+        <code
+          className={`flex-1 min-w-0 truncate text-xs px-3 py-2 rounded-md bg-muted ${mono ? "font-mono" : ""} ${sensitive ? "select-all" : ""}`}
+          data-testid={`text-cred-${field}-${signerId}`}
+          title={value}
+        >
+          {value}
+        </code>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => onCopy(value, label)}
+          data-testid={`button-copy-${field}-${signerId}`}
+        >
+          <Copy className="h-3 w-3" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function EnvelopeDetail() {
   const { id } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
@@ -41,6 +79,7 @@ export default function EnvelopeDetail() {
   const [replyMessage, setReplyMessage] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
+  const [revealedCreds, setRevealedCreds] = useState<Record<number, boolean>>({});
 
   const { data: envelope, isLoading } = useQuery<EnvelopeDetail>({
     queryKey: ["/api/envelopes", id],
@@ -126,6 +165,15 @@ export default function EnvelopeDetail() {
     const url = `${window.location.origin}/sign/${token}`;
     navigator.clipboard.writeText(url);
     toast({ title: "Link copied", description: "Signing link copied to clipboard." });
+  };
+
+  const copyValue = (value: string, label: string) => {
+    navigator.clipboard.writeText(value);
+    toast({ title: `${label} copied`, description: "Value copied to clipboard." });
+  };
+
+  const toggleReveal = (signerId: number) => {
+    setRevealedCreds((prev) => ({ ...prev, [signerId]: !prev[signerId] }));
   };
 
   return (
@@ -321,8 +369,56 @@ export default function EnvelopeDetail() {
                         <Copy className="h-3 w-3 mr-1.5" />
                         Copy Link
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => toggleReveal(signer.id)}
+                        data-testid={`button-toggle-creds-${signer.id}`}
+                      >
+                        {revealedCreds[signer.id] ? (
+                          <><EyeOff className="h-3 w-3 mr-1.5" />Hide credentials</>
+                        ) : (
+                          <><KeyRound className="h-3 w-3 mr-1.5" />Reveal credentials</>
+                        )}
+                      </Button>
                     </div>
                   </div>
+
+                  {revealedCreds[signer.id] && (
+                    <div className="mt-4 pt-4 border-t space-y-3">
+                      <div className="flex items-start gap-2 p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50">
+                        <Shield className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                        <p className="text-xs text-amber-900 dark:text-amber-200">
+                          The access token is a bearer credential. Anyone with this token can sign as this signer until the envelope is completed. Share only over a secure channel.
+                        </p>
+                      </div>
+
+                      <CredentialRow
+                        label="Access URL"
+                        value={`${window.location.origin}/sign/${signer.accessToken}`}
+                        signerId={signer.id}
+                        field="accessUrl"
+                        onCopy={copyValue}
+                        mono
+                      />
+                      <CredentialRow
+                        label="Access Token"
+                        value={signer.accessToken}
+                        signerId={signer.id}
+                        field="accessToken"
+                        onCopy={copyValue}
+                        mono
+                        sensitive
+                      />
+                      <CredentialRow
+                        label="OTP Destination"
+                        value={signer.email}
+                        signerId={signer.id}
+                        field="otpDestination"
+                        onCopy={copyValue}
+                      />
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             ))}
