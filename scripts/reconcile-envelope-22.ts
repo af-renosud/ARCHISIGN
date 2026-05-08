@@ -50,6 +50,8 @@ async function main() {
         state: "succeeded",
         succeededAt: now,
         deadLetteredAt: null,
+        lastAttemptAt: now,
+        lastStatusCode: 200,
         lastError: `${queried.lastError ?? ""}\n[reconcile] receiver confirmed out-of-band ${now.toISOString()}`.trim(),
         updatedAt: now,
       })
