@@ -6,6 +6,11 @@ import {
   isV2Enabled,
   resetV2TenantConfigCache,
   validateV2TenantConfig,
+  signV1,
+  signV2,
+  verifyV1,
+  verifyV2,
+  REPLAY_WINDOW_MS,
 } from "../WebhookSignature";
 
 function withEnv(allowlist: string | undefined, disabled: string | undefined, fn: () => void) {
@@ -245,4 +250,246 @@ test("isV2Enabled: empty/missing tenantKey is always false", () => {
     assert.equal(isV2Enabled(null), false);
     assert.equal(isV2Enabled(""), false);
   });
+});
+
+// ---------------------------------------------------------------------------
+// verifyV1
+// ---------------------------------------------------------------------------
+
+const V1_SECRET = "v1-test-secret";
+const V1_BODY = '{"event":"envelope.sent","envelopeId":"abc"}';
+
+test("verifyV1: missing header returns missing_header", () => {
+  const res = verifyV1(V1_BODY, V1_SECRET, undefined);
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "missing_header");
+});
+
+test("verifyV1: empty array header returns missing_header", () => {
+  const res = verifyV1(V1_BODY, V1_SECRET, []);
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "missing_header");
+});
+
+test("verifyV1: length mismatch returns length_mismatch", () => {
+  const res = verifyV1(V1_BODY, V1_SECRET, "deadbeef");
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "length_mismatch");
+});
+
+test("verifyV1: signature mismatch (same length, wrong bytes) returns signature_mismatch", () => {
+  const wrong = "0".repeat(64);
+  const res = verifyV1(V1_BODY, V1_SECRET, wrong);
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "signature_mismatch");
+});
+
+test("verifyV1: signature computed with wrong secret returns signature_mismatch", () => {
+  const wrongSig = signV1(V1_BODY, "different-secret");
+  const res = verifyV1(V1_BODY, V1_SECRET, wrongSig);
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "signature_mismatch");
+});
+
+test("verifyV1: valid signature returns ok", () => {
+  const sig = signV1(V1_BODY, V1_SECRET);
+  const res = verifyV1(V1_BODY, V1_SECRET, sig);
+  assert.equal(res.ok, true);
+  assert.equal(res.reason, undefined);
+});
+
+test("verifyV1: array header takes first element", () => {
+  const sig = signV1(V1_BODY, V1_SECRET);
+  const res = verifyV1(V1_BODY, V1_SECRET, [sig, "ignored"]);
+  assert.equal(res.ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// verifyV2
+// ---------------------------------------------------------------------------
+
+const V2_SECRET = "v2-test-secret";
+const V2_BODY = '{"event":"envelope.signed","envelopeId":"xyz"}';
+
+test("verifyV2: missing both headers returns missing_header", () => {
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: undefined,
+    signatureHeader: undefined,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "missing_header");
+});
+
+test("verifyV2: missing timestamp header returns missing_header", () => {
+  const { signature } = signV2(V2_BODY, V2_SECRET);
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: undefined,
+    signatureHeader: signature,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "missing_header");
+});
+
+test("verifyV2: missing signature header returns missing_header", () => {
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: String(Date.now()),
+    signatureHeader: undefined,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "missing_header");
+});
+
+test("verifyV2: malformed timestamp returns malformed_timestamp", () => {
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: "not-a-number",
+    signatureHeader: "0".repeat(64),
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "malformed_timestamp");
+});
+
+test("verifyV2: stale timestamp (older than replay window) returns stale_timestamp", () => {
+  const now = Date.now();
+  const stale = now - REPLAY_WINDOW_MS - 1000;
+  const { signature } = signV2(V2_BODY, V2_SECRET, stale);
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: String(stale),
+    signatureHeader: signature,
+    now,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "stale_timestamp");
+});
+
+test("verifyV2: future timestamp beyond replay window returns stale_timestamp", () => {
+  const now = Date.now();
+  const future = now + REPLAY_WINDOW_MS + 1000;
+  const { signature } = signV2(V2_BODY, V2_SECRET, future);
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: String(future),
+    signatureHeader: signature,
+    now,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "stale_timestamp");
+});
+
+test("verifyV2: length mismatch returns length_mismatch", () => {
+  const ts = Date.now();
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: String(ts),
+    signatureHeader: "deadbeef",
+    now: ts,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "length_mismatch");
+});
+
+test("verifyV2: signature mismatch (same length, wrong bytes) returns signature_mismatch", () => {
+  const ts = Date.now();
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: String(ts),
+    signatureHeader: "0".repeat(64),
+    now: ts,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "signature_mismatch");
+});
+
+test("verifyV2: wrong secret returns signature_mismatch", () => {
+  const ts = Date.now();
+  const { signature } = signV2(V2_BODY, "different-secret", ts);
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: String(ts),
+    signatureHeader: signature,
+    now: ts,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "signature_mismatch");
+});
+
+test("verifyV2: tampered body returns signature_mismatch", () => {
+  const ts = Date.now();
+  const { signature } = signV2(V2_BODY, V2_SECRET, ts);
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY + " ",
+    timestampHeader: String(ts),
+    signatureHeader: signature,
+    now: ts,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, "signature_mismatch");
+});
+
+test("verifyV2: valid signature returns ok", () => {
+  const ts = Date.now();
+  const { signature } = signV2(V2_BODY, V2_SECRET, ts);
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: String(ts),
+    signatureHeader: signature,
+    now: ts,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.reason, undefined);
+});
+
+test("verifyV2: sha256= prefix is stripped before comparison", () => {
+  const ts = Date.now();
+  const { header } = signV2(V2_BODY, V2_SECRET, ts);
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: String(ts),
+    signatureHeader: header,
+    now: ts,
+  });
+  assert.equal(res.ok, true);
+});
+
+test("verifyV2: array headers take first element", () => {
+  const ts = Date.now();
+  const { signature } = signV2(V2_BODY, V2_SECRET, ts);
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: [String(ts), "ignored"],
+    signatureHeader: [signature, "ignored"],
+    now: ts,
+  });
+  assert.equal(res.ok, true);
+});
+
+test("verifyV2: timestamp at exact replay window boundary is accepted", () => {
+  const now = Date.now();
+  const boundary = now - REPLAY_WINDOW_MS;
+  const { signature } = signV2(V2_BODY, V2_SECRET, boundary);
+  const res = verifyV2({
+    secret: V2_SECRET,
+    rawBody: V2_BODY,
+    timestampHeader: String(boundary),
+    signatureHeader: signature,
+    now,
+  });
+  assert.equal(res.ok, true);
 });
