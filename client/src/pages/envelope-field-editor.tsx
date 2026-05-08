@@ -76,6 +76,15 @@ const FIELD_DOT_COLORS: Record<FieldType, string> = {
   date: "bg-green-500",
 };
 
+const FIELD_BUTTON_COLORS: Record<FieldType, string> = {
+  signature:
+    "border-2 border-red-500 bg-red-50 hover:bg-red-100 text-red-700 dark:bg-red-950/40 dark:hover:bg-red-950/60 dark:text-red-200 dark:border-red-400",
+  initial:
+    "border-2 border-blue-500 bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:hover:bg-blue-950/60 dark:text-blue-200 dark:border-blue-400",
+  date:
+    "border-2 border-green-500 bg-green-50 hover:bg-green-100 text-green-700 dark:bg-green-950/40 dark:hover:bg-green-950/60 dark:text-green-200 dark:border-green-400",
+};
+
 const FIELD_ICONS: Record<FieldType, typeof PenTool> = {
   signature: PenTool,
   initial: Type,
@@ -890,12 +899,12 @@ export default function EnvelopeFieldEditor() {
                     key={type}
                     variant="outline"
                     size="sm"
-                    className="justify-start gap-2"
+                    className={`justify-start gap-2 font-semibold shadow-sm ${FIELD_BUTTON_COLORS[type]}`}
                     onClick={() => addField(type)}
                     disabled={!selectedSignerId}
                     data-testid={`button-add-${type}`}
                   >
-                    <Icon className="h-3.5 w-3.5" />
+                    <Icon className="h-4 w-4" />
                     {FIELD_DEFAULTS[type].label}
                   </Button>
                 );
