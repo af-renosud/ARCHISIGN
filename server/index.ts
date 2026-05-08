@@ -5,6 +5,7 @@ import { createServer } from "http";
 import { seedDatabase } from "./seed";
 import { pool } from "./db";
 import { startSchedulers, stopSchedulers } from "./jobs/scheduler";
+import { validateV2TenantConfig } from "./services/WebhookSignature";
 
 const app = express();
 const httpServer = createServer(app);
@@ -89,6 +90,8 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  validateV2TenantConfig((msg) => log(msg, "webhook"));
+
   await registerRoutes(httpServer, app);
 
   try {
