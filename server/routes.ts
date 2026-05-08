@@ -612,6 +612,7 @@ export async function registerRoutes(
         originalPdfUrl: envelope.originalPdfUrl,
         status: envelope.status,
         totalPages: envelope.totalPages,
+        signaturePlacementMode: envelope.signaturePlacementMode,
       },
       signer: {
         id: signer.id,

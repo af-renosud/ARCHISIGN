@@ -68,7 +68,7 @@ export function LockedPageView({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [isRendering, setIsRendering] = useState(true);
-  const [renderedSize, setRenderedSize] = useState<{ w: number; h: number } | null>(null);
+  const [renderedSize, setRenderedSize] = useState<{ w: number; h: number; pageWidthPt: number; pageHeightPt: number } | null>(null);
 
   const renderPage = useCallback(async () => {
     setRenderError(null);
@@ -105,6 +105,8 @@ export function LockedPageView({
       setRenderedSize({
         w: Math.floor(viewport.width / dpr),
         h: Math.floor(viewport.height / dpr),
+        pageWidthPt: baseViewport.width,
+        pageHeightPt: baseViewport.height,
       });
     } catch (err) {
       setRenderError(err instanceof Error ? err.message : String(err));
@@ -279,17 +281,27 @@ function FixedBottomSignatureOverlay({
   onClick,
   pending,
 }: {
-  renderedSize: { w: number; h: number };
+  renderedSize: { w: number; h: number; pageWidthPt: number; pageHeightPt: number };
   placed: boolean;
   signerFullName: string;
   onClick?: () => void;
   pending: boolean;
 }) {
-  // Mirror PdfService fixed_bottom_centre geometry: 25% page width, ~10mm padding from bottom (~9% height).
-  const width = 0.25 * renderedSize.w;
-  const height = 0.09 * renderedSize.h;
-  const left = 0.375 * renderedSize.w;
-  const top = renderedSize.h - height - 0.035 * renderedSize.h;
+  // Mirror PdfService.stampSignedPdf() fixed_bottom_centre geometry exactly:
+  //   boxWidth = 260pt (fallback when annotation.width is unset)
+  //   boxHeight = scriptLineHeight(≈32) + padding(8) + metaLineHeight(12)*4 + padding(8) ≈ 96pt
+  //   boxX     = (pageWidth - boxWidth) / 2
+  //   boxY     = 10mm padding from page bottom (≈ 28.35pt)
+  // We project these PDF-point values into rendered CSS pixels via pageWidthPt/pageHeightPt.
+  const BOX_WIDTH_PT = 260;
+  const BOX_HEIGHT_PT = 96;
+  const BOTTOM_PADDING_PT = 28.35;
+  const pxPerPtX = renderedSize.w / renderedSize.pageWidthPt;
+  const pxPerPtY = renderedSize.h / renderedSize.pageHeightPt;
+  const width = BOX_WIDTH_PT * pxPerPtX;
+  const height = BOX_HEIGHT_PT * pxPerPtY;
+  const left = (renderedSize.pageWidthPt - BOX_WIDTH_PT) / 2 * pxPerPtX;
+  const top = renderedSize.h - height - BOTTOM_PADDING_PT * pxPerPtY;
 
   if (placed) {
     return (
