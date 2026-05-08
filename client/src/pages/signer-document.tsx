@@ -13,6 +13,7 @@ import {
   FileText, Lock, ShieldCheck, Download
 } from "lucide-react";
 import type { Signer, Envelope } from "@shared/schema";
+import { LockedPageView } from "@/components/locked-page-view";
 
 interface PlacedField {
   id: number;
@@ -111,16 +112,11 @@ export default function SignerDocument() {
   );
 
   const signaturePlacementMode = docInfo?.envelope.signaturePlacementMode ?? "fixed_bottom_centre";
-  const adminPlacedSignatureField = placedFields.find(
-    f => f.type === "signature" && f.pageNumber === currentPage
-  );
   // The locked bottom-centre preview only appears on the last page (where
   // PdfService stamps the signature box). Geometry mirrors PdfService:
   // 25% page width, ≈10mm padding from the page bottom.
   const showFixedBottomPreview =
     signaturePlacementMode === "fixed_bottom_centre" && currentPage === totalPages && totalPages > 0;
-  const showAdminPlacedSignaturePreview =
-    signaturePlacementMode === "admin_placed" && !!adminPlacedSignatureField;
 
   const findNextUninitialed = useCallback((afterPage: number, pages: number[]) => {
     for (let p = afterPage + 1; p <= totalPages; p++) {
@@ -337,8 +333,6 @@ export default function SignerDocument() {
     if (prevInitialedPage !== null) setWizardStep(prevInitialedPage);
   };
 
-  const signerInitials = docInfo.signer.fullName.split(" ").map(n => n[0]).join("").toUpperCase();
-
   return (
     <div className="min-h-screen bg-background">
       <link
@@ -459,166 +453,94 @@ export default function SignerDocument() {
                 </div>
 
                 <Card>
-                  <CardContent className="p-0">
-                    <div className="relative bg-muted rounded-md overflow-hidden" style={{ minHeight: "600px" }}>
-                      {docInfo.envelope.originalPdfUrl ? (
-                        <iframe
-                          src={`${docInfo.envelope.originalPdfUrl}#page=${currentPage}`}
-                          className="w-full border-0 rounded-md"
-                          style={{ height: "700px" }}
-                          title={`Document page ${currentPage}`}
-                          data-testid="pdf-viewer"
-                        />
-                      ) : (
-                        <div className="flex items-center justify-center h-full min-h-[600px] p-8">
-                          <div className="text-center space-y-4">
-                            <FileText className="h-16 w-16 text-muted-foreground/20 mx-auto" />
-                            <div>
-                              <p className="text-sm font-medium text-muted-foreground">Page {currentPage}</p>
-                              <p className="text-xs text-muted-foreground/60 mt-1">No PDF document attached</p>
-                            </div>
+                  <CardContent className="p-2 sm:p-4">
+                    {docInfo.envelope.originalPdfUrl ? (
+                      <LockedPageView
+                        pdfUrl={docInfo.envelope.originalPdfUrl}
+                        pageNumber={currentPage}
+                        fields={placedFields.filter(f => f.pageNumber === currentPage)}
+                        signerFullName={docInfo.signer.fullName}
+                        initialPlaced={isCurrentPageInitialed}
+                        signaturePlaced={false}
+                        showFixedBottomSignaturePlaceholder={false}
+                        onClickInitial={() => initialMutation.mutate(currentPage)}
+                        initialPending={initialMutation.isPending}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center min-h-[600px] p-8 bg-muted rounded-md">
+                        <div className="text-center space-y-4">
+                          <FileText className="h-16 w-16 text-muted-foreground/20 mx-auto" />
+                          <div>
+                            <p className="text-sm font-medium text-muted-foreground">Page {currentPage}</p>
+                            <p className="text-xs text-muted-foreground/60 mt-1">No PDF document attached</p>
                           </div>
                         </div>
-                      )}
+                      </div>
+                    )}
 
-                      {currentPageInitialField && !isCurrentPageInitialed && (
-                        <div
-                          className="absolute"
-                          style={{
-                            left: `${currentPageInitialField.xPos * 100}%`,
-                            top: `${currentPageInitialField.yPos * 100}%`,
-                            width: currentPageInitialField.width ? `${currentPageInitialField.width * 100}%` : "auto",
-                          }}
-                        >
+                    {!currentPageInitialField && docInfo.envelope.originalPdfUrl && (
+                      <div className="flex justify-end mt-3">
+                        {isCurrentPageInitialed ? (
+                          <Badge variant="default" className="gap-1" data-testid={`badge-initialed-page-${currentPage}`}>
+                            <CheckCircle2 className="h-3 w-3" />
+                            Page initialed
+                          </Badge>
+                        ) : (
                           <Button
                             size="sm"
                             onClick={() => initialMutation.mutate(currentPage)}
                             disabled={initialMutation.isPending}
-                            className="shadow-lg"
                             data-testid={`button-initial-page-${currentPage}`}
                           >
                             <PenTool className="h-3.5 w-3.5 mr-1.5" />
-                            {initialMutation.isPending ? "Adding..." : `Initial [${signerInitials}]`}
+                            {initialMutation.isPending ? "Adding..." : "Initial This Page"}
                           </Button>
-                        </div>
-                      )}
-
-                      {currentPageInitialField && isCurrentPageInitialed && (
-                        <div
-                          className="absolute"
-                          style={{
-                            left: `${currentPageInitialField.xPos * 100}%`,
-                            top: `${currentPageInitialField.yPos * 100}%`,
-                          }}
-                        >
-                          <Badge variant="default" className="gap-1 shadow-sm" data-testid={`badge-initialed-page-${currentPage}`}>
-                            <CheckCircle2 className="h-3 w-3" />
-                            {signerInitials}
-                          </Badge>
-                        </div>
-                      )}
-
-                      {showFixedBottomPreview && (
-                        <div
-                          className="absolute pointer-events-none border-2 border-dashed border-red-500 bg-red-50/40 dark:bg-red-950/30 rounded-sm flex flex-col items-center justify-center px-2"
-                          style={{
-                            left: "37.5%",
-                            width: "25%",
-                            bottom: "3.5%",
-                            height: "9%",
-                          }}
-                          data-testid="preview-signature-fixed-bottom"
-                        >
-                          <p className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-400 font-semibold">
-                            Signature will appear here
-                          </p>
-                          <p
-                            className="text-base sm:text-lg text-blue-800 dark:text-blue-300 italic truncate max-w-full"
-                            style={{ fontFamily: "'Dancing Script', cursive" }}
-                          >
-                            {docInfo.signer.fullName}
-                          </p>
-                        </div>
-                      )}
-
-                      {showAdminPlacedSignaturePreview && adminPlacedSignatureField && (
-                        <div
-                          className="absolute pointer-events-none border-2 border-dashed border-red-500 bg-red-50/40 dark:bg-red-950/30 rounded-sm flex flex-col items-center justify-center px-2"
-                          style={{
-                            left: `${adminPlacedSignatureField.xPos * 100}%`,
-                            top: `${adminPlacedSignatureField.yPos * 100}%`,
-                            width: adminPlacedSignatureField.width
-                              ? `${adminPlacedSignatureField.width * 100}%`
-                              : "25%",
-                            height: adminPlacedSignatureField.height
-                              ? `${adminPlacedSignatureField.height * 100}%`
-                              : "9%",
-                          }}
-                          data-testid="preview-signature-admin-placed"
-                        >
-                          <p className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-400 font-semibold">
-                            Signature will appear here
-                          </p>
-                          <p
-                            className="text-base sm:text-lg text-blue-800 dark:text-blue-300 italic truncate max-w-full"
-                            style={{ fontFamily: "'Dancing Script', cursive" }}
-                          >
-                            {docInfo.signer.fullName}
-                          </p>
-                        </div>
-                      )}
-
-                      {!currentPageInitialField && (
-                        <div className="absolute bottom-4 right-4">
-                          {isCurrentPageInitialed ? (
-                            <Badge variant="default" className="gap-1" data-testid={`badge-initialed-page-${currentPage}`}>
-                              <CheckCircle2 className="h-3 w-3" />
-                              Initialed
-                            </Badge>
-                          ) : (
-                            <Button
-                              size="sm"
-                              onClick={() => initialMutation.mutate(currentPage)}
-                              disabled={initialMutation.isPending}
-                              data-testid={`button-initial-page-${currentPage}`}
-                            >
-                              <PenTool className="h-3.5 w-3.5 mr-1.5" />
-                              {initialMutation.isPending ? "Adding..." : "Initial This Page"}
-                            </Button>
-                          )}
-                        </div>
-                      )}
-                    </div>
+                        )}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               </>
             )}
 
             {isFinalStep && (
-              <Card>
-                <CardContent className="p-8 text-center space-y-4">
-                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/20 mx-auto">
-                    <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
+              <>
+                <div className="rounded-lg border border-green-200 dark:border-green-900 bg-green-50/60 dark:bg-green-950/20 px-4 py-3 flex items-center gap-3" data-testid="banner-ready-to-sign">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/40 flex-shrink-0">
+                    <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
                   </div>
-                  <h2 className="text-xl font-semibold" data-testid="text-ready-to-sign">Ready to Sign</h2>
-                  <p className="text-sm text-muted-foreground">
-                    You have reviewed and initialed all {totalPages} pages of "{docInfo.envelope.subject}".
-                  </p>
-                  <div className="border-2 border-dashed border-red-400 rounded-lg p-4 mx-auto max-w-sm bg-red-50/30 dark:bg-red-950/20">
-                    <p className="text-xs text-muted-foreground mb-2">Your signature will appear as:</p>
-                    <p
-                      className="text-2xl text-blue-800 dark:text-blue-300 italic"
-                      style={{ fontFamily: "'Dancing Script', cursive" }}
-                      data-testid="text-signature-preview"
-                    >
-                      {docInfo.signer.fullName}
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold" data-testid="text-ready-to-sign">Ready to Sign</p>
+                    <p className="text-xs text-muted-foreground">
+                      Click the signature box on page {totalPages} below — or use Sign Now at the bottom.
                     </p>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Click "Sign Now" below to apply your legally binding signature.
-                  </p>
-                </CardContent>
-              </Card>
+                </div>
+
+                <Card>
+                  <CardContent className="p-2 sm:p-4">
+                    {docInfo.envelope.originalPdfUrl ? (
+                      <LockedPageView
+                        pdfUrl={docInfo.envelope.originalPdfUrl}
+                        pageNumber={totalPages}
+                        fields={placedFields.filter(
+                          f => f.pageNumber === totalPages && f.type === "signature",
+                        )}
+                        signerFullName={docInfo.signer.fullName}
+                        initialPlaced={false}
+                        signaturePlaced={false}
+                        showFixedBottomSignaturePlaceholder={showFixedBottomPreview}
+                        onClickSignature={() => setSignDialogOpen(true)}
+                        signaturePending={signMutation.isPending}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center min-h-[600px] p-8 bg-muted rounded-md">
+                        <FileText className="h-16 w-16 text-muted-foreground/20" />
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </>
             )}
 
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 pb-4" data-testid="action-buttons-row">
