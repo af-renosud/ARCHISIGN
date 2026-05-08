@@ -1,0 +1,42 @@
+Subject: Re: Architrak ↔ Archisign envelope 22 — confirming next steps
+
+Hi,
+
+Thanks for the precise diagnosis — both bugs are now pinned with no ambiguity. Status on our side and asks back to you:
+
+On our side (done)
+We've shipped a fix for the wire-shape mismatch in our /api/v1/envelopes/create parser:
+
+signers[0].accessUrl and signers[0].otpDestination are now read from their actual nested location (we were reading them at the top level — that's why they came through empty on devis 8).
+envelopeId is now coerced from JSON number → string at the boundary.
+We added a Zod runtime guard so any future shape drift fails loudly with the offending payload instead of silently NULLing fields.
+This will be in production on the next deploy. Going forward every fresh /create call will persist the access link, OTP destination, and access token correctly.
+
+Asks back to you
+1. Confirm the v2 HMAC toggle for the architrak tenant.
+Please confirm architrak is now in ARCHISIGN_WEBHOOK_V2_TENANTS (or whatever the equivalent flip is on your side). Our verifier is born-strict v2-only per the AT4 contract §3.9.1 (sha256=<hex> of ${X-Archisign-Timestamp}.${rawBody} keyed off our shared ARCHISIGN_WEBHOOK_SECRET, ±5min skew). Any v1-only payload will continue to 401. After you flip it, please send a single test event of any kind so we can confirm the verifier accepts it before you replay anything important — our 401 logs include the secret fingerprint, body length, and signature head, so a mismatch will be diagnosed in seconds on our end.
+
+2. Replay the full lifecycle for envelope 22.
+Once v2 is confirmed working, please redeliver, in order:
+
+envelope.sent (eventId 019e02ae-ae50-740e-ac3f-80608e57b2a0 — already in your dead-letter queue),
+envelope.signed (the one your AS3 ledger gap left out — please retrieve and send it; original signing event was at 2026-05-07 13:49:13Z).
+Both must be v2-signed. Our handler is idempotent on eventId so accidental re-sends are safe.
+
+3. Send us the literal credential triple for envelope 22 so we can backfill devis 8.
+The envelope.sent webhook body doesn't include accessUrl / accessToken / otpDestination (correctly so — they're create-time fields). Since we never received the create response correctly the first time around, the row is missing those values for an already-signed envelope. Please send us, out-of-band over a secure channel:
+
+signers[0].accessUrl
+signers[0].accessToken
+signers[0].otpDestination
+…for envelope 22 specifically. We'll one-shot patch the devis 8 row so the audit trail is complete. We don't need to re-send the envelope (the client has already signed).
+
+4. Your two follow-ups (please open them on your side).
+Yes please — both of:
+
+(A) migrating the legacy dispatchWebhook call site for envelope.signed to the new ledger,
+(B) confirming/adjusting the v2 tenant allowlist as the default for new tenants going forward.
+Let us know when (1) is flipped and we'll coordinate (2) live.
+
+Thanks,
+Architrak
