@@ -1,0 +1,39 @@
+Hi Archisign team,
+
+We're debugging an integration issue on the Architrak side. Architrak called your /api/v1/envelopes/create and /api/v1/envelopes/send endpoints on 2026-05-07 around 13:44 UTC for externalRef = "devis-8", and you returned envelopeId = 22. From your side the envelope appears to have been signed by the client; on our side we received nothing back. We need your help to confirm three specific things.
+
+1. The exact wire response your /api/v1/envelopes/create returned for envelope 22.
+
+Please paste the raw JSON response body verbatim — do not paraphrase, do not rename keys, do not strip fields. We specifically need to see the field names and structure (top-level vs. nested under a data / result / envelope wrapper). Our parser expects this shape:
+
+{
+  "envelopeId": "22",
+  "accessUrl": "https://...",
+  "accessToken": "...",
+  "otpDestination": "+33...",
+  "expiresAt": "2026-06-06T13:44:17.071Z"
+}
+
+In our database, envelopeId and expiresAt were saved correctly, but accessUrl and otpDestination came through as empty/null. We suspect either a field-name mismatch (e.g. you return signerUrl or signing_url instead of accessUrl, otpRecipient or otp_destination instead of otpDestination) or that those fields are nested under a wrapper.
+
+2. The exact webhookUrl Architrak sent you on the /create request for envelope 22, AND the URL you actually have stored against that envelope.
+
+Architrak should have sent webhookUrl = "https://<our-prod-domain>/api/webhooks/archisign". Please confirm:
+
+(a) the literal string we sent in the create payload, and
+(b) the URL stored on your side that you would call back on subsequent events.
+If (a) starts with http://localhost, ends in a .replit.dev preview hostname, or differs from (b), that's our root cause and we'll fix it on our side.
+
+3. Your delivery log for every webhook you have attempted to send for envelope 22.
+
+Architrak's inbound webhook table is empty for envelope 22 — we have received zero events (envelope.sent, envelope.signed, etc.). For each attempted delivery please share:
+
+the event name (e.g. envelope.signed),
+the eventId,
+the destination URL you POSTed to,
+the HTTP response code you got from us (or the network/timeout error),
+the timestamp of each attempt and how many retries you've performed,
+whether the event is still in your retry queue, has been dead-lettered, or was marked delivered.
+If you have the raw request body of the envelope.signed delivery for envelope 22 handy, please include that too — it will let us replay it locally to validate our HMAC v2 verifier (sha256(${X-Archisign-Timestamp}.${rawBody}) keyed off our shared ARCHISIGN_WEBHOOK_SECRET, ±5 min skew tolerance).
+
+Thanks — this should be everything we need to close the loop without further round-trips.
