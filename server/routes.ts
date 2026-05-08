@@ -12,10 +12,11 @@ import fsPromises from "fs/promises";
 import { uploadFile, downloadFile, streamFileToResponse, fileExists, deleteFile, uploadBackup, downloadBackup, deleteBackupFile } from "./fileStorage";
 import { getPageCount, stampSignedPdf } from "./services/PdfService";
 import { generateToken, generateOtp, hashOtp, verifyOtp, buildSigningLink, generateAuthenticationId } from "./services/SecurityService";
-import { dispatchWebhook, sendSigningInvitation, sendResendInvitation, sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
+import { sendSigningInvitation, sendResendInvitation, sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
 import { asyncHandler } from "./middleware/asyncHandler";
 import { validateId } from "./middleware/validators";
-import { buildV1EnvelopesRouter, buildSignedPdfFetchHandler } from "./routes/v1Envelopes";
+import { buildV1EnvelopesRouter, buildSignedPdfFetchHandler, mintSignedPdfUrl } from "./routes/v1Envelopes";
+import { emitEvent, uuidv7, type IdentityVerification } from "./services/EventDispatcher";
 
 const upload = multer({
   dest: "uploads/",
@@ -369,12 +370,19 @@ export async function registerRoutes(
     });
 
     if (envelope.webhookUrl) {
-      await dispatchWebhook(envelope.webhookUrl, {
-        event: "envelope.sent",
-        envelopeId: id,
-        externalRef: envelope.externalRef,
-        status: "sent",
-      });
+      try {
+        await emitEvent({
+          webhookUrl: envelope.webhookUrl,
+          envelope: { id, externalRef: envelope.externalRef, origin: envelope.origin },
+          eventData: {
+            event: "envelope.sent",
+            signers: envelope.signers.map((s) => ({ email: s.email, name: s.fullName })),
+          },
+          tenantKey: envelope.origin || undefined,
+        });
+      } catch (err: any) {
+        console.error(`[envelope.sent] emit failure for envelope ${id}: ${err?.message || err}`);
+      }
     }
 
     const updated = await storage.getEnvelope(id);
@@ -502,6 +510,7 @@ export async function registerRoutes(
     await storage.updateSigner(signer.id, {
       otpCode: hashOtp(otp),
       otpExpiresAt: expiresAt,
+      otpIssuedAt: new Date(),
     });
 
     const envelope = await storage.getEnvelope(signer.envelopeId);
@@ -548,7 +557,10 @@ export async function registerRoutes(
       otpVerified: true,
       otpCode: null,
       otpExpiresAt: null,
+      otpVerifiedAt: new Date(),
       lastViewedAt: new Date(),
+      signerIpAddress: req.ip || signer.signerIpAddress || null,
+      signerUserAgent: req.get("user-agent") || signer.signerUserAgent || null,
     });
 
     const envelope = await storage.getEnvelope(signer.envelopeId);
@@ -704,14 +716,22 @@ export async function registerRoutes(
     });
 
     if (envelope.webhookUrl) {
-      await dispatchWebhook(envelope.webhookUrl, {
-        event: "envelope.queried",
-        envelopeId: envelope.id,
-        externalRef: envelope.externalRef,
-        status: "queried",
-        queryFrom: signer.email,
-        queryMessage: message,
-      });
+      try {
+        await emitEvent({
+          webhookUrl: envelope.webhookUrl,
+          envelope: { id: envelope.id, externalRef: envelope.externalRef, origin: envelope.origin },
+          eventData: {
+            event: "envelope.queried",
+            queryId: uuidv7(),
+            signerEmail: signer.email,
+            queryText: message,
+            queriedAt: new Date().toISOString(),
+          },
+          tenantKey: envelope.origin || undefined,
+        });
+      } catch (err: any) {
+        console.error(`[envelope.queried] emit failure for envelope ${envelope.id}: ${err?.message || err}`);
+      }
     }
 
     res.json({ success: true });
@@ -840,12 +860,53 @@ export async function registerRoutes(
       );
 
       if (envelope.webhookUrl) {
-        await dispatchWebhook(envelope.webhookUrl, {
-          event: "envelope.signed",
-          envelopeId: envelope.id,
-          externalRef: envelope.externalRef,
-          status: "signed",
-        });
+        try {
+          // Per §3.3 envelope.signed: identityVerification block built from the
+          // most-recent signer (the one whose action triggered allSigned). For
+          // multi-signer envelopes the contract documents this is the sealing
+          // signer; for fields not yet captured (legacy rows) we emit the
+          // documented sentinel so receivers can detect missing trail data.
+          const SENTINEL = "unavailable_pre_capture";
+          const sealingSigner = allSigners.find((s) => s.id === signer.id) ?? allSigners[allSigners.length - 1];
+          const signedAt = sealingSigner.signedAt instanceof Date
+            ? sealingSigner.signedAt.toISOString()
+            : sealingSigner.signedAt
+              ? new Date(sealingSigner.signedAt).toISOString()
+              : new Date().toISOString();
+          const toIso = (d: Date | string | null): string => {
+            if (!d) return SENTINEL;
+            const dt = d instanceof Date ? d : new Date(d);
+            return Number.isNaN(dt.getTime()) ? SENTINEL : dt.toISOString();
+          };
+
+          const identityVerification: IdentityVerification = {
+            method: "otp_email",
+            otpIssuedAt: toIso(sealingSigner.otpIssuedAt),
+            otpVerifiedAt: toIso(sealingSigner.otpVerifiedAt),
+            signerIpAddress: sealingSigner.signerIpAddress || SENTINEL,
+            signerUserAgent: sealingSigner.signerUserAgent || SENTINEL,
+            lastViewedAt: toIso(sealingSigner.lastViewedAt),
+            signedAt,
+            authenticationId: `signer:${sealingSigner.id}:${signedAt}`,
+          };
+
+          const minted = mintSignedPdfUrl(envelope.id, baseUrl);
+
+          await emitEvent({
+            webhookUrl: envelope.webhookUrl,
+            envelope: { id: envelope.id, externalRef: envelope.externalRef, origin: envelope.origin },
+            eventData: {
+              event: "envelope.signed",
+              signedAt,
+              signedPdfFetchUrl: minted.url,
+              signedPdfFetchUrlExpiresAt: minted.expiresAt,
+              identityVerification,
+            },
+            tenantKey: envelope.origin || undefined,
+          });
+        } catch (err: any) {
+          console.error(`[envelope.signed] emit failure for envelope ${envelope.id}: ${err?.message || err}`);
+        }
       }
     }
 

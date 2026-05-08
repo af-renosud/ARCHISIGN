@@ -33,7 +33,7 @@ function signedUrlSecret(): string {
   return secret;
 }
 
-function mintSignedPdfUrl(envelopeId: number, baseUrl: string): { url: string; expiresAt: string } {
+export function mintSignedPdfUrl(envelopeId: number, baseUrl: string): { url: string; expiresAt: string } {
   const exp = Date.now() + SIGNED_URL_TTL_MS;
   const sig = crypto.createHmac("sha256", signedUrlSecret())
     .update(`${envelopeId}.${exp}`)
