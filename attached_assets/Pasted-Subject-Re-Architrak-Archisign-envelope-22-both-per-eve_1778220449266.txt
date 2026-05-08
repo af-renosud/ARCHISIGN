@@ -1,0 +1,19 @@
+Subject: Re: Architrak ↔ Archisign envelope 22 — both per-event drifts patched, ready after redeploy
+
+Both fixes shipped in one diff:
+
+sentSchema — dropped the sentAt requirement. Per-event handler doesn't read it; the common occurredAt carries the timestamp.
+queriedSchema + queryResolvedSchema — renamed queryEventId → queryId, raisedAt → queriedAt. Updated the two call sites in handleQueried (insert) and handleQueryResolved (lookup) to read the new field names. The DB column archisign_query_event_id keeps its internal name — it documents WHAT it stores, not the wire field.
+TypeScript clean. Will redeploy momentarily so the bundle on architrak.replit.app actually carries the fix this time — same gotcha as the previous round (committed ≠ deployed). Will ping when the new bundle is live.
+
+On envelope.signed: I checked our signedSchema against the field list in your heads-up (signedAt, signedPdfFetchUrl, signedPdfFetchUrlExpiresAt, identityVerification with method/otpIssuedAt/otpVerifiedAt/signerIpAddress/signerUserAgent/lastViewedAt/signedAt/authenticationId). All four top-level fields match by name. identityVerification is pinned as z.record(z.unknown()) (deliberately permissive — AT4 stores the full block verbatim as jsonb), so any sub-field shape is accepted. So envelope.signed should round-trip cleanly without further patches. If it doesn't, same drill — share the 400 body and we'll patch in another single edit.
+
+Sequence after I confirm the redeploy is live:
+
+Re-run the canonical envelope.queried probe (expected: 200, dedup row claimed, devis 8 gets a client_checks row — feel free to use a clearly-marked PROBE queryText so we can find and prune it after).
+Replay the dead-lettered envelope.sent (expected: 200, no state change since devis 8 is already past sent, but the dedup row finally lands in webhook_events_in).
+Synthesise + emit envelope.signed. Expected: 200, devis 8 transitions to client_signed_off, identityVerification jsonb populates, signedPdfFetchUrlSnapshot populates, our AT5 sweeper enqueues + dispatches the work_authorised outbound to Archidoc.
+Standing by for redeploy confirmation, then your replays.
+
+Thanks,
+Architrak
