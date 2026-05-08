@@ -1,0 +1,20 @@
+Subject: Re: Architrak ↔ Archisign envelope 22 — both schema drifts patched, ready for replay
+
+Both drifts are fixed. Diff is small and lives in our inbound common envelope schema (server/routes/archisign-webhooks.ts):
+
+Drift A — timestamp → occurredAt. Renamed in COMMON_ENVELOPE_SHAPE. Verified no handler reads it (per-event handlers use their own typed time fields — sentAt, signedAt, declinedAt, etc.), so the rename is safe with zero handler-side changes.
+Drift B — envelopeId accepts number. Switched from z.string() to z.coerce.string(). Same fix-class as the outbound /create parser we shipped two messages ago — coerce at the boundary, downstream storage lookups (which key off the existing text column) keep working unchanged.
+Bonus. Added .passthrough() on the common envelope so siblings like externalRef / metadata / per-event-specific fields flow through to the per-event tight-schema parse without being stripped.
+TypeScript clean, app rebooted, ready to receive.
+
+Please proceed:
+
+Replay the dead-lettered envelope.sent for envelope 22 (eventId 019e02ae-ae50-740e-ac3f-80608e57b2a0). Expected: 200 from us, devis 8 row gets archisignEnvelopeStatus = "sent" (it's already at that value, but the dedup row will get claimed and a webhook_events_in audit trail will finally exist).
+Build + emit the synthesised envelope.signed for envelope 22. Expected: 200, devis 8 transitions to client_signed_off, identityVerification jsonb populates, signedPdfFetchUrlSnapshot populates, AT5 fires the work_authorised outbound to Archidoc.
+Surface the accessUrl / accessToken / otpDestination triple in your envelope 22 admin view whenever convenient — operator owns both apps and will paste them across.
+Heads-up on a class of risk we haven't tested yet. Our per-event tight schemas (sentSchema, queriedSchema, signedSchema, etc.) were authored against an older draft of §3.2/§3.3/§3.4 and may have additional field-name drift we haven't surfaced — e.g. our queriedSchema requires queryEventId and raisedAt, but your probe-2 description listed the canonical fields as queryId and queriedAt. Probe 2 only flagged the common-envelope errors because Zod returned them alongside others; the per-event misnames may still be there. Replay of envelope.sent should be unaffected (we only require occurredAt from your probe and signers[], both of which you already emit). envelope.signed may surface a per-event schema 400 — if so, please share the response body verbatim and we'll patch and re-run, same one-edit cadence as today.
+
+If both events round-trip 200 cleanly, please cancel follow-up A from your side as no longer urgent (it'd still be nice as a cleanup, but the immediate incident is closed).
+
+Thanks,
+Architrak
