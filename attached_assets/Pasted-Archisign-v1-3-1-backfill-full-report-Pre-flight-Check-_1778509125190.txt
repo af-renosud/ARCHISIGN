@@ -1,0 +1,60 @@
+Archisign v1.3.1 backfill — full report
+Pre-flight
+Check	Result
+ARCHISIGN_BASE_URL	https://archi-sign-pro.replit.app (prod ✅)
+ARCHISIGN_API_KEY	Set (length 64 ✅)
+ARCHISIGN_CONTACTS_CHANNEL_ENABLED	Empty — but our code never reads this var, gate is BASE_URL && API_KEY, both set. Channel is effectively ON. Worth aligning either side later but not a blocker.
+Connectivity smoke (POST with bogus key)	HTTP 401 ✅
+Total rows in our DB at backfill time
+system_actors:        scanned=1   pushed=1   (NUMERIPLAN, partner, email=null)
+contractor_contacts:  scanned=0   pushed=0
+project clients:      scanned=15  withClients=3   pushed=3
+TOTAL:                4
+
+(One chunk total — no need to paginate; 4 << 500-row cap, well under 5 MiB.)
+
+Sample payload shape (verified ✓)
+{
+  "id": "sa:2ca230c1-58da-4ada-9ee3-547fd8db58e1",
+  "category": "partner",
+  "displayName": "NUMERIPLAN",
+  "email": null,
+  "phone": null,
+  "organization": "NUMERIPLAN",
+  "role": "OTHER",
+  "sourceUpdatedAt": "2026-01-18T13:32:13.269Z"
+}
+
+✅ email: null (JSON null, not "", not omitted)
+✅ sourceUpdatedAt is valid ISO-8601 with Z
+✅ All 5 required fields present
+✅ Envelope key is rows (not contacts) per v1.3.1 sign-off
+Run 1 — initial backfill
+[archisign-contacts] POST_BULK initial-2026-05-11-chunk0001 status=200 1503ms outcome=ok rows=4 accepted=4 deduplicated=0 rejected=0
+[backfill] DONE — accepted=4 rejected=0
+
+✅ status=200
+✅ accepted (4) + rejected (0) == rows (4)
+✅ deduplicated=0 on first pass
+✅ no 429, no 413, no 400
+Run 2 — idempotency proof (same --batch-prefix=initial-2026-05-11)
+[archisign-contacts] POST_BULK initial-2026-05-11-chunk0001 status=200 262ms outcome=ok rows=4 accepted=4 deduplicated=4 rejected=0
+[backfill] DONE — accepted=4 rejected=0
+
+✅ status=200
+✅ deduplicated == accepted (4 == 4) — your dedup ledger absorbed the entire chunk, no DB writes on your side
+✅ batchId stable across runs (no Date.now() in prefix)
+✅ Round-trip dropped from 1503ms → 262ms (no upsert work) — confirms ledger fast-path
+Rejected CSV
+archisign-contacts-rejected-2026-05-11.csv — not created (no rejections to reconcile).
+
+Outbox worker status
+Was running at 60s interval (matches your "every ~40s" observation).
+Updated to 600_000ms (10 min) per your choice — server.ts:50765 now calls startArchisignContactsWorker(600_000) with a comment citing the 2026-05-11 v1.3.1 sign-off.
+Workflow restarted; logs confirm [archisign-contacts] worker starting, interval=600000ms.
+Pending rows in outbox: 0 (caught up before backfill — the 6-row delta you saw was the per-row pre-v1.3.1 traffic).
+Steady-state expectations going forward
+New project-client / contractor-contact / partner-actor changes will land on Archisign within ≤10 min via the per-row outbox worker.
+Any future re-runs of the backfill script (with the same --batch-prefix) will be no-ops thanks to your dedup ledger.
+If we ever need to push a fresh full snapshot (e.g. reseed disaster recovery), use a new prefix like --batch-prefix=resnapshot-YYYY-MM-DD.
+You're clear to verify on Archisign's side: GET /api/contacts should return 4 rows for the archidoc tenant, and audit_events should have one contact.bulk_imported event with meta.batchId='initial-2026-05-11-chunk0001' per run (so 2 events total — runs 1 and 2 — with run 2's accepted_outcomes reflecting all-deduplicated).
