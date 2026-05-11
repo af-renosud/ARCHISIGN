@@ -130,7 +130,7 @@ export default function ContactsPage() {
                   {visible.map((c) => (
                     <TableRow key={c.id} data-testid={`row-contact-${c.id}`}>
                       <TableCell className="font-medium">{c.displayName}</TableCell>
-                      <TableCell className="text-muted-foreground">{c.email}</TableCell>
+                      <TableCell className="text-muted-foreground">{c.email ?? <span className="italic">no email</span>}</TableCell>
                       <TableCell>{c.category}</TableCell>
                       <TableCell>{c.organization || "—"}</TableCell>
                       <TableCell>
@@ -202,7 +202,8 @@ function ContactDialog({ open, onClose, contact }: { open: boolean; onClose: () 
   const form = useForm<ContactFormValues>({
     resolver: zodResolver(localContactCreateSchema),
     values: contact ? {
-      email: contact.email,
+      // Local-contact admin form requires email; archidoc rows are read-only here.
+      email: contact.email ?? "",
       displayName: contact.displayName,
       organization: contact.organization ?? "",
       category: (contact.category as ContactFormValues["category"]) ?? "other",

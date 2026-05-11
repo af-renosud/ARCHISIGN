@@ -24,6 +24,10 @@ export interface ContactPick {
   email: string;
 }
 
+function emailOf(c: Contact): string {
+  return c.email ?? "";
+}
+
 interface Props {
   value: ContactPick | null;
   onChange: (pick: ContactPick) => void;
@@ -65,10 +69,10 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
     },
     onSuccess: (contact) => {
       queryClient.invalidateQueries({ queryKey: ["/api/contacts"] });
-      onChange({ contactId: contact.id, fullName: contact.displayName, email: contact.email });
+      onChange({ contactId: contact.id, fullName: contact.displayName, email: emailOf(contact) });
       setOpen(false);
       setQuery("");
-      toast({ title: "Contact added", description: `${contact.displayName} (${contact.email})` });
+      toast({ title: "Contact added", description: `${contact.displayName} (${emailOf(contact)})` });
     },
     onError: (err: Error) => {
       toast({ title: "Failed to add contact", description: err.message, variant: "destructive" });
@@ -76,7 +80,10 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
   });
 
   const grouped = useMemo(() => {
-    const visible = contacts.filter((c) => !c.archivedAt);
+    // v1.3.1: ArchiDoc may sync email-less contacts (system actors / contractors).
+    // Envelope signers REQUIRE an email (OTP + sign-link delivery), so we hide
+    // email-less rows from the picker rather than crash on .email.toLowerCase().
+    const visible = contacts.filter((c) => !c.archivedAt && !!c.email);
     const recent = [...visible]
       .filter((c) => c.lastUsedAt)
       .sort((a, b) => new Date(b.lastUsedAt!).getTime() - new Date(a.lastUsedAt!).getTime())
@@ -89,11 +96,11 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
 
   const trimmedQuery = query.trim();
   const isEmail = EMAIL_RE.test(trimmedQuery);
-  const exactMatch = contacts.find((c) => c.email.toLowerCase() === trimmedQuery.toLowerCase());
+  const exactMatch = contacts.find((c) => (c.email ?? "").toLowerCase() === trimmedQuery.toLowerCase() && !!c.email);
   const showAddNew = isEmail && !exactMatch && !createMutation.isPending;
 
   function pickContact(c: Contact) {
-    onChange({ contactId: c.id, fullName: c.displayName, email: c.email });
+    onChange({ contactId: c.id, fullName: c.displayName, email: emailOf(c) });
     setOpen(false);
     setQuery("");
   }
@@ -194,7 +201,7 @@ function ContactRow({
 }) {
   return (
     <CommandItem
-      value={`${contact.id}-${contact.email}-${contact.displayName}`}
+      value={`${contact.id}-${contact.email ?? "noemail"}-${contact.displayName}`}
       onSelect={() => onSelect(contact)}
       data-testid={`${testIdPrefix}-item-${contact.id}`}
     >
@@ -207,7 +214,7 @@ function ContactRow({
           </Badge>
         </div>
         <div className="text-xs text-muted-foreground truncate">
-          {contact.email}
+          {contact.email ?? <span className="italic">no email</span>}
           {contact.organization && <span> · {contact.organization}</span>}
           {contact.category && contact.category !== "other" && <span> · {contact.category}</span>}
         </div>
