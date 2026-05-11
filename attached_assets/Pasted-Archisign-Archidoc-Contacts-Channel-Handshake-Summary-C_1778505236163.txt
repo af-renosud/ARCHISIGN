@@ -1,0 +1,104 @@
+Archisign ⇄ Archidoc Contacts Channel — Handshake Summary
+Contract reference: docs/INTER_APP_CONTRACT_v1.0.md §8 (v1.3 amendment, 2026-05-11). Both sides signed off in §8.13. Below is what each side must see on the wire for the channel to be considered correctly wired before you sync prod.
+
+1. Direction & auth
+Direction: strictly one-way Archidoc → Archisign push. Archisign never calls Archidoc on this channel.
+Auth: existing ARCHISIGN_API_KEY sent as X-API-KEY header (same key already used by archisignService.ts for envelope create/send). No new secret to provision.
+Base URL: Archisign-owned, configured Archidoc-side via ARCHISIGN_API_BASE_URL (defaults to the same base used for envelopes).
+Feature flag: ARCHISIGN_CONTACTS_CHANNEL_ENABLED=true on the Archidoc side. When unset/false, hooks enqueue nothing and the worker stays idle — safe to deploy code without flipping the flag.
+2. Endpoints Archisign must expose
+Method	Path	Purpose
+PUT	/api/v1/contacts/archidoc/:id	Upsert one contact
+DELETE	/api/v1/contacts/archidoc/:id	Archive (hidden from typeahead, still resolvable)
+POST	/api/v1/contacts/archidoc/bulk	Batch upsert, ≤500 rows / ≤5 MiB / call
+:id in the URL must equal body.id when both are present.
+
+3. Stable id namespacing (§8.3)
+Source (Archidoc)	Wire id	Example
+Project client (projects.clients[] JSONB)	pc:<projectId>:<clientId>	pc:proj_abc:c-123e4567-…
+Contractor contact (contractor_contacts.id)	cc:<contactId>	cc:42
+System actor partner (system_actors.id)	sa:<systemActorId>	sa:5f2a-…-uuid
+Note: project clients are pc:<projectId>:<clientId>, not pc:<uuid> — the JSONB array's per-project ids are not globally unique, so we compose project id to avoid a schema migration. Rationale documented in §8.3.
+
+4. Payload shape (PUT and bulk rows)
+{
+  "id": "pc:proj_abc:c-123",                  // REQUIRED, namespaced per §8.3
+  "category": "client",                       // REQUIRED: "client" | "contractor" | "partner"
+  "displayName": "Marie Dupont",              // REQUIRED, non-empty
+  "email": "marie@example.com",               // nullable
+  "phone": "+33 6 12 34 56 78",               // nullable
+  "organization": "Dupont Architecture",      // nullable, US spelling on the wire
+  "role": "MOA",                              // partner only; null for client/contractor
+  "sourceUpdatedAt": "2026-05-11T08:42:00.123+02:00" // REQUIRED, ISO-8601 with offset
+}
+
+Bulk request:
+
+{ "batchId": "backfill-2026-05-11-chunk0001", "rows": [ /* ≤500 of the above */ ] }
+
+batchId is also sent as X-Batch-Id header for log correlation. Stable across re-runs of the same chunk → server-side dedup on (batchId, id).
+
+5. Status semantics Archisign must honour
+Status	Body	Archidoc behaviour
+200	{applied:true, …}	Outbox row → sent
+200	{applied:false, reason:"stale"}	Outbox row → sent (NO retry — newer sourceUpdatedAt already stored)
+200 (bulk)	{accepted:N, rejected:[{id,error},…]}	Per-row partial success; rejected rows logged + written to backfill CSV; whole batch is not retried
+400	any	Hard fail → dead-letter, no retry
+401 / 403	any	Hard fail → operator alert, no retry
+404 (DELETE)	any	Treated as success
+429	Retry-After header (seconds OR HTTP-date)	Reschedule honouring Retry-After, then enter §8.6 backoff
+5xx / network / timeout	any	Reschedule with exponential backoff
+Critical: stale writes are 200 + {applied:false,reason:"stale"}, never 409. A 409 would trip generic "retry on 4xx except 429" logic.
+
+6. Retry ownership split
+HTTP client (server/services/archisignContactsClient.ts) — single attempt, 10 s AbortController timeout, classifies response and returns. Never retries internally.
+Outbox worker (archisignContactsEmitter.ts + archisignContactsBackoff.ts) — owns durable retry: 30 s → 2 m → 10 m → 1 h → 6 h → 24 h × 5 (~5 day cap), then dead-letter. Survives process restarts via Postgres outbox table archisign_contact_outbox (Archidoc-side, migration 0055).
+7. Lifecycle hooks active on Archidoc
+Archidoc event	Wire effect
+system_actor create / update (non-denylist role)	PUT sa:<id>
+system_actor delete	DELETE sa:<id>
+contractor_contact create / update	PUT cc:<id>
+contractor_contact delete	DELETE cc:<id>
+contractor delete	DELETE cc:<id> for every child contact
+Project create / update with clients[]	Per-row PUT pc:<projectId>:<clientId> for added/changed; DELETE for removed
+Project soft-delete	DELETE pc:<projectId>:<clientId> for every client
+Project restore	Re-emit PUT for every current client (un-archives)
+Project permanent delete	DELETE for every client before DB cascade
+Public client form (sub-share) submission	PUT pc:<projectId>:<clientId>
+Denylist (§8.8): system_actors.role.toLowerCase() ∈ {architect, collaborator, viewer, admin, internal, agency, employee, staff} → not pushed. Null/empty role → pushed as partner.
+
+8. Rate limits Archisign should enforce
+Per-(tenant, family) bucket with new family contacts:
+
+60 RPM sustained, 30 burst tokens, 5 000 / day.
+Bulk call counts as 1 request regardless of payload size.
+429 must include Retry-After (seconds preferred; HTTP-date also handled).
+Live-push QPS at our org sizes is far under this. Backfill chunks at ~1 call/sec.
+
+9. Telemetry signatures to look for in Archidoc logs
+When the channel is healthy you should see lines like:
+
+[archisign-contacts] op=upsert category=partner id=sa:… status=200 applied=true ms=…
+[archisign-contacts] op=upsert id=pc:… status=200 applied=false reason=stale ms=…
+[archisign-contacts] op=archive id=cc:… status=204 ms=…
+[archisign-contacts] op=bulk batchId=backfill-2026-05-11-chunk0001 accepted=500 rejected=0 ms=…
+[archisign-contacts] op=bulk … status=429 retryAfter=30
+
+Backfill summary at the end: [backfill] DONE — accepted=N rejected=M plus a CSV at archisign-contacts-rejected-YYYY-MM-DD.csv if anything was rejected.
+
+10. Pre-prod-sync checklist
+Before you run the prod sync, please confirm with Archisign:
+
+☐ All three endpoints deployed and responding under the same ARCHISIGN_API_KEY family bucket as envelopes.
+☐ Stale writes return 200 + {applied:false,reason:"stale"}, not 409.
+☐ Bulk responses include accepted count + rejected:[{id,error}] shape (per-row partial success).
+☐ 429 always carries Retry-After.
+☐ DELETE on unknown id returns 200/204/404 (any of the three is treated as success).
+☐ category enum accepts "client" | "contractor" | "partner" (and reserves "internal" for future without rejecting).
+☐ Server-side dedup honours (batchId, id) so re-running the backfill is safe.
+Once those are green, set ARCHISIGN_CONTACTS_CHANNEL_ENABLED=true on the prod Archidoc, then run:
+
+npm run backfill -- --script=scripts/archisign-contacts-backfill.ts --batch-prefix=initial-2026-05-11
+# (or directly: tsx scripts/archisign-contacts-backfill.ts --batch-prefix=initial-2026-05-11)
+
+Recommend a --dry-run=true pass first to print sample payloads + total row count, then the live run.
