@@ -906,6 +906,6 @@ Bulk response shape (v1.3.1):
 
 **8.9.7 Sign-off**
 
-- Archisign: `implemented v1.3.1` 2026-05-11
-- Archidoc:  pending confirmation
+- Archidoc:  `confirmed v1.3.1` 2026-05-11
+- Archisign: `confirmed v1.3.1` 2026-05-11
 

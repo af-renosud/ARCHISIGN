@@ -1,0 +1,39 @@
+v1.3.1 Sign-off — Archidoc side ready
+Checklist response
+Archisign asked	Archidoc status
+Bulk POST sends rows (or contacts)	✅ rows only — archisignContactsClient.ts:290 emits JSON.stringify({ batchId, rows: contacts }). Legacy contacts key is not sent (test pins this)
+Each chunk carries a stable batchId	✅ ${batchPrefix}-chunk${NNNN} (4-digit zero-padded) — stable across re-runs of the same chunk; sent in body and as X-Batch-Id header
+Email-less contacts sent as "email": null	✅ Mapper helper nullish() returns null for missing/empty/whitespace; JSON.stringify preserves the JSON null. Confirmed for all three categories (project clients, contractor contacts, system actors)
+PUT body either omits id or matches URL :id	✅ Body always carries id, URL is /api/v1/contacts/archidoc/${encodeURIComponent(payload.id)} — they're the same value
+Consume optional response fields (batchId echo, per-row deduplicated:true)	✅ Parser accepts both v1.3 number-shape (accepted: 2) and v1.3.1 array-shape (accepted: [{id, applied, contactId, deduplicated?}]); deduplicated count is exposed on BulkResponse and emitted as deduplicated=N in [archisign-contacts] POST_BULK telemetry
+Handle 400 id_mismatch / 400 batch_id_mismatch as caller bugs (no retry)	✅ Both fall into the permanent branch → outbox row goes to failed (dead-letter), no retry. Telemetry emits errorCode=id_mismatch / errorCode=batch_id_mismatch so ops can grep them directly
+What changed on the Archidoc side for v1.3.1
+server/services/archisignContactsClient.ts — switched bulk envelope key contacts → rows; parser handles both number-shape and array-shape for accepted; BulkResponse now exposes deduplicated: number; telemetry emits deduplicated=N and errorCode=<code>.
+docs/INTER_APP_CONTRACT_v1.0.md — added v1.3.1 amendment header at top, new sub-sections §8.5.1 (rows envelope), §8.5.2 (PUT id matching), §8.6 row for array-shaped 200 + caller-bug 400 codes, §8.11.1 (server-side dedup), §8.13.1 sign-off table for both teams.
+tests/archisign-contacts-client.test.ts — pins rows (and asserts contacts is NOT sent), adds the array-shaped accepted parser test counting deduplicated:1, and the batch_id_mismatch telemetry test.
+Test evidence
+Test Suites: 5 passed, 5 total
+Tests:       75 passed, 75 total
+
+Worker boots clean: [archisign-contacts] worker starting, interval=60000ms.
+
+Telemetry sample for backfill re-run validation
+When you sync prod with a re-run, the second pass should produce lines like:
+
+[archisign-contacts] POST_BULK initial-2026-05-11-chunk0001 status=200 1234ms outcome=ok rows=500 accepted=500 deduplicated=500 rejected=0
+
+deduplicated == accepted confirms server-side dedup is working end-to-end.
+
+You're cleared to flip §8.13.1 to confirmed v1.3.1
+Both columns of the v1.3.1 sign-off table are filled in on our side. When you flip the Archisign side, this contract is fully bilateral.
+
+For the prod sync itself (when ready):
+
+# 1. Set the flag on prod Archidoc
+# ARCHISIGN_CONTACTS_CHANNEL_ENABLED=true
+# 2. Dry-run first to print payload sample + total row count
+tsx scripts/archisign-contacts-backfill.ts --dry-run=true
+# 3. Live sync (≤500 rows/chunk, ~1 call/sec, stable batchId per chunk)
+tsx scripts/archisign-contacts-backfill.ts --batch-prefix=initial-2026-05-11
+# 4. If anything was rejected, reconcile from:
+#    archisign-contacts-rejected-2026-05-11.csv
