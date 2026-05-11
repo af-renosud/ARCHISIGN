@@ -1,0 +1,45 @@
+Subject: ArchiDoc v1.3.1 backfill — purge request, all 6 rows are dev pollution
+
+Hi Archisign team,
+
+Apologies — there's a problem with the v1.3.1 backfill. All 6 rows currently in your prod address book for the archidoc tenant are dev data, not prod. None of those IDs exist in our actual production database. We caught it on our side this afternoon and have already shut down the per-row outbox worker so nothing more will leak.
+
+What happened
+Our backfill script and per-row outbox worker were both reading DATABASE_URL, which in our Replit dev container points at our dev Postgres (heliumdb) — not at our prod database (PROD_DATABASE_URL → neondb on the Neon prod host). At the same time, ARCHISIGN_BASE_URL was correctly set to your prod (https://archi-sign-pro.replit.app). So:
+
+Dev data came out of our dev DB
+and went straight to your prod address book.
+The 4-row backfill we cheered yesterday (and the 2 earlier per-row syncs from before that) were all dev-origin rows. They have no counterpart in our real production data.
+
+Please purge — these 6 IDs on prod
+sa:2ca230c1-58da-4ada-9ee3-547fd8db58e1     # NUMERIPLAN (dev variant)
+pc:714f755d-…:d31ab2f3-…                    # "DAVID BATES" (dev test)
+pc:ec0d13c3-…:9aeb6e1e-…                    # "DIARMID MASSEY" (dev variant — real prod ID is different)
+pc:32348439-…:11da9cc5-…                    # "test 5"
+pc:<…>                                      # earlier per-row sync: "Alice Cooper"
+pc:<…>                                      # earlier per-row sync: "A"
+(The two earlier ones are the IDs you already had on your side before the bulk run — same dev origin. We don't have them in our outbound logs anymore but you do.)
+
+Either DELETE or archived_at = now() is fine — we'll just need them gone before we re-run.
+
+For reference, real prod's actual NUMERIPLAN system actor has id 22b19aba-d025-4f0d-ace5-e0cb0a3b8b38, and the real Massey project is 7e2ea927-9f2b-4322-a5ba-bea612b747cf. Those will appear in the corrected re-backfill below.
+
+What real prod actually contains (~57 rows)
+3 system actors: NUMERIPLAN, CABINET BEL, SAS ARCHITECS FRANCE
+26 project clients across 17 projects (GRACE, LEEMHUIS, LIVERMORE, FEATHERSTONE, LOCHORE, SHAMASH, GESTRÉ, MASSEY, JACKSON, BEAUCOURT, "clive garden", BARTHALON, CLARKE, SMITH, ALDRIDGE, ROBERTS, CHIAO)
+28 contractor contacts
+So the corrected re-backfill will be ~57 rows in a single chunk, well under the 500 limit.
+
+What we've changed on our side to make sure this can't recur
+Per-row outbox worker is now off by default — gated behind ARCHISIGN_OUTBOX_ENABLED=true, which we'll only flip on after the corrected backfill is verified clean.
+Backfill script now requires an explicit --prod flag to talk to a .replit.app Archisign. With --prod it forcibly re-binds its DB connection to PROD_DATABASE_URL and verifies the prod-DB sentinel + host fingerprint before sending a single row.
+Client-side env-coherence guard added that refuses to send when ARCHISIGN_BASE_URL and DATABASE_URL don't agree on environment (prod↔prod, dev↔dev, with localhost/staging escape hatches). Memoized once at startup, no perf cost.
+Regression test (11 cases) covers the full env matrix.
+After your purge confirmation, we'll run:
+
+DATABASE_URL=$PROD_DATABASE_URL tsx scripts/archisign-contacts-backfill.ts --prod
+with a fresh batchId (prod-rebackfill-2026-05-11-chunk0001). Expect ~57 accepted, 0 deduplicated on the first pass; we'll do the run-twice idempotency proof again.
+
+Sorry for the noise — appreciate the cleanup. Could you confirm the 6 rows are gone (or send us the SQL output so we can sanity-check) before we re-run?
+
+— ArchiDoc team
