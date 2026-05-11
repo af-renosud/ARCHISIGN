@@ -790,7 +790,7 @@ Response shape:
 { "applied": false, "reason": "stale", "contact": { /* current */ } }
 ```
 
-**Stale rule**: if `existing.archidocSourceUpdatedAt > incoming.sourceUpdatedAt` then the write is dropped and the response is `200 {applied:false,reason:"stale"}`. No partial write, no audit event.
+**Stale rule**: if `existing.archidocSourceUpdatedAt > incoming.sourceUpdatedAt` then the write is dropped and the response is `200 {applied:false,reason:"stale"}`. No partial write. Stale outcomes are recorded as a `contact.synced` audit event with `applied:false, reason:"stale"` so receivers can reconcile drift.
 
 #### §8.4.2 `DELETE /api/v1/contacts/archidoc/:archidocUserId`
 

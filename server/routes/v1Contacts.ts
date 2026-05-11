@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { storage } from "../storage";
 import { ContactService, ContactSourceMismatchError } from "../services/ContactService";
-import { archidocContactUpsertSchema, archidocContactBulkSchema } from "@shared/schema";
+import { archidocContactUpsertSchema } from "@shared/schema";
 import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { apiKeyAuth } from "../middleware/apiKeyAuth";
@@ -117,7 +117,7 @@ export function buildV1ContactsRouter(): Router {
       return res.status(400).json({ error: "invalid_request", message: "contacts[] required" });
     }
     if (body.contacts.length > 500) {
-      return res.status(413).json({ error: "payload_too_large", message: "Bulk size exceeds 500" });
+      return res.status(413).json({ error: "payload_too_large", message: "Bulk size exceeds 500", limit: { kind: "row_count", ceiling: 500 } });
     }
     if (body.contacts.length === 0) {
       return res.status(400).json({ error: "invalid_request", message: "contacts[] must not be empty" });

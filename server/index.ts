@@ -29,7 +29,7 @@ app.use(
 );
 app.use((err: any, _req: any, res: any, next: any) => {
   if (err && (err.type === "entity.too.large" || err.status === 413)) {
-    return res.status(413).json({ error: "payload_too_large", message: "Body exceeds 5 MiB" });
+    return res.status(413).json({ error: "payload_too_large", message: "Body exceeds 5 MiB", limit: { kind: "byte_size", ceiling: 5 * 1024 * 1024 } });
   }
   return next(err);
 });
