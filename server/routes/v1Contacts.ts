@@ -32,10 +32,9 @@ async function audit(eventType: string, actor: string, ip: string | null, metada
 export function buildV1ContactsRouter(): Router {
   const router = Router();
   router.use(apiKeyAuth);
-  // Surface Express body-parser PayloadTooLargeError as the contract-mandated 413 shape.
   router.use((err: any, _req: any, res: any, next: any) => {
     if (err && (err.type === "entity.too.large" || err.status === 413)) {
-      return res.status(413).json({ error: "payload_too_large", message: "Bulk size exceeds 500" });
+      return res.status(413).json({ error: "payload_too_large", message: "Body exceeds 5 MiB", limit: { kind: "byte_size", ceiling: 5 * 1024 * 1024 } });
     }
     return next(err);
   });
@@ -43,6 +42,8 @@ export function buildV1ContactsRouter(): Router {
   /**
    * PUT /api/v1/contacts/archidoc/:id — upsert a single archidoc contact.
    * Stale (older sourceUpdatedAt) → 200 {applied:false, reason:"stale"}.
+   * v1.3.1: body.id, when present, must equal :id (else 400 id_mismatch).
+   *         email may be null (system actors / contractors without email).
    */
   router.put("/contacts/archidoc/:id", rateLimit("contacts"), asyncHandler(async (req, res) => {
     if (!ensureArchidocTenant(req, res)) return;
@@ -54,8 +55,20 @@ export function buildV1ContactsRouter(): Router {
     if (!parsed.success) {
       return res.status(400).json({ error: "invalid_request", fieldErrors: parsed.error.flatten().fieldErrors });
     }
+    if (parsed.data.id && parsed.data.id !== archidocUserId) {
+      return res.status(400).json({ error: "id_mismatch", message: "body.id must equal URL :id when both are present" });
+    }
     try {
-      const result = await ContactService.upsertArchidoc({ ...parsed.data, archidocUserId });
+      const result = await ContactService.upsertArchidoc({
+        archidocUserId,
+        email: parsed.data.email ?? null,
+        displayName: parsed.data.displayName,
+        organization: parsed.data.organization ?? null,
+        category: parsed.data.category,
+        role: parsed.data.role ?? null,
+        phone: parsed.data.phone ?? null,
+        sourceUpdatedAt: parsed.data.sourceUpdatedAt,
+      });
       await audit("contact.synced", req.apiKeyAuth!.tenant, req.ip || null, {
         archidocUserId,
         applied: result.applied,
@@ -97,12 +110,17 @@ export function buildV1ContactsRouter(): Router {
 
   /**
    * POST /api/v1/contacts/archidoc/bulk — partial-success batch upsert.
-   * Max 500 rows; per-row outcome reported.
+   * v1.3.1:
+   *   - Body accepts EITHER `contacts` OR `rows` (ArchiDoc emits `rows`).
+   *   - Optional `batchId` (body) or `X-Batch-Id` (header) → server-side dedup
+   *     keyed on `(tenant, batchId, archidocUserId)` so re-runs of the same chunk
+   *     return the prior outcome without re-applying.
+   *   - Per-row partial success preserved; whole-batch never rejected on one bad row.
+   *   - Hard caps: ≤500 rows (413 row_count) and ≤5 MiB body (413 byte_size).
    */
-  // Per-row schema for true partial-success validation (no whole-batch reject on one bad row).
   const bulkRowSchema = z.object({
     id: z.string().min(1),
-    email: z.string().email(),
+    email: z.string().email().nullish(),
     displayName: z.string().min(1),
     organization: z.string().nullish(),
     category: z.enum(["client", "contractor", "partner", "internal", "other"]),
@@ -112,32 +130,67 @@ export function buildV1ContactsRouter(): Router {
   });
   router.post("/contacts/archidoc/bulk", rateLimit("contacts"), asyncHandler(async (req, res) => {
     if (!ensureArchidocTenant(req, res)) return;
-    const body = req.body;
-    if (!body || !Array.isArray(body.contacts)) {
-      return res.status(400).json({ error: "invalid_request", message: "contacts[] required" });
+    const body = req.body || {};
+    // v1.3.1: accept rows (ArchiDoc) or contacts (frozen v1.3 contract).
+    const rawRows = Array.isArray(body.rows) ? body.rows : (Array.isArray(body.contacts) ? body.contacts : null);
+    if (!rawRows) {
+      return res.status(400).json({ error: "invalid_request", message: "rows[] (or contacts[]) required" });
     }
-    if (body.contacts.length > 500) {
+    if (rawRows.length > 500) {
       return res.status(413).json({ error: "payload_too_large", message: "Bulk size exceeds 500", limit: { kind: "row_count", ceiling: 500 } });
     }
-    if (body.contacts.length === 0) {
-      return res.status(400).json({ error: "invalid_request", message: "contacts[] must not be empty" });
+    if (rawRows.length === 0) {
+      return res.status(400).json({ error: "invalid_request", message: "rows[] must not be empty" });
     }
-    const accepted: Array<{ id: string; applied: boolean; reason?: string; contactId: number }> = [];
-    const rejected: Array<{ id: string; error: string }> = [];
-    for (let idx = 0; idx < body.contacts.length; idx++) {
-      const raw = body.contacts[idx];
-      const id = typeof raw?.id === "string" && raw.id.length > 0 ? raw.id : `index-${idx}`;
+    const headerBatchId = (req.headers["x-batch-id"] as string | undefined)?.trim() || undefined;
+    const bodyBatchId = typeof body.batchId === "string" && body.batchId.trim().length > 0 ? body.batchId.trim() : undefined;
+    if (headerBatchId && bodyBatchId && headerBatchId !== bodyBatchId) {
+      return res.status(400).json({ error: "batch_id_mismatch", message: "X-Batch-Id header and body.batchId disagree" });
+    }
+    const batchId = bodyBatchId || headerBatchId;
+    const tenant = req.apiKeyAuth!.tenant;
+
+    const accepted: Array<{ id: string; applied: boolean; reason?: string; contactId?: number; deduplicated?: true }> = [];
+    const rejected: Array<{ id: string; error: string; deduplicated?: true }> = [];
+
+    for (let idx = 0; idx < rawRows.length; idx++) {
+      const raw = rawRows[idx];
+      const fallbackId = typeof raw?.id === "string" && raw.id.length > 0 ? raw.id : `index-${idx}`;
+
+      // Dedup check before any work, when batchId provided.
+      if (batchId && typeof raw?.id === "string" && raw.id.length > 0) {
+        const prior = await storage.getBulkDedupRow(tenant, batchId, raw.id);
+        if (prior) {
+          if (prior.outcome === "rejected") {
+            rejected.push({ id: raw.id, error: prior.errorMessage || "previously_rejected", deduplicated: true });
+          } else {
+            const entry: any = { id: raw.id, applied: prior.outcome === "applied", deduplicated: true };
+            if (prior.reason) entry.reason = prior.reason;
+            if (prior.contactId !== null && prior.contactId !== undefined) entry.contactId = prior.contactId;
+            accepted.push(entry);
+          }
+          continue;
+        }
+      }
+
       const parsed = bulkRowSchema.safeParse(raw);
       if (!parsed.success) {
         const firstIssue = parsed.error.issues[0];
-        rejected.push({ id, error: firstIssue ? `${firstIssue.path.join(".")}: ${firstIssue.message}` : "invalid_row" });
+        const errMsg = firstIssue ? `${firstIssue.path.join(".")}: ${firstIssue.message}` : "invalid_row";
+        rejected.push({ id: fallbackId, error: errMsg });
+        if (batchId && typeof raw?.id === "string" && raw.id.length > 0) {
+          await storage.recordBulkDedupRow({
+            tenant, batchId, archidocUserId: raw.id,
+            outcome: "rejected", reason: null, contactId: null, errorMessage: errMsg,
+          });
+        }
         continue;
       }
       const row = parsed.data;
       try {
         const result = await ContactService.upsertArchidoc({
           archidocUserId: row.id,
-          email: row.email,
+          email: row.email ?? null,
           displayName: row.displayName,
           organization: row.organization ?? null,
           category: row.category,
@@ -151,16 +204,33 @@ export function buildV1ContactsRouter(): Router {
           ...(result.reason ? { reason: result.reason } : {}),
           contactId: result.contact.id,
         });
+        if (batchId) {
+          await storage.recordBulkDedupRow({
+            tenant, batchId, archidocUserId: row.id,
+            outcome: result.applied ? "applied" : (result.reason || "skipped"),
+            reason: result.reason ?? null,
+            contactId: result.contact.id,
+            errorMessage: null,
+          });
+        }
       } catch (err: any) {
-        rejected.push({ id: row.id, error: err?.message || "upsert_failed" });
+        const errMsg = err?.message || "upsert_failed";
+        rejected.push({ id: row.id, error: errMsg });
+        if (batchId) {
+          await storage.recordBulkDedupRow({
+            tenant, batchId, archidocUserId: row.id,
+            outcome: "rejected", reason: null, contactId: null, errorMessage: errMsg,
+          });
+        }
       }
     }
-    await audit("contact.bulk_imported", req.apiKeyAuth!.tenant, req.ip || null, {
-      total: body.contacts.length,
+    await audit("contact.bulk_imported", tenant, req.ip || null, {
+      total: rawRows.length,
       acceptedCount: accepted.length,
       rejectedCount: rejected.length,
+      batchId: batchId ?? null,
     });
-    res.status(200).json({ accepted, rejected });
+    res.status(200).json({ accepted, rejected, ...(batchId ? { batchId } : {}) });
   }));
 
   return router;

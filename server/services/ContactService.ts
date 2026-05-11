@@ -7,6 +7,12 @@ export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+export function normalizeOptionalEmail(email: string | null | undefined): string | null {
+  if (email === null || email === undefined) return null;
+  const t = email.trim();
+  return t.length === 0 ? null : t.toLowerCase();
+}
+
 export interface LocalContactInput {
   email: string;
   displayName: string;
@@ -18,7 +24,7 @@ export interface LocalContactInput {
 
 export interface ArchidocContactInput {
   archidocUserId: string;
-  email: string;
+  email: string | null;
   displayName: string;
   organization?: string | null;
   category: ContactCategory;
@@ -115,7 +121,7 @@ export const ContactService = {
   },
 
   async upsertArchidoc(input: ArchidocContactInput): Promise<UpsertResult> {
-    const email = normalizeEmail(input.email);
+    const email = normalizeOptionalEmail(input.email);
     const incomingTs = new Date(input.sourceUpdatedAt);
     if (!Number.isFinite(incomingTs.getTime())) {
       throw new ContactConflictError("Invalid sourceUpdatedAt");

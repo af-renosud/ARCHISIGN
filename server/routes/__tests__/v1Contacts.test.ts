@@ -20,6 +20,8 @@ const PATCHED_KEYS = [
   "archiveContact",
   "bumpContactLastUsedByEmail",
   "createAuditEvent",
+  "getBulkDedupRow",
+  "recordBulkDedupRow",
 ] as const;
 
 const originals: Record<string, any> = {};
@@ -57,6 +59,14 @@ function installFakeStorage() {
     },
     async bumpContactLastUsedByEmail(_e: string) {},
     async createAuditEvent(ev: any) { auditCalls.push(ev); return ev; },
+    _dedup: new Map<string, any>(),
+    async getBulkDedupRow(tenant: string, batchId: string, archidocUserId: string) {
+      return fake._dedup.get(`${tenant}::${batchId}::${archidocUserId}`) || undefined;
+    },
+    async recordBulkDedupRow(row: any) {
+      const k = `${row.tenant}::${row.batchId}::${row.archidocUserId}`;
+      if (!fake._dedup.has(k)) fake._dedup.set(k, row);
+    },
   };
   for (const k of PATCHED_KEYS) {
     originals[k] = (storage as any)[k];
@@ -194,6 +204,78 @@ test("v1 contacts: rate-limit family contacts returns 429 after burst", async ()
   assert.equal(last.body.error, "rate_limit_exceeded");
   assert.ok(last.body.retryAfter >= 1);
   _resetBucketsForTest();
+});
+
+test("v1.3.1: PUT accepts email:null (system-actor with no email)", async () => {
+  const r = await call("PUT", "/api/v1/contacts/archidoc/sa-noemail", {
+    id: "sa-noemail", email: null, displayName: "No Email Actor",
+    category: "partner", role: "MOA", sourceUpdatedAt: "2026-05-11T10:00:00Z",
+  }, ARCHIDOC_KEY);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.applied, true);
+  assert.equal(r.body.contact.email, null);
+});
+
+test("v1.3.1: PUT rejects body.id ≠ URL :id with 400 id_mismatch", async () => {
+  const r = await call("PUT", "/api/v1/contacts/archidoc/url-id", {
+    id: "different-id", email: "x@y.com", displayName: "X",
+    category: "client", sourceUpdatedAt: "2026-05-11T10:00:00Z",
+  }, ARCHIDOC_KEY);
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, "id_mismatch");
+});
+
+test("v1.3.1: bulk accepts `rows` (ArchiDoc shape) and per-row email:null", async () => {
+  const r = await call("POST", "/api/v1/contacts/archidoc/bulk", {
+    batchId: "v131-rows-1",
+    rows: [
+      { id: "r1", email: null, displayName: "R1", category: "contractor", sourceUpdatedAt: "2026-05-11T10:00:00Z" },
+      { id: "r2", email: "r2@x.com", displayName: "R2", category: "client", sourceUpdatedAt: "2026-05-11T10:00:00Z" },
+    ],
+  }, ARCHIDOC_KEY);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.accepted.length, 2);
+  assert.equal(r.body.batchId, "v131-rows-1");
+});
+
+test("v1.3.1: bulk dedup on (batchId, id) returns prior outcome on re-run", async () => {
+  const body = {
+    batchId: "v131-dedup-1",
+    rows: [{ id: "dd1", email: "d@d.com", displayName: "D", category: "client", sourceUpdatedAt: "2026-05-11T10:00:00Z" }],
+  };
+  const r1 = await call("POST", "/api/v1/contacts/archidoc/bulk", body, ARCHIDOC_KEY);
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body.accepted[0].applied, true);
+  assert.ok(!r1.body.accepted[0].deduplicated);
+  const r2 = await call("POST", "/api/v1/contacts/archidoc/bulk", body, ARCHIDOC_KEY);
+  assert.equal(r2.status, 200);
+  assert.equal(r2.body.accepted[0].deduplicated, true);
+  assert.equal(r2.body.accepted[0].applied, true);
+});
+
+test("v1.3.1: bulk via X-Batch-Id header (no body batchId) also dedups", async () => {
+  const headers = { "X-Batch-Id": "v131-hdr-1" };
+  const body = { rows: [{ id: "hdr1", email: "h@h.com", displayName: "H", category: "partner", sourceUpdatedAt: "2026-05-11T10:00:00Z" }] };
+  const post = async () => fetch(baseUrl + "/api/v1/contacts/archidoc/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-KEY": ARCHIDOC_KEY, ...headers },
+    body: JSON.stringify(body),
+  });
+  const a = await (await post()).json();
+  const b = await (await post()).json();
+  assert.equal(a.accepted[0].deduplicated ?? false, false);
+  assert.equal(b.accepted[0].deduplicated, true);
+});
+
+test("v1.3.1: header/body batchId mismatch returns 400 batch_id_mismatch", async () => {
+  const r = await fetch(baseUrl + "/api/v1/contacts/archidoc/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-KEY": ARCHIDOC_KEY, "X-Batch-Id": "hdr-A" },
+    body: JSON.stringify({ batchId: "body-B", rows: [{ id: "x", email: "x@y.com", displayName: "X", category: "client", sourceUpdatedAt: "2026-05-11T10:00:00Z" }] }),
+  });
+  assert.equal(r.status, 400);
+  const body = await r.json();
+  assert.equal(body.error, "batch_id_mismatch");
 });
 
 test("v1 contacts: bulk over 500 rows returns 413 payload_too_large", async () => {

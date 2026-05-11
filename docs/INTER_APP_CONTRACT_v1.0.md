@@ -845,3 +845,67 @@ When an envelope is created (admin or v1.0 `/api/v1/envelopes/create`), Archisig
 
 - Archidoc: `confirmed v1.3` 2026-05-09
 - Archisign: `confirmed v1.3` 2026-05-11
+
+---
+
+### §8.9 v1.3.1 amendment — ArchiDoc handshake (2026-05-11)
+
+Backwards-compatible extension of §8 to accept the wire shape ArchiDoc emits in
+production. No breaking changes; v1.3 callers continue to work unchanged.
+
+**8.9.1 Bulk request envelope** — `POST /api/v1/contacts/archidoc/bulk` accepts
+**either** of:
+
+```jsonc
+{ "batchId": "<opaque-string>", "rows":     [ /* contacts */ ] }   // ArchiDoc shape
+{ "batchId": "<opaque-string>", "contacts": [ /* contacts */ ] }   // v1.3 frozen shape
+```
+
+Both keys are accepted; if both are present, `rows` wins. Hard caps (≤500 rows,
+≤5 MiB body) and per-row partial-success semantics (§8.4.3) are unchanged.
+
+**8.9.2 Email may be `null`** — On both PUT (§8.4.1) and bulk rows (§8.4.3) the
+`email` field is now optional and may be explicitly `null`. This supports system
+actors and contractors that have no email address. The `contacts.email` column
+is now nullable; the `(source, email)` unique index treats NULLs as distinct
+(Postgres default), so multiple email-less archidoc contacts coexist.
+
+**8.9.3 PUT body `id`** — The PUT body MAY include an `id` field. When present,
+it MUST equal the URL path parameter `:id`; mismatch returns
+`400 { error: "id_mismatch" }`. The URL path parameter remains authoritative.
+
+**8.9.4 Server-side bulk dedup** — When `batchId` is supplied (via body or
+`X-Batch-Id` header — both must agree if both are sent, else
+`400 { error: "batch_id_mismatch" }`), the server consults a persistent ledger
+keyed on `(tenant, batchId, archidocUserId)` and returns the prior outcome for
+any row already processed. Replays of the same chunk are therefore safe
+(deduplicated rows carry `"deduplicated": true` in the response). Without a
+`batchId`, dedup is disabled and behaviour is identical to v1.3.
+
+Bulk response shape (v1.3.1):
+```jsonc
+{
+  "batchId": "<echoed-when-supplied>",
+  "accepted": [
+    { "id": "u1", "applied": true,  "contactId": 42 },
+    { "id": "u2", "applied": false, "reason": "stale", "contactId": 17, "deduplicated": true }
+  ],
+  "rejected": [
+    { "id": "u3", "error": "...", "deduplicated": true }
+  ]
+}
+```
+
+**8.9.5 Storage** — New table `contact_bulk_dedup`:
+`(tenant, batch_id, archidoc_user_id)` UNIQUE, `outcome`, `reason`,
+`contact_id`, `error_message`, `processed_at`. Inserted with
+`ON CONFLICT DO NOTHING` so concurrent retries are race-safe.
+
+**8.9.6 Audit** — `contact.bulk_imported` meta now includes `batchId` (or
+`null` when absent). Other audit shapes unchanged.
+
+**8.9.7 Sign-off**
+
+- Archisign: `implemented v1.3.1` 2026-05-11
+- Archidoc:  pending confirmation
+

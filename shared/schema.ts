@@ -149,7 +149,8 @@ export const contactCategoryEnum = pgEnum("contact_category", [
 export const contacts = pgTable("contacts", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   archidocUserId: text("archidoc_user_id"),
-  email: text("email").notNull(),
+  // v1.3.1: archidoc-sourced contacts (system actors / contractors) may have no email.
+  email: text("email"),
   displayName: text("display_name").notNull(),
   organization: text("organization"),
   category: contactCategoryEnum("category").notNull().default("other"),
@@ -192,8 +193,11 @@ export const localContactUpdateSchema = z.object({
   phone: z.string().nullish(),
 });
 
+// v1.3.1: email is optional (system actors / contractors may have none); `id` in body
+// is accepted but ignored on PUT (URL param wins; conflict triggers 400 if mismatch).
 export const archidocContactUpsertSchema = z.object({
-  email: z.string().email(),
+  id: z.string().min(1).optional(),
+  email: z.string().email().nullish(),
   displayName: z.string().min(1),
   organization: z.string().nullish(),
   category: z.enum(["client", "contractor", "partner", "internal", "other"]),
@@ -202,10 +206,14 @@ export const archidocContactUpsertSchema = z.object({
   sourceUpdatedAt: z.string().datetime({ offset: true }),
 });
 
+// v1.3.1: bulk request accepts EITHER `contacts` OR `rows` (ArchiDoc emits `rows`),
+// optional top-level `batchId` (also honoured via X-Batch-Id header) drives
+// `(tenant, batchId, archidocUserId)` server-side dedup so re-runs are safe.
 export const archidocContactBulkSchema = z.object({
+  batchId: z.string().min(1).max(200).optional(),
   contacts: z.array(z.object({
     id: z.string().min(1),
-    email: z.string().email(),
+    email: z.string().email().nullish(),
     displayName: z.string().min(1),
     organization: z.string().nullish(),
     category: z.enum(["client", "contractor", "partner", "internal", "other"]),
@@ -214,6 +222,23 @@ export const archidocContactBulkSchema = z.object({
     sourceUpdatedAt: z.string().datetime({ offset: true }),
   })).min(1),
 });
+
+// v1.3.1: persistent (tenant, batchId, archidocUserId) idempotency ledger for bulk re-runs.
+export const contactBulkDedup = pgTable("contact_bulk_dedup", {
+  tenant: text("tenant").notNull(),
+  batchId: text("batch_id").notNull(),
+  archidocUserId: text("archidoc_user_id").notNull(),
+  outcome: text("outcome").notNull(),
+  reason: text("reason"),
+  contactId: integer("contact_id"),
+  errorMessage: text("error_message"),
+  processedAt: timestamp("processed_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("contact_bulk_dedup_pk").on(t.tenant, t.batchId, t.archidocUserId),
+  index("contact_bulk_dedup_processed_at_idx").on(t.processedAt),
+]);
+export type ContactBulkDedup = typeof contactBulkDedup.$inferSelect;
+export type InsertContactBulkDedup = typeof contactBulkDedup.$inferInsert;
 
 export const insertSettingSchema = createInsertSchema(settings);
 export type Setting = typeof settings.$inferSelect;

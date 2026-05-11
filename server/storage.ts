@@ -1,6 +1,6 @@
 import {
   envelopes, signers, annotations, communicationLogs, auditEvents, settings,
-  rollbackVersions, backups, webhookDeliveries, contacts,
+  rollbackVersions, backups, webhookDeliveries, contacts, contactBulkDedup,
   type Envelope, type InsertEnvelope,
   type Signer, type InsertSigner,
   type Annotation, type InsertAnnotation,
@@ -11,6 +11,7 @@ import {
   type Backup, type InsertBackup,
   type WebhookDelivery, type InsertWebhookDelivery,
   type Contact, type InsertContact,
+  type ContactBulkDedup, type InsertContactBulkDedup,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, or, sql, isNull, isNotNull, inArray, lt, ilike } from "drizzle-orm";
@@ -96,6 +97,8 @@ export interface IStorage {
   updateContact(id: number, data: Partial<Contact>): Promise<Contact | undefined>;
   archiveContact(id: number): Promise<Contact | undefined>;
   bumpContactLastUsedByEmail(email: string): Promise<void>;
+  getBulkDedupRow(tenant: string, batchId: string, archidocUserId: string): Promise<ContactBulkDedup | undefined>;
+  recordBulkDedupRow(row: InsertContactBulkDedup): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -471,6 +474,23 @@ export class DatabaseStorage implements IStorage {
     await db.update(contacts)
       .set({ lastUsedAt: new Date() })
       .where(and(eq(contacts.email, normalized), isNull(contacts.archivedAt)));
+  }
+
+  async getBulkDedupRow(tenant: string, batchId: string, archidocUserId: string): Promise<ContactBulkDedup | undefined> {
+    const [row] = await db.select().from(contactBulkDedup).where(
+      and(
+        eq(contactBulkDedup.tenant, tenant),
+        eq(contactBulkDedup.batchId, batchId),
+        eq(contactBulkDedup.archidocUserId, archidocUserId),
+      ),
+    );
+    return row;
+  }
+
+  async recordBulkDedupRow(row: InsertContactBulkDedup): Promise<void> {
+    await db.insert(contactBulkDedup).values(row).onConflictDoNothing({
+      target: [contactBulkDedup.tenant, contactBulkDedup.batchId, contactBulkDedup.archidocUserId],
+    });
   }
 
   async rotateSignerAccessToken(signerId: number, newToken: string, previousTokenHash: string, executor: DbExecutor = db): Promise<Signer | undefined> {
