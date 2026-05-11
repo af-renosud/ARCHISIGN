@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { PDFDocument } from "pdf-lib";
 
 const BASE_URL = (process.env.E2E_BASE_URL || "http://localhost:5000").replace(/\/+$/, "");
 const API_KEY = process.env.ARCHIDOC_API_KEY;
@@ -14,6 +15,25 @@ async function seedArchidocContact(id: string, email: string, displayName: strin
     body: JSON.stringify({ email, displayName, category: "client", sourceUpdatedAt }),
   });
   if (!res.ok) throw new Error(`Failed to seed contact ${id}: ${res.status}`);
+}
+
+async function createEnvelopeWithSigner(email: string, displayName: string) {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([595, 842]);
+  page.drawText("Recent-bump fixture", { x: 50, y: 750, size: 20 });
+  const bytes = await doc.save();
+  const pdfBase64 = Buffer.from(bytes).toString("base64");
+  const res = await fetch(`${BASE_URL}/api/v1/envelopes/create`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-KEY": API_KEY! },
+    body: JSON.stringify({
+      title: `Recent bump ${Date.now()}`,
+      pdfBase64,
+      signers: [{ email, displayName, role: "signer" }],
+      identityVerification: { method: "otp_email" },
+    }),
+  });
+  if (!res.ok) throw new Error(`Envelope create failed: ${res.status} ${await res.text()}`);
 }
 
 test.describe("Contacts picker on New Envelope", () => {
@@ -42,9 +62,14 @@ test.describe("Contacts picker on New Envelope", () => {
     await page.getByTestId("additional-signer-0-add-new").click();
     await expect(page.getByTestId("additional-signer-0-trigger")).toContainText(newEmail);
 
+    // Trigger Recent ordering bump by actually creating an envelope using the picker's email.
+    await createEnvelopeWithSigner(archidocEmail, `E2E Archi ${stamp}`);
+
     await page.reload();
     await page.getByTestId("primary-signer-trigger").click();
     const recentGroup = page.locator('[cmdk-group-heading]:has-text("Recent")');
     await expect(recentGroup).toBeVisible();
+    const recentSection = page.locator('[cmdk-group]').filter({ has: page.locator('[cmdk-group-heading]:has-text("Recent")') });
+    await expect(recentSection.getByText(archidocEmail)).toBeVisible();
   });
 });

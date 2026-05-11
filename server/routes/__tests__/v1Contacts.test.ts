@@ -166,6 +166,36 @@ test("v1 contacts: bulk 200 with mixed accepted/rejected (per-row partial succes
   assert.ok(auditCalls.find((a) => a.eventType === "contact.bulk_imported"));
 });
 
+test("v1 contacts: bulk returns per-row partial success when one row is malformed", async () => {
+  const r = await call("POST", "/api/v1/contacts/archidoc/bulk", {
+    contacts: [
+      { id: "row-good", email: "g@h.com", displayName: "G", category: "client", sourceUpdatedAt: "2026-05-11T10:00:00Z" },
+      { id: "row-bad", email: "not-an-email", displayName: "X", category: "client", sourceUpdatedAt: "2026-05-11T10:00:00Z" },
+    ],
+  }, ARCHIDOC_KEY);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.accepted.length, 1);
+  assert.equal(r.body.accepted[0].id, "row-good");
+  assert.equal(r.body.rejected.length, 1);
+  assert.equal(r.body.rejected[0].id, "row-bad");
+});
+
+test("v1 contacts: rate-limit family contacts returns 429 after burst", async () => {
+  const { _resetBucketsForTest } = await import("../../middleware/rateLimit");
+  _resetBucketsForTest();
+  const validBody = { email: "rl@x.com", displayName: "RL", category: "client", sourceUpdatedAt: "2026-05-11T10:00:00Z" };
+  let saw429 = false;
+  let last: any = null;
+  for (let i = 0; i < 35; i++) {
+    last = await call("PUT", `/api/v1/contacts/archidoc/rl-${i}`, validBody, ARCHIDOC_KEY);
+    if (last.status === 429) { saw429 = true; break; }
+  }
+  assert.ok(saw429, `expected a 429 in burst window; last status=${last?.status}`);
+  assert.equal(last.body.error, "rate_limit_exceeded");
+  assert.ok(last.body.retryAfter >= 1);
+  _resetBucketsForTest();
+});
+
 test("v1 contacts: bulk over 500 rows returns 413 payload_too_large", async () => {
   const contacts = Array.from({ length: 501 }, (_, i) => ({
     id: `over-${i}`, email: `o${i}@x.com`, displayName: `O${i}`,

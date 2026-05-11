@@ -16,6 +16,24 @@ declare module "http" {
   }
 }
 
+// v1.3 §8: contacts bulk has its own 5 MiB body cap; parse it BEFORE the global 25mb parser
+// so the per-byte limit is actually enforced. Once parsed, the global parser short-circuits.
+app.use(
+  "/api/v1/contacts/archidoc/bulk",
+  express.json({
+    limit: "5mb",
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
+app.use((err: any, _req: any, res: any, next: any) => {
+  if (err && (err.type === "entity.too.large" || err.status === 413)) {
+    return res.status(413).json({ error: "payload_too_large", message: "Body exceeds 5 MiB" });
+  }
+  return next(err);
+});
+
 app.use(
   express.json({
     limit: "25mb",

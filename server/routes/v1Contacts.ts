@@ -1,7 +1,8 @@
-import { Router, json } from "express";
+import { Router } from "express";
 import { storage } from "../storage";
 import { ContactService, ContactSourceMismatchError } from "../services/ContactService";
 import { archidocContactUpsertSchema, archidocContactBulkSchema } from "@shared/schema";
+import { z } from "zod";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { apiKeyAuth } from "../middleware/apiKeyAuth";
 import { rateLimit } from "../middleware/rateLimit";
@@ -98,34 +99,41 @@ export function buildV1ContactsRouter(): Router {
    * POST /api/v1/contacts/archidoc/bulk — partial-success batch upsert.
    * Max 500 rows; per-row outcome reported.
    */
-  const bulkBodyParser = json({
-    limit: "5mb",
-    verify: (_req, res, _buf) => {
-      // Express handler below sees PayloadTooLargeError via error middleware; nothing to do here.
-      void res;
-    },
+  // Per-row schema for true partial-success validation (no whole-batch reject on one bad row).
+  const bulkRowSchema = z.object({
+    id: z.string().min(1),
+    email: z.string().email(),
+    displayName: z.string().min(1),
+    organization: z.string().nullish(),
+    category: z.enum(["client", "contractor", "partner", "internal", "other"]),
+    role: z.string().nullish(),
+    phone: z.string().nullish(),
+    sourceUpdatedAt: z.string().datetime({ offset: true }),
   });
-  const FIVE_MIB = 5 * 1024 * 1024;
-  const enforceBulkSize = (req: any, res: any, next: any) => {
-    const len = Number(req.headers["content-length"] || 0);
-    if (len > FIVE_MIB) {
-      return res.status(413).json({ error: "payload_too_large", message: "Body exceeds 5 MiB" });
-    }
-    next();
-  };
-  router.post("/contacts/archidoc/bulk", rateLimit("contacts"), enforceBulkSize, bulkBodyParser, asyncHandler(async (req, res) => {
+  router.post("/contacts/archidoc/bulk", rateLimit("contacts"), asyncHandler(async (req, res) => {
     if (!ensureArchidocTenant(req, res)) return;
-    const incoming = req.body?.contacts;
-    if (Array.isArray(incoming) && incoming.length > 500) {
+    const body = req.body;
+    if (!body || !Array.isArray(body.contacts)) {
+      return res.status(400).json({ error: "invalid_request", message: "contacts[] required" });
+    }
+    if (body.contacts.length > 500) {
       return res.status(413).json({ error: "payload_too_large", message: "Bulk size exceeds 500" });
     }
-    const parsed = archidocContactBulkSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "invalid_request", fieldErrors: parsed.error.flatten().fieldErrors });
+    if (body.contacts.length === 0) {
+      return res.status(400).json({ error: "invalid_request", message: "contacts[] must not be empty" });
     }
     const accepted: Array<{ id: string; applied: boolean; reason?: string; contactId: number }> = [];
     const rejected: Array<{ id: string; error: string }> = [];
-    for (const row of parsed.data.contacts) {
+    for (let idx = 0; idx < body.contacts.length; idx++) {
+      const raw = body.contacts[idx];
+      const id = typeof raw?.id === "string" && raw.id.length > 0 ? raw.id : `index-${idx}`;
+      const parsed = bulkRowSchema.safeParse(raw);
+      if (!parsed.success) {
+        const firstIssue = parsed.error.issues[0];
+        rejected.push({ id, error: firstIssue ? `${firstIssue.path.join(".")}: ${firstIssue.message}` : "invalid_row" });
+        continue;
+      }
+      const row = parsed.data;
       try {
         const result = await ContactService.upsertArchidoc({
           archidocUserId: row.id,
@@ -148,7 +156,7 @@ export function buildV1ContactsRouter(): Router {
       }
     }
     await audit("contact.bulk_imported", req.apiKeyAuth!.tenant, req.ip || null, {
-      total: parsed.data.contacts.length,
+      total: body.contacts.length,
       acceptedCount: accepted.length,
       rejectedCount: rejected.length,
     });
