@@ -99,6 +99,7 @@ Driver: `pg` + Drizzle. Schema push via `npm run db:push` (no migration files).
 - `communication_logs` — query messages between parties
 - `audit_events` — full audit trail (envelopeId nullable for system events)
 - `webhook_deliveries` — outbound dispatch ledger (UUID `event_id` idempotency key, attempts counter, raw payload + signature audit)
+- `contacts` — address-book mirror; `source` (`local` | `archidoc`), `archidocUserId` (unique), `archidocSourceUpdatedAt` (stale arbitration), `category`, `lastUsedAt` (Recent group), `archivedAt`
 - `settings` — k/v config (email copy, firm name, …)
 - `rollback_versions`, `backups`
 - `users`, `sessions` — Replit Auth + connect-pg-simple
@@ -112,11 +113,19 @@ Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. AS1 → AS5 fully landed:
 - Schedulers: hourly `expirySweep` (atomic → `expired` + `envelope.expired`); daily `integrityCheck` (signed-PDF probe → `retention_breach_at` + `envelope.retention_breach`)
 
 ### v1.0 endpoints
-- `POST /api/v1/envelopes/create` — accepts `pdfBase64`, `pdfUrl`, or `pdfFetchUrl` (60 s budget, 25 MiB cap); `signers[]`, optional `expiresAt`, `metadata`, `fields[]`, `identityVerification.method`; returns §3.5.1 shape with `signers[].accessUrl` + `otpDestination`
+- `POST /api/v1/envelopes/create` — accepts `pdfBase64`, `pdfUrl`, or `pdfFetchUrl` (60 s budget, 25 MiB cap); `signers[]`, optional `expiresAt`, `metadata`, `fields[]`, `identityVerification.method`; returns §3.5.1 shape with `signers[].accessUrl` + `otpDestination`. Bumps `contacts.last_used_at` for matched signer emails.
 - `POST /api/v1/envelopes/:id/send` — idempotent on `{sent, viewed, queried}` (200); rejects `{signed, declined, expired, void}` with 409
 - `GET /api/v1/envelopes/:id/signed-pdf-url` — mints 15-min HMAC URL; 410 + §3.8 `retention_breach` body when breached
 - `GET /api/v1/envelopes/:envelopeId/signed-pdf-fetch?exp=&sig=` — streams PDF when HMAC matches
 - Rate-limit body matches §3.6.1 (`error`, `retryAfter`, `limit`, `currentUsage`, `ceiling`); `X-RateLimit-Remaining` set on 200s
+
+### v1.3 Contacts Channel endpoints (archidoc tenant only)
+- `PUT  /api/v1/contacts/archidoc/:archidocUserId` — idempotent upsert; older `sourceUpdatedAt` → `200 {applied:false,reason:"stale"}`
+- `DELETE /api/v1/contacts/archidoc/:archidocUserId` — always-200 archive; unknown id → `{archived:true,alreadyArchived:true}`
+- `POST /api/v1/contacts/archidoc/bulk` — partial success per row, hard cap **500** (over-cap → `413 payload_too_large`), 5 MiB body limit; emits one `contact.bulk_imported` audit event per call
+- New rate-limit family `"contacts"` (60 RPM / 30 burst / 5 000 day, independent counters)
+- Audit events `contact.synced`, `contact.archived`, `contact.bulk_imported` carry `envelopeId = null`
+- Non-archidoc tenants get `403 tenant_forbidden` on every `/api/v1/contacts/archidoc/*` call
 
 ## Authentication & Authorization
 - **Admin**: Replit Auth OIDC (Google / GitHub / Apple / email-pwd); all `/api/*` protected EXCEPT `/api/sign/:token/*` and `/api/v1/*`

@@ -212,7 +212,7 @@ export const archidocContactBulkSchema = z.object({
     role: z.string().nullish(),
     phone: z.string().nullish(),
     sourceUpdatedAt: z.string().datetime({ offset: true }),
-  })).min(1).max(500),
+  })).min(1),
 });
 
 export const insertSettingSchema = createInsertSchema(settings);

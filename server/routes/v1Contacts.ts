@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, json } from "express";
 import { storage } from "../storage";
 import { ContactService, ContactSourceMismatchError } from "../services/ContactService";
 import { archidocContactUpsertSchema, archidocContactBulkSchema } from "@shared/schema";
@@ -31,6 +31,13 @@ async function audit(eventType: string, actor: string, ip: string | null, metada
 export function buildV1ContactsRouter(): Router {
   const router = Router();
   router.use(apiKeyAuth);
+  // Surface Express body-parser PayloadTooLargeError as the contract-mandated 413 shape.
+  router.use((err: any, _req: any, res: any, next: any) => {
+    if (err && (err.type === "entity.too.large" || err.status === 413)) {
+      return res.status(413).json({ error: "payload_too_large", message: "Bulk size exceeds 500" });
+    }
+    return next(err);
+  });
 
   /**
    * PUT /api/v1/contacts/archidoc/:id — upsert a single archidoc contact.
@@ -91,8 +98,27 @@ export function buildV1ContactsRouter(): Router {
    * POST /api/v1/contacts/archidoc/bulk — partial-success batch upsert.
    * Max 500 rows; per-row outcome reported.
    */
-  router.post("/contacts/archidoc/bulk", rateLimit("contacts"), asyncHandler(async (req, res) => {
+  const bulkBodyParser = json({
+    limit: "5mb",
+    verify: (_req, res, _buf) => {
+      // Express handler below sees PayloadTooLargeError via error middleware; nothing to do here.
+      void res;
+    },
+  });
+  const FIVE_MIB = 5 * 1024 * 1024;
+  const enforceBulkSize = (req: any, res: any, next: any) => {
+    const len = Number(req.headers["content-length"] || 0);
+    if (len > FIVE_MIB) {
+      return res.status(413).json({ error: "payload_too_large", message: "Body exceeds 5 MiB" });
+    }
+    next();
+  };
+  router.post("/contacts/archidoc/bulk", rateLimit("contacts"), enforceBulkSize, bulkBodyParser, asyncHandler(async (req, res) => {
     if (!ensureArchidocTenant(req, res)) return;
+    const incoming = req.body?.contacts;
+    if (Array.isArray(incoming) && incoming.length > 500) {
+      return res.status(413).json({ error: "payload_too_large", message: "Bulk size exceeds 500" });
+    }
     const parsed = archidocContactBulkSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "invalid_request", fieldErrors: parsed.error.flatten().fieldErrors });
