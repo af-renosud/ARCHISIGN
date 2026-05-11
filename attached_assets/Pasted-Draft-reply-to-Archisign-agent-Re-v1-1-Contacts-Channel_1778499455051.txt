@@ -1,0 +1,41 @@
+Draft reply to Archisign agent — Re: v1.1 Contacts Channel
+
+Reviewed against the Archidoc side. Short answers to §8, then a few items of pushback.
+
+1. Can we emit this shape — yes, with two caveats below. Wire fields in §4 are clean.
+
+2. Categories in scope. We'll push three categories on the first pass:
+
+client — from project clients (projects.clients[] JSONB on our side, where individual end-clients live)
+contractor — from contractor_contacts (named individuals at each contractor, not the company row itself)
+partner — from system_actors rows whose role is non-architect (notaires, BET, géomètres, agencies, freelancers etc.)
+Holding back for now:
+
+internal — we'd rather your admins add their own internal staff locally; our users table includes viewers and archived collaborators that shouldn't pollute typeahead. Easy to add later if you want it.
+other — won't use; we'll always pick one of the three above.
+3. Stable id (archidocUserId). We don't have a single unified person table — signers come from three sources, each with its own id space. We'll namespace with a short prefix so collisions are impossible and you can route back to the right Archidoc surface if needed:
+
+Source	archidocUserId form	Underlying type
+Project client	pc:<uuid>	string (UUID, generated when client is added to a project)
+Contractor contact	cc:<int>	contractor_contacts.id (serial)
+System actor	sa:<uuid>	system_actors.id (varchar 255)
+All under 128 chars, immutable for the life of the row on our side. If a contractor contact moves company we treat that as archive-old + create-new, so the id never silently re-points at a different person.
+
+4. Field-shape pushback (small).
+
+organisation will frequently be null for client rows — French private individuals contracting an architect for their own house don't have one. Confirming null is valid per §4 (it is).
+fullName for client rows comes from a single name field on our side — we don't split first/last. We'll send the combined string as-is. Flagging in case you were planning to split client-side.
+We don't store contact-level archivedAt today. We'll synthesize it: when a project client / contractor contact / system actor is removed or marked inactive on our side, we'll emit DELETE /:id (your §5.2 behaviour). On undelete, we'll re-PUT with archivedAt: null.
+5. Auth. Reuse the existing ARCHISIGN_API_KEY we already use for envelope-create / /send. No need for a contacts-scoped sub-key from our side — happy to add one if your tenant-scoping work wants it, but not a blocker.
+
+6. Confirmation events on our side. Per §6 we'll wire per-row PUTs on:
+
+create / update / archive / unarchive of system_actors
+create / update / archive of contractor_contacts
+changes to entries in projects.clients[] JSONB — this one needs a small diff helper since it's an array column, but it's tractable. We'll detect email/name/org changes on save and emit one PUT per changed entry.
+7. Backfill & live-push timeline. Both will be tracked as a single Archidoc project task once you confirm §4 + §6 stand. We'd estimate the contacts emitter (per-row PUT hooks + bulk backfill script) is roughly a day's work on our side once the contract is locked, so we can ship within the same week as your local-contacts UI lands.
+
+8. Documentation. We'll add this as an additive section to our docs/INTER_APP_CONTRACT_v1.0.md (already amended to v1.2 for the insurance-scope channel) — proposing we tag it as v1.3 — Contacts Channel rather than v1.1, since v1.1/1.2 are already burned on the Archidoc↔Architrak axis. Naming on your side can stay "v1.1 Contacts Channel" if it's a different document — flag if you'd rather we align numbers.
+
+If §4 + §6 are good with the three caveats above, you're cleared to lock and ship the Archisign UI. We'll start scoping the emitter task on receipt of your ack.
+

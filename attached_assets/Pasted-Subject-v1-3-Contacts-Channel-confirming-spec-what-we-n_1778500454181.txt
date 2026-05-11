@@ -1,0 +1,42 @@
+Subject: v1.3 Contacts Channel — confirming spec + what we need from your side to start
+
+Hi —
+
+Thanks for the v1.3 proposal. We're aligned on the shape and ready to build the Archidoc emitter, but we're holding the first commit until you confirm the points below, so we don't bake in assumptions you'd want to change.
+
+What Archidoc will push (confirmed on our side):
+
+Three categories only: client, contractor, partner. No internal users.
+Namespaced IDs to avoid collisions across categories:
+pc:<projectId>:<clientId> — project clients (from projects.clients JSONB)
+cc:<contactId> — contractor contacts (contractor_contacts table)
+sa:<systemActorId> — partners (system_actors, role-filtered; architect/internal roles skipped)
+Live push on create/update + bulk backfill endpoint, plus a per-contact archive on delete (no hard delete — you keep historical signers resolvable).
+Auth: same ARCHISIGN_API_KEY (X-API-KEY header) we already use for envelopes. No new secret.
+What we need you to confirm before we cut code (§4 + §6 of the spec):
+
+§4 — Wire shape. Confirm endpoints exactly as drafted:
+
+PUT /api/v1/contacts/archidoc/:id — upsert one
+DELETE /api/v1/contacts/archidoc/:id — archive (soft-delete, still typeahead-searchable? or hidden?)
+POST /api/v1/contacts/archidoc/bulk — batch upsert, max 500 per call
+Payload fields: id, category, displayName, email, phone?, organization?, role?, sourceUpdatedAt. Anything you want added/removed?
+§4 — Error semantics. Confirm:
+
+409 on stale sourceUpdatedAt (we drop and move on)
+429 with Retry-After (we honour, retry once, then enqueue)
+5xx → enqueue to outbox, exponential backoff
+404 on DELETE = treat as success (already gone)
+§6 — Idempotency + ordering. Confirm id is your idempotency key and the latest sourceUpdatedAt wins on your side, so out-of-order retries can't resurrect a stale version.
+
+Archive-on-delete behaviour. When we send DELETE, do you (a) hide from typeahead but keep resolvable for historical envelopes, or (b) tombstone fully? We assumed (a).
+
+Bulk endpoint semantics. All-or-nothing transaction, or per-row partial success with a result array? We'd prefer per-row so one bad record doesn't block 499 others.
+
+Rate limits. What's your sustained QPS budget for the live-push path? We'll size our outbox worker accordingly.
+
+Once you ack the above (a "yes to all, here's anything to tweak" is enough), we'll ship in this order: contract amendment → schema + outbox table → outbound client → live hooks → backfill script → worker. Estimated 1–2 days end-to-end on our side after ack.
+
+Thanks —
+Archidoc team
+
