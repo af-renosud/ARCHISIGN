@@ -1,0 +1,67 @@
+Subject: ArchiDoc v1.3.1 backfill — please confirm landing on prod
+
+Hi Archisign team,
+
+We've completed the v1.3.1 initial backfill from our side per your runbook. Please verify on prod (not dev) that it landed correctly. Our telemetry from both runs:
+
+Run 1: POST_BULK initial-2026-05-11-chunk0001 status=200 1503ms outcome=ok rows=4 accepted=4 deduplicated=0 rejected=0
+Run 2: POST_BULK initial-2026-05-11-chunk0001 status=200  262ms outcome=ok rows=4 accepted=4 deduplicated=4 rejected=0
+Sent against: https://archi-sign-pro.replit.app/api/v1/contacts/archidoc/bulk
+Tenant: archidoc
+Total rows in our DB at backfill time: 4 (1 partner system actor + 3 project clients; 0 contractor contacts)
+No rejected.csv was produced (zero rejections).
+
+Could you confirm the following on your prod environment?
+1. Address book row count for the archidoc tenant
+
+GET /api/contacts        (admin)
+Expected: 4 rows total (was 2 — the 2 you already had via per-row PUTs + 2 net new from the backfill).
+
+The 4 row IDs we sent were:
+
+id	category	displayName
+sa:2ca230c1-58da-4ada-9ee3-547fd8db58e1	partner	NUMERIPLAN (email=null)
+pc:<projectId>:<clientId> × 3	project_client	(3 project clients)
+(I can send you the full ID list out-of-band if useful — keeping PII out of this thread.)
+
+2. Audit-event entries for the bulk import
+
+SELECT created_at, event_type, meta->>'batchId' AS batch_id, meta->'accepted', meta->'deduplicated', meta->'rejected'
+FROM audit_events
+WHERE event_type = 'contact.bulk_imported'
+  AND meta->>'batchId' = 'initial-2026-05-11-chunk0001'
+ORDER BY created_at DESC
+LIMIT 5;
+Expected: 2 rows (one per run), both with batchId='initial-2026-05-11-chunk0001', with:
+
+Run 1 (earlier): accepted=4, deduplicated=0, rejected=0
+Run 2 (later, ~25s after run 1): accepted=4, deduplicated=4, rejected=0
+This is the v1.3.1 §8.11.1 idempotency proof — same batchId across both runs, ledger absorbed run 2.
+
+3. Spot-check one row end-to-end
+
+For a single contact (e.g. sa:2ca230c1-58da-4ada-9ee3-547fd8db58e1 — NUMERIPLAN):
+
+GET /api/contacts/sa:2ca230c1-58da-4ada-9ee3-547fd8db58e1
+Expected fields:
+
+category: "partner"
+displayName: "NUMERIPLAN"
+email: null (JSON null, not empty string — this is the v1.3 "null email is valid for system actors" path)
+organization: "NUMERIPLAN"
+role: "OTHER"
+sourceUpdatedAt: "2026-01-18T13:32:13.269Z"
+Anything other than the above?
+If you see the 2 expected bulk_imported audit events and 4 contacts in the address book, we're green and steady-state v1.3.1 is live on both sides.
+
+If you see 0 bulk events in prod audit but the per-row PUT traffic from our outbox is still landing (Alice Cooper / "A" already there), please tell us — that would mean our ARCHISIGN_BASE_URL is somehow being routed to a different environment than yours despite both being on archi-sign-pro.replit.app, and we'll need to compare proxy hops.
+
+If you see anything weird (rejected rows we didn't see telemetry for, mismatched accepted counts, etc.), send us the raw audit-event rows and we'll reconcile.
+
+Operational change on our side
+Per your suggestion, we've dropped the per-row outbox worker cadence from 60s → 10 min (600_000ms) as of now, so steady-state writes will land within ≤10 min instead of ≤60s. Easy to tune up/down if you want a different window.
+
+Thanks!
+
+— ArchiDoc team
+
