@@ -1,6 +1,6 @@
 import {
   envelopes, signers, annotations, communicationLogs, auditEvents, settings,
-  rollbackVersions, backups, webhookDeliveries,
+  rollbackVersions, backups, webhookDeliveries, contacts,
   type Envelope, type InsertEnvelope,
   type Signer, type InsertSigner,
   type Annotation, type InsertAnnotation,
@@ -10,9 +10,10 @@ import {
   type RollbackVersion, type InsertRollbackVersion,
   type Backup, type InsertBackup,
   type WebhookDelivery, type InsertWebhookDelivery,
+  type Contact, type InsertContact,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, sql, isNull, isNotNull, inArray, lt } from "drizzle-orm";
+import { eq, desc, and, or, sql, isNull, isNotNull, inArray, lt, ilike } from "drizzle-orm";
 
 export type DbExecutor = typeof db;
 
@@ -86,6 +87,15 @@ export interface IStorage {
   markEnvelopeRetentionBreach(envelopeId: number, incidentRef: string, detectedAt: Date): Promise<Envelope | undefined>;
   getEnvelopesForIntegrityCheck(limit: number, offset: number): Promise<Envelope[]>;
   rotateSignerAccessToken(signerId: number, newToken: string, previousTokenHash: string, executor?: DbExecutor): Promise<Signer | undefined>;
+
+  searchContacts(opts: { q?: string; source?: "archidoc" | "local"; includeArchived?: boolean; limit?: number }): Promise<Contact[]>;
+  getContactById(id: number): Promise<Contact | undefined>;
+  getContactByArchidocUserId(archidocUserId: string): Promise<Contact | undefined>;
+  getContactBySourceEmail(source: "archidoc" | "local", email: string): Promise<Contact | undefined>;
+  createContact(data: InsertContact): Promise<Contact>;
+  updateContact(id: number, data: Partial<Contact>): Promise<Contact | undefined>;
+  archiveContact(id: number): Promise<Contact | undefined>;
+  bumpContactLastUsedByEmail(email: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -401,6 +411,66 @@ export class DatabaseStorage implements IStorage {
       .orderBy(envelopes.id)
       .limit(limit)
       .offset(offset);
+  }
+
+  async searchContacts(opts: { q?: string; source?: "archidoc" | "local"; includeArchived?: boolean; limit?: number } = {}): Promise<Contact[]> {
+    const conditions: any[] = [];
+    if (!opts.includeArchived) conditions.push(isNull(contacts.archivedAt));
+    if (opts.source) conditions.push(eq(contacts.source, opts.source));
+    if (opts.q && opts.q.trim().length > 0) {
+      const term = `%${opts.q.trim().toLowerCase()}%`;
+      conditions.push(or(
+        sql`lower(${contacts.email}) like ${term}`,
+        sql`lower(${contacts.displayName}) like ${term}`,
+        sql`lower(coalesce(${contacts.organization}, '')) like ${term}`,
+      ));
+    }
+    const where = conditions.length === 0 ? undefined : conditions.length === 1 ? conditions[0] : and(...conditions);
+    const query = db.select().from(contacts);
+    const rows = await (where ? query.where(where) : query)
+      .orderBy(desc(contacts.lastUsedAt), desc(contacts.updatedAt))
+      .limit(opts.limit ?? 200);
+    return rows;
+  }
+
+  async getContactById(id: number): Promise<Contact | undefined> {
+    const [c] = await db.select().from(contacts).where(eq(contacts.id, id));
+    return c;
+  }
+
+  async getContactByArchidocUserId(archidocUserId: string): Promise<Contact | undefined> {
+    const [c] = await db.select().from(contacts).where(eq(contacts.archidocUserId, archidocUserId));
+    return c;
+  }
+
+  async getContactBySourceEmail(source: "archidoc" | "local", email: string): Promise<Contact | undefined> {
+    const [c] = await db.select().from(contacts).where(
+      and(eq(contacts.source, source), eq(contacts.email, email))
+    );
+    return c;
+  }
+
+  async createContact(data: InsertContact): Promise<Contact> {
+    const [c] = await db.insert(contacts).values(data).returning();
+    return c;
+  }
+
+  async updateContact(id: number, data: Partial<Contact>): Promise<Contact | undefined> {
+    const [c] = await db.update(contacts).set({ ...data, updatedAt: new Date() }).where(eq(contacts.id, id)).returning();
+    return c;
+  }
+
+  async archiveContact(id: number): Promise<Contact | undefined> {
+    const now = new Date();
+    const [c] = await db.update(contacts).set({ archivedAt: now, updatedAt: now }).where(eq(contacts.id, id)).returning();
+    return c;
+  }
+
+  async bumpContactLastUsedByEmail(email: string): Promise<void> {
+    const normalized = email.trim().toLowerCase();
+    await db.update(contacts)
+      .set({ lastUsedAt: new Date() })
+      .where(and(eq(contacts.email, normalized), isNull(contacts.archivedAt)));
   }
 
   async rotateSignerAccessToken(signerId: number, newToken: string, previousTokenHash: string, executor: DbExecutor = db): Promise<Signer | undefined> {

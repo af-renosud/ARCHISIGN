@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, real, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, real, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -139,6 +139,80 @@ export const backups = pgTable("backups", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   filename: text("filename").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const contactSourceEnum = pgEnum("contact_source", ["archidoc", "local"]);
+export const contactCategoryEnum = pgEnum("contact_category", [
+  "client", "contractor", "partner", "internal", "other"
+]);
+
+export const contacts = pgTable("contacts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  archidocUserId: text("archidoc_user_id"),
+  email: text("email").notNull(),
+  displayName: text("display_name").notNull(),
+  organization: text("organization"),
+  category: contactCategoryEnum("category").notNull().default("other"),
+  role: text("role"),
+  phone: text("phone"),
+  source: contactSourceEnum("source").notNull(),
+  archidocSourceUpdatedAt: timestamp("archidoc_source_updated_at"),
+  lastUsedAt: timestamp("last_used_at"),
+  archivedAt: timestamp("archived_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("contacts_source_email_unique").on(t.source, t.email),
+  uniqueIndex("contacts_archidoc_user_id_unique").on(t.archidocUserId),
+  index("contacts_email_lower_idx").on(sql`lower(${t.email})`),
+  index("contacts_display_name_lower_idx").on(sql`lower(${t.displayName})`),
+]);
+
+export const insertContactSchema = createInsertSchema(contacts).omit({
+  id: true, createdAt: true, updatedAt: true,
+});
+export type Contact = typeof contacts.$inferSelect;
+export type InsertContact = z.infer<typeof insertContactSchema>;
+
+export const localContactCreateSchema = z.object({
+  email: z.string().email("Invalid email"),
+  displayName: z.string().min(1, "Display name is required"),
+  organization: z.string().nullish(),
+  category: z.enum(["client", "contractor", "partner", "internal", "other"]).default("other"),
+  role: z.string().nullish(),
+  phone: z.string().nullish(),
+});
+
+export const localContactUpdateSchema = z.object({
+  email: z.string().email("Invalid email").optional(),
+  displayName: z.string().min(1).optional(),
+  organization: z.string().nullish(),
+  category: z.enum(["client", "contractor", "partner", "internal", "other"]).optional(),
+  role: z.string().nullish(),
+  phone: z.string().nullish(),
+});
+
+export const archidocContactUpsertSchema = z.object({
+  email: z.string().email(),
+  displayName: z.string().min(1),
+  organization: z.string().nullish(),
+  category: z.enum(["client", "contractor", "partner", "internal", "other"]),
+  role: z.string().nullish(),
+  phone: z.string().nullish(),
+  sourceUpdatedAt: z.string().datetime({ offset: true }),
+});
+
+export const archidocContactBulkSchema = z.object({
+  contacts: z.array(z.object({
+    id: z.string().min(1),
+    email: z.string().email(),
+    displayName: z.string().min(1),
+    organization: z.string().nullish(),
+    category: z.enum(["client", "contractor", "partner", "internal", "other"]),
+    role: z.string().nullish(),
+    phone: z.string().nullish(),
+    sourceUpdatedAt: z.string().datetime({ offset: true }),
+  })).min(1).max(500),
 });
 
 export const insertSettingSchema = createInsertSchema(settings);

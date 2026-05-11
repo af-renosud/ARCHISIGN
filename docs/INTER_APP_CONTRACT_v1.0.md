@@ -745,3 +745,103 @@ None today. The contract is complete and consistent at v1.0. This section is a p
 ---
 
 ## End of consolidated contract v1.0-rc3
+
+---
+
+## §8 v1.3 amendment — Contacts Channel (frozen 2026-05-11)
+
+This section extends v1.0 with a **Contacts Channel** between Archidoc (authoritative directory) and Archisign (consumer). Architrak is **not** a participant on this channel.
+
+### §8.1 Tenancy
+
+- Only the `archidoc` tenant may call `/api/v1/contacts/archidoc/*` endpoints.
+- Other tenants (e.g. `architrak`) get `403 {"message":"Tenant not authorized for contacts channel"}`.
+
+### §8.2 Rate-limit family
+
+- New family identifier: `"contacts"` (per-tenant token bucket).
+- Limits: **60 RPM**, **30 burst**, **5 000/day** (same envelope-family parameters; independent counters).
+- 429 body matches §3.6.1 with `family: "contacts"`.
+
+### §8.3 Data model surface
+
+Mirror table `contacts` columns exposed on the wire:
+
+| Field                | Type      | Notes                                                        |
+|----------------------|-----------|--------------------------------------------------------------|
+| `archidocUserId`     | string    | Stable Archidoc-side identifier; primary correlation key     |
+| `email`              | string    | Lower-cased on ingest                                        |
+| `displayName`        | string    | Trimmed                                                      |
+| `organization`       | string?   |                                                              |
+| `category`           | enum      | `client` \| `contractor` \| `partner` \| `internal` \| `other` |
+| `role`               | string?   |                                                              |
+| `phone`              | string?   |                                                              |
+| `sourceUpdatedAt`    | ISO-8601  | Authoritative monotonic stamp for staleness arbitration       |
+
+### §8.4 Endpoints
+
+#### §8.4.1 `PUT /api/v1/contacts/archidoc/:archidocUserId`
+
+Idempotent upsert. Body: full contact payload + `sourceUpdatedAt`.
+
+Response shape:
+```json
+{ "applied": true,  "contact": { /* normalised */ } }
+{ "applied": false, "reason": "stale", "contact": { /* current */ } }
+```
+
+**Stale rule**: if `existing.archidocSourceUpdatedAt > incoming.sourceUpdatedAt` then the write is dropped and the response is `200 {applied:false,reason:"stale"}`. No partial write, no audit event.
+
+#### §8.4.2 `DELETE /api/v1/contacts/archidoc/:archidocUserId`
+
+Always-200 archive. Response:
+```json
+{ "archived": true, "alreadyArchived": false }
+{ "archived": true, "alreadyArchived": true  }
+```
+
+`alreadyArchived:true` is returned for **both** unknown ids and rows whose `archivedAt` is already set. Re-archive is a no-op.
+
+#### §8.4.3 `POST /api/v1/contacts/archidoc/bulk`
+
+Bulk upsert. Body: `{ "contacts": [ { archidocUserId, ... , sourceUpdatedAt } x N ] }`.
+
+- **Hard cap**: `N ≤ 500`. Over-cap → `413 {"message":"Bulk size exceeds 500"}`.
+- Each row is processed via the same per-row pipeline as §8.4.1.
+- Per-row outcomes are split into `accepted[]` and `rejected[]` preserving input order within each list:
+  ```json
+  {
+    "accepted": [
+      { "id": "u1", "applied": true,  "contactId": 17 },
+      { "id": "u2", "applied": false, "reason": "stale", "contactId": 9 }
+    ],
+    "rejected": [
+      { "id": "u3", "error": "Invalid sourceUpdatedAt" }
+    ]
+  }
+  ```
+- HTTP status is always `200` on partial success. The bulk call is **not** transactional across rows.
+- One `contact.bulk_imported` audit event per call (not per row), with `meta: { total, acceptedCount, rejectedCount }`.
+
+### §8.5 Audit events
+
+All audit rows carry `envelopeId = null`.
+
+| event                 | source           | meta                                            |
+|-----------------------|------------------|-------------------------------------------------|
+| `contact.synced`        | §8.4.1 PUT     | `{ archidocUserId, applied, reason, contactId }` |
+| `contact.archived`      | §8.4.2 DELETE  | `{ archidocUserId, alreadyArchived }`           |
+| `contact.bulk_imported` | §8.4.3 bulk    | `{ total, acceptedCount, rejectedCount }`       |
+
+### §8.6 Local-side admin surface (out-of-contract)
+
+Archisign exposes admin-only `/api/contacts` (OIDC) for Local contacts created in-product. These never round-trip back to Archidoc; they are local-only and can be edited/archived freely. Local + Archidoc are merged client-side in the New Envelope picker, with Archidoc rows shown read-only (`Lock` badge).
+
+### §8.7 Last-used signal
+
+When an envelope is created (admin or v1.0 `/api/v1/envelopes/create`), Archisign bumps `contacts.last_used_at` for every signer email matching a non-archived contact (any source). This drives the "Recent" group in the picker. No event is emitted.
+
+### §8.8 Sign-off
+
+- Archidoc: `confirmed v1.3` 2026-05-09
+- Archisign: `confirmed v1.3` 2026-05-11

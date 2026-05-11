@@ -8,6 +8,7 @@ import { getPageCount } from "../services/PdfService";
 import { generateToken } from "../services/SecurityService";
 import { sendSigningInvitation, loadEmailSettings } from "../services/NotificationService";
 import { emitEvent } from "../services/EventDispatcher";
+import { ContactService } from "../services/ContactService";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { apiKeyAuth } from "../middleware/apiKeyAuth";
 import { rateLimit } from "../middleware/rateLimit";
@@ -185,6 +186,11 @@ export function buildV1EnvelopesRouter(): Router {
       });
       envelope = result.env;
       createdSigners = result.signers;
+      try {
+        await ContactService.bumpLastUsed(createdSigners.map(s => s.email));
+      } catch (bumpErr: any) {
+        console.warn(`[v1.create] bumpLastUsed failed for envelope ${envelope.id}: ${bumpErr?.message || bumpErr}`);
+      }
     } catch (txErr) {
       if (savedPdfUrl && mintedFromFetch) {
         await deleteFile(savedPdfUrl).catch(() => {});

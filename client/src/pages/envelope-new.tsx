@@ -22,6 +22,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Plus, Trash2, Upload, FileText } from "lucide-react";
+import { ContactCombobox, type ContactPick } from "@/components/ContactCombobox";
 
 const formSchema = z.object({
   subject: z.string().min(1, "Subject is required"),
@@ -38,7 +39,8 @@ type FormValues = z.infer<typeof formSchema>;
 export default function EnvelopeNew() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
-  const [additionalSigners, setAdditionalSigners] = useState<Array<{ name: string; email: string }>>([]);
+  const [primarySigner, setPrimarySigner] = useState<ContactPick | null>(null);
+  const [additionalSigners, setAdditionalSigners] = useState<Array<ContactPick>>([]);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
 
   const { data: settings } = useQuery<Setting[]>({ queryKey: ["/api/settings"] });
@@ -76,7 +78,7 @@ export default function EnvelopeNew() {
 
       const allSigners = [
         { fullName: values.signerName, email: values.signerEmail },
-        ...additionalSigners.filter(s => s.name && s.email),
+        ...additionalSigners.filter(s => s.fullName && s.email).map(s => ({ fullName: s.fullName, email: s.email })),
       ];
       formData.append("signers", JSON.stringify(allSigners));
       formData.append("signaturePlacementMode", values.signaturePlacementMode);
@@ -107,20 +109,26 @@ export default function EnvelopeNew() {
   });
 
   const addSigner = () => {
-    setAdditionalSigners(prev => [...prev, { name: "", email: "" }]);
+    setAdditionalSigners(prev => [...prev, { contactId: null, fullName: "", email: "" }]);
   };
 
   const removeSigner = (index: number) => {
     setAdditionalSigners(prev => prev.filter((_, i) => i !== index));
   };
 
-  const updateSigner = (index: number, field: "name" | "email", value: string) => {
+  const updateSigner = (index: number, pick: ContactPick) => {
     setAdditionalSigners(prev => {
       const updated = [...prev];
-      updated[index] = { ...updated[index], [field]: value };
+      updated[index] = pick;
       return updated;
     });
   };
+
+  function handlePrimaryPick(pick: ContactPick) {
+    setPrimarySigner(pick);
+    form.setValue("signerName", pick.fullName, { shouldValidate: true });
+    form.setValue("signerEmail", pick.email, { shouldValidate: true });
+  }
 
   return (
     <div className="flex flex-col h-full overflow-auto">
@@ -289,54 +297,35 @@ export default function EnvelopeNew() {
                   </Button>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <FormField
-                    control={form.control}
-                    name="signerName"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Full Name</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Jean Dupont" {...field} data-testid="input-signer-name" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="signerEmail"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Email</FormLabel>
-                        <FormControl>
-                          <Input placeholder="jean@example.com" {...field} data-testid="input-signer-email" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                <div>
+                  <Label className="text-xs">Primary signer</Label>
+                  <div className="mt-1">
+                    <ContactCombobox
+                      value={primarySigner}
+                      onChange={handlePrimaryPick}
+                      placeholder="Search contacts or add new…"
+                      testIdPrefix="primary-signer"
+                    />
+                  </div>
+                  {form.formState.errors.signerEmail && (
+                    <p className="text-xs text-destructive mt-1">{form.formState.errors.signerEmail.message}</p>
+                  )}
+                  <input type="hidden" {...form.register("signerName")} />
+                  <input type="hidden" {...form.register("signerEmail")} />
                 </div>
 
                 {additionalSigners.map((signer, i) => (
-                  <div key={i} className="grid grid-cols-[1fr_1fr_auto] gap-3 items-end">
+                  <div key={i} className="grid grid-cols-[1fr_auto] gap-3 items-end">
                     <div>
-                      <Label className="text-xs">Full Name</Label>
-                      <Input
-                        value={signer.name}
-                        onChange={(e) => updateSigner(i, "name", e.target.value)}
-                        placeholder="Full name"
-                        data-testid={`input-additional-signer-name-${i}`}
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-xs">Email</Label>
-                      <Input
-                        value={signer.email}
-                        onChange={(e) => updateSigner(i, "email", e.target.value)}
-                        placeholder="Email"
-                        data-testid={`input-additional-signer-email-${i}`}
-                      />
+                      <Label className="text-xs">Additional signer #{i + 2}</Label>
+                      <div className="mt-1">
+                        <ContactCombobox
+                          value={signer}
+                          onChange={(p) => updateSigner(i, p)}
+                          placeholder="Search contacts or add new…"
+                          testIdPrefix={`additional-signer-${i}`}
+                        />
+                      </div>
                     </div>
                     <Button type="button" variant="ghost" size="icon" onClick={() => removeSigner(i)} data-testid={`button-remove-signer-${i}`}>
                       <Trash2 className="h-4 w-4" />

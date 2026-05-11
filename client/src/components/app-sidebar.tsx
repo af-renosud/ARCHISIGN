@@ -1,4 +1,4 @@
-import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database, ChevronRight, LogOut } from "lucide-react";
+import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database, ChevronRight, LogOut, Users } from "lucide-react";
 import archisignLogo from "@assets/Generated_Image_February_13__2026_-_7_21AM-removebg-preview_1770963731125.png";
 import { useLocation, Link } from "wouter";
 import {
@@ -83,6 +83,18 @@ export function AppSidebar() {
                   <Link href="/" data-testid="link-nav-dashboard">
                     <LayoutDashboard className="h-4 w-4" />
                     <span>Dashboard</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={location === "/contacts"}
+                  className="text-[#7D7E82]"
+                >
+                  <Link href="/contacts" data-testid="link-nav-contacts">
+                    <Users className="h-4 w-4" />
+                    <span>Contacts</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>

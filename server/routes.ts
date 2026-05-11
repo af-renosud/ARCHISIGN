@@ -16,6 +16,9 @@ import { sendSigningInvitation, sendResendInvitation, sendReplyNotification, sen
 import { asyncHandler } from "./middleware/asyncHandler";
 import { validateId } from "./middleware/validators";
 import { buildV1EnvelopesRouter, buildSignedPdfFetchHandler, mintSignedPdfUrl } from "./routes/v1Envelopes";
+import { buildV1ContactsRouter } from "./routes/v1Contacts";
+import { buildContactsRouter } from "./routes/contacts";
+import { ContactService } from "./services/ContactService";
 import { emitEvent, uuidv7, type IdentityVerification } from "./services/EventDispatcher";
 
 const upload = multer({
@@ -247,6 +250,8 @@ export async function registerRoutes(
 
       return env;
     });
+
+    ContactService.bumpLastUsed(signersData.map(s => s.email)).catch(() => {});
 
     const full = await storage.getEnvelope(envelope.id);
     res.json(full);
@@ -944,6 +949,8 @@ export async function registerRoutes(
   // router because its URL signature is the auth.
   app.get("/api/v1/envelopes/:envelopeId/signed-pdf-fetch", buildSignedPdfFetchHandler());
   app.use("/api/v1", buildV1EnvelopesRouter());
+  app.use("/api/v1", buildV1ContactsRouter());
+  app.use("/api/contacts", buildContactsRouter());
 
   app.use("/uploads", asyncHandler(async (req, res) => {
     const fileName = req.path.replace(/^\/+/, "");

@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 
-export type RateFamily = "create" | "send" | "read";
+export type RateFamily = "create" | "send" | "read" | "contacts";
 
 const RPM_SUSTAINED = 60;
 const BURST_CAPACITY = 30;
