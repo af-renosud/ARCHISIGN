@@ -163,7 +163,12 @@ export const contacts = pgTable("contacts", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
-  uniqueIndex("contacts_source_email_unique").on(t.source, t.email),
+  // v1.3.2: shared company inboxes are first-class. The local-only typo guard
+  // remains via a partial unique on active local rows; archidoc rows may freely
+  // share email (identity is keyed on archidoc_user_id per §8.3 / §8.9.4).
+  uniqueIndex("contacts_local_email_unique")
+    .on(t.email)
+    .where(sql`source = 'local' AND archived_at IS NULL`),
   uniqueIndex("contacts_archidoc_user_id_unique").on(t.archidocUserId),
   index("contacts_email_lower_idx").on(sql`lower(${t.email})`),
   index("contacts_display_name_lower_idx").on(sql`lower(${t.displayName})`),

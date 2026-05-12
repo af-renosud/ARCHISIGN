@@ -16,9 +16,11 @@ import {
   AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2, RefreshCw, PenTool,
   KeyRound, EyeOff
 } from "lucide-react";
-import type { Envelope, Signer, CommunicationLog, AuditEvent } from "@shared/schema";
+import type { Envelope, Signer, CommunicationLog, AuditEvent, Contact } from "@shared/schema";
+import { buildSharedEmailMap, isSharedInbox } from "@/components/ContactCombobox";
+import { Users as UsersIcon } from "lucide-react";
 import { format } from "date-fns";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 
 const statusConfig: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline"; icon: any; color: string }> = {
   draft: { label: "Draft", variant: "secondary", icon: FileText, color: "text-muted-foreground" },
@@ -86,6 +88,12 @@ export default function EnvelopeDetail() {
     enabled: !!id,
     refetchInterval: 30000,
   });
+
+  // v1.3.2: surface a shared-inbox warning chip next to any signer whose email
+  // resolves to >1 active contact across both sources. Read-only echo of the
+  // pre-send picker warning.
+  const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", { q: "" }] });
+  const sharedEmailMap = useMemo(() => buildSharedEmailMap(contacts), [contacts]);
 
   const sendMutation = useMutation({
     mutationFn: () => apiRequest("POST", `/api/envelopes/${id}/send`),
@@ -335,7 +343,20 @@ export default function EnvelopeDetail() {
                 <CardContent className="p-5">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div>
-                      <p className="font-medium" data-testid={`text-signer-name-${signer.id}`}>{signer.fullName}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-medium" data-testid={`text-signer-name-${signer.id}`}>{signer.fullName}</p>
+                        {isSharedInbox(sharedEmailMap, signer.email) && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] px-1.5 py-0 border-amber-500/60 text-amber-700 dark:text-amber-400"
+                            data-testid={`badge-shared-inbox-${signer.id}`}
+                            title="Multiple active contacts share this inbox — verify the signer name is correct"
+                          >
+                            <UsersIcon className="h-2.5 w-2.5 mr-0.5" />
+                            shared inbox
+                          </Badge>
+                        )}
+                      </div>
                       <p className="text-sm text-muted-foreground">{signer.email}</p>
                     </div>
                     <div className="flex items-center gap-2">

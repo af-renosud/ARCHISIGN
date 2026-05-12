@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { Setting } from "@shared/schema";
@@ -22,7 +22,10 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArrowLeft, Plus, Trash2, Upload, FileText } from "lucide-react";
-import { ContactCombobox, type ContactPick } from "@/components/ContactCombobox";
+import { ContactCombobox, type ContactPick, buildSharedEmailMap, isSharedInbox } from "@/components/ContactCombobox";
+import { Users as UsersIcon } from "lucide-react";
+import type { Contact } from "@shared/schema";
+import { Badge } from "@/components/ui/badge";
 
 const formSchema = z.object({
   subject: z.string().min(1, "Subject is required"),
@@ -44,6 +47,9 @@ export default function EnvelopeNew() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
 
   const { data: settings } = useQuery<Setting[]>({ queryKey: ["/api/settings"] });
+  // v1.3.2: re-uses ContactCombobox's React-Query cache (same key) so this is free.
+  const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", { q: "" }] });
+  const sharedEmailMap = useMemo(() => buildSharedEmailMap(contacts), [contacts]);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -310,6 +316,9 @@ export default function EnvelopeNew() {
                   {form.formState.errors.signerEmail && (
                     <p className="text-xs text-destructive mt-1">{form.formState.errors.signerEmail.message}</p>
                   )}
+                  {isSharedInbox(sharedEmailMap, primarySigner?.email) && (
+                    <SharedInboxNotice email={primarySigner!.email} testId="primary-signer-shared-notice" />
+                  )}
                   <input type="hidden" {...form.register("signerName")} />
                   <input type="hidden" {...form.register("signerEmail")} />
                 </div>
@@ -326,6 +335,9 @@ export default function EnvelopeNew() {
                           testIdPrefix={`additional-signer-${i}`}
                         />
                       </div>
+                      {isSharedInbox(sharedEmailMap, signer.email) && (
+                        <SharedInboxNotice email={signer.email} testId={`additional-signer-${i}-shared-notice`} />
+                      )}
                     </div>
                     <Button type="button" variant="ghost" size="icon" onClick={() => removeSigner(i)} data-testid={`button-remove-signer-${i}`}>
                       <Trash2 className="h-4 w-4" />
@@ -346,6 +358,23 @@ export default function EnvelopeNew() {
           </form>
         </Form>
       </div>
+    </div>
+  );
+}
+
+function SharedInboxNotice({ email, testId }: { email: string; testId: string }) {
+  return (
+    <div className="mt-2" data-testid={testId}>
+      <Badge
+        variant="outline"
+        className="text-[10px] px-1.5 py-0.5 border-amber-500/60 text-amber-700 dark:text-amber-400"
+      >
+        <UsersIcon className="h-3 w-3 mr-1" />
+        shared inbox — verify the name before sending
+      </Badge>
+      <p className="text-[11px] text-muted-foreground mt-1">
+        Multiple contacts use <code className="font-mono">{email}</code>. The OTP and signing link will be sent to this inbox; double-check the signer name above is correct.
+      </p>
     </div>
   );
 }

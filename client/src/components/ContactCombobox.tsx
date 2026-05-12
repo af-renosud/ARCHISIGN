@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Check, ChevronsUpDown, UserPlus, Loader2 } from "lucide-react";
+import { Check, ChevronsUpDown, UserPlus, Loader2, Users as UsersIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -26,6 +26,27 @@ export interface ContactPick {
 
 function emailOf(c: Contact): string {
   return c.email ?? "";
+}
+
+/**
+ * v1.3.2: build a lowercase-email → count map across ALL active contacts
+ * (regardless of source). A local row + an archidoc row sharing the same
+ * inbox both count toward the warning — same human, two table rows.
+ */
+export function buildSharedEmailMap(contacts: Contact[] | undefined): Map<string, number> {
+  const m = new Map<string, number>();
+  if (!contacts) return m;
+  for (const c of contacts) {
+    if (c.archivedAt || !c.email) continue;
+    const k = c.email.toLowerCase();
+    m.set(k, (m.get(k) ?? 0) + 1);
+  }
+  return m;
+}
+
+export function isSharedInbox(map: Map<string, number>, email: string | null | undefined): boolean {
+  if (!email) return false;
+  return (map.get(email.toLowerCase()) ?? 0) > 1;
 }
 
 interface Props {
@@ -78,6 +99,8 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
       toast({ title: "Failed to add contact", description: err.message, variant: "destructive" });
     },
   });
+
+  const sharedEmailMap = useMemo(() => buildSharedEmailMap(contacts), [contacts]);
 
   const grouped = useMemo(() => {
     // v1.3.1: ArchiDoc may sync email-less contacts (system actors / contractors).
@@ -148,7 +171,7 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
             {grouped.recent.length > 0 && (
               <CommandGroup heading="Recent">
                 {grouped.recent.map((c) => (
-                  <ContactRow key={c.id} contact={c} onSelect={pickContact} selected={value?.contactId === c.id} testIdPrefix={testIdPrefix} />
+                  <ContactRow key={c.id} contact={c} onSelect={pickContact} selected={value?.contactId === c.id} testIdPrefix={testIdPrefix} sharedEmailMap={sharedEmailMap} />
                 ))}
               </CommandGroup>
             )}
@@ -157,7 +180,7 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
                 {grouped.recent.length > 0 && <CommandSeparator />}
                 <CommandGroup heading="ArchiDoc">
                   {grouped.archidoc.map((c) => (
-                    <ContactRow key={c.id} contact={c} onSelect={pickContact} selected={value?.contactId === c.id} testIdPrefix={testIdPrefix} />
+                    <ContactRow key={c.id} contact={c} onSelect={pickContact} selected={value?.contactId === c.id} testIdPrefix={testIdPrefix} sharedEmailMap={sharedEmailMap} />
                   ))}
                 </CommandGroup>
               </>
@@ -167,7 +190,7 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
                 {(grouped.recent.length > 0 || grouped.archidoc.length > 0) && <CommandSeparator />}
                 <CommandGroup heading="Local">
                   {grouped.local.map((c) => (
-                    <ContactRow key={c.id} contact={c} onSelect={pickContact} selected={value?.contactId === c.id} testIdPrefix={testIdPrefix} />
+                    <ContactRow key={c.id} contact={c} onSelect={pickContact} selected={value?.contactId === c.id} testIdPrefix={testIdPrefix} sharedEmailMap={sharedEmailMap} />
                   ))}
                 </CommandGroup>
               </>
@@ -195,10 +218,13 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
 }
 
 function ContactRow({
-  contact, onSelect, selected, testIdPrefix,
+  contact, onSelect, selected, testIdPrefix, sharedEmailMap,
 }: {
   contact: Contact; onSelect: (c: Contact) => void; selected: boolean; testIdPrefix: string;
+  sharedEmailMap: Map<string, number>;
 }) {
+  const sharedCount = contact.email ? (sharedEmailMap.get(contact.email.toLowerCase()) ?? 0) : 0;
+  const isShared = sharedCount > 1;
   return (
     <CommandItem
       value={`${contact.id}-${contact.email ?? "noemail"}-${contact.displayName}`}
@@ -207,11 +233,22 @@ function ContactRow({
     >
       <Check className={cn("mr-2 h-4 w-4", selected ? "opacity-100" : "opacity-0")} />
       <div className="flex flex-col flex-1 min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-medium truncate">{contact.displayName}</span>
           <Badge variant={contact.source === "archidoc" ? "default" : "secondary"} className="text-[10px] px-1.5 py-0">
             {contact.source === "archidoc" ? "ArchiDoc" : "Local"}
           </Badge>
+          {isShared && (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 border-amber-500/60 text-amber-700 dark:text-amber-400"
+              data-testid={`${testIdPrefix}-shared-${contact.id}`}
+              title={`${sharedCount} active contacts share this inbox — verify the name before sending`}
+            >
+              <UsersIcon className="h-2.5 w-2.5 mr-0.5" />
+              shared inbox · {sharedCount}
+            </Badge>
+          )}
         </div>
         <div className="text-xs text-muted-foreground truncate">
           {contact.email ?? <span className="italic">no email</span>}

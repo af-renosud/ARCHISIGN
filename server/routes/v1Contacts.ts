@@ -224,10 +224,24 @@ export function buildV1ContactsRouter(): Router {
         }
       }
     }
+    // v1.3.2: split deduplicated rows out of acceptedCount so post-mortems read
+    // cleanly without cross-referencing ArchiDoc telemetry. Additive metadata —
+    // existing v1.3.1 consumers ignore unknown fields.
+    //
+    // Invariant: appliedCount = acceptedCount - deduplicatedCount.
+    // deduplicatedCount intentionally counts only accepted-side dedup hits so the
+    // arithmetic holds; rejected-side dedup hits are reported separately as
+    // rejectedDeduplicatedCount for full visibility.
+    const deduplicatedCount = accepted.filter(a => a.deduplicated).length;
+    const rejectedDeduplicatedCount = rejected.filter(r => r.deduplicated).length;
+    const appliedCount = accepted.length - deduplicatedCount;
     await audit("contact.bulk_imported", tenant, req.ip || null, {
       total: rawRows.length,
       acceptedCount: accepted.length,
       rejectedCount: rejected.length,
+      deduplicatedCount,
+      rejectedDeduplicatedCount,
+      appliedCount,
       batchId: batchId ?? null,
     });
     res.status(200).json({ accepted, rejected, ...(batchId ? { batchId } : {}) });
