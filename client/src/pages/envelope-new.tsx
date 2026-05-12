@@ -47,8 +47,9 @@ export default function EnvelopeNew() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
 
   const { data: settings } = useQuery<Setting[]>({ queryKey: ["/api/settings"] });
-  // v1.3.2: re-uses ContactCombobox's React-Query cache (same key) so this is free.
-  const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", { q: "" }] });
+  // v1.3.2: load full active contact list to detect shared inboxes.
+  // Uses the default queryFn (queryKey.join("/")), so the key MUST be URL-only.
+  const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts"] });
   const sharedEmailMap = useMemo(() => buildSharedEmailMap(contacts), [contacts]);
 
   const form = useForm<FormValues>({

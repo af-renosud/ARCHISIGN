@@ -91,8 +91,9 @@ export default function EnvelopeDetail() {
 
   // v1.3.2: surface a shared-inbox warning chip next to any signer whose email
   // resolves to >1 active contact across both sources. Read-only echo of the
-  // pre-send picker warning.
-  const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", { q: "" }] });
+  // pre-send picker warning. URL-only queryKey so the default queryFn (which
+  // does queryKey.join("/")) hits /api/contacts cleanly.
+  const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts"] });
   const sharedEmailMap = useMemo(() => buildSharedEmailMap(contacts), [contacts]);
 
   const sendMutation = useMutation({
