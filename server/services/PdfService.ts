@@ -191,38 +191,43 @@ export async function stampSignedPdf(
           font: fontBold,
           color: rgb(0, 0, 0.7),
         });
-      } else if (ann.type === "initial") {
-        const initials = ann.value || signer.fullName.split(" ").map(n => n[0]).join("").toUpperCase();
-        if (scriptFont) {
-          const initSize = 16;
-          page.drawText(initials, {
-            x: ann.xPos * width,
-            y: (1 - ann.yPos) * height,
-            size: initSize,
-            font: scriptFont,
-            color: rgb(0.05, 0.05, 0.3),
-          });
-        } else {
-          page.drawText(`[${initials}]`, {
-            x: ann.xPos * width,
-            y: (1 - ann.yPos) * height,
-            size: 7,
-            font,
-            color: rgb(0.1, 0.1, 0.5),
-          });
-        }
-      } else if (ann.type === "date") {
-        const dateValue = ann.value || "";
-        if (dateValue) {
-          const dateSize = scriptFont ? 14 : 9;
-          page.drawText(dateValue, {
-            x: ann.xPos * width,
-            y: (1 - ann.yPos) * height,
-            size: dateSize,
-            font: scriptFont || font,
-            color: rgb(0.05, 0.05, 0.3),
-          });
-        }
+      } else if (ann.type === "initial" || ann.type === "date") {
+        const text =
+          ann.type === "initial"
+            ? (ann.value || signer.fullName.split(" ").map(n => n[0]).join("").toUpperCase())
+            : (ann.value || "");
+        if (!text) continue;
+
+        // Treat (xPos, yPos) as the box top-left fraction (same convention as
+        // signature). Honour width/height so the stamped glyphs sit *inside*
+        // the editor's rectangle, not anchored to a baseline above it.
+        const boxWidthPt =
+          ann.width != null ? ann.width * width : (ann.type === "initial" ? 0.08 * width : 0.15 * width);
+        const boxHeightPt =
+          ann.height != null ? ann.height * height : (ann.type === "initial" ? 0.04 * height : 0.03 * height);
+        const boxLeftPt = ann.xPos * width;
+        const boxBottomPt = (1 - ann.yPos) * height - boxHeightPt;
+
+        const chosenFont = scriptFont || font;
+        // Auto-fit: pick the largest size that fits both the box width and
+        // ~80% of the box height. Cap to a sensible maximum so a giant
+        // editor box doesn't produce a comically large glyph.
+        const maxByHeight = boxHeightPt * 0.8;
+        const maxByWidth = (boxWidthPt * 0.95) / Math.max(1, chosenFont.widthOfTextAtSize(text, 1));
+        const fontSize = Math.max(6, Math.min(48, maxByHeight, maxByWidth));
+        const textWidth = chosenFont.widthOfTextAtSize(text, fontSize);
+        const textHeight = chosenFont.heightAtSize(fontSize);
+        const textX = boxLeftPt + (boxWidthPt - textWidth) / 2;
+        // drawText anchors at the baseline; centre vertically inside the box.
+        const textY = boxBottomPt + (boxHeightPt - textHeight) / 2;
+
+        page.drawText(text, {
+          x: textX,
+          y: textY,
+          size: fontSize,
+          font: chosenFont,
+          color: rgb(0.05, 0.05, 0.3),
+        });
       } else {
         page.drawText(`[${ann.value || ""}]`, {
           x: ann.xPos * width,

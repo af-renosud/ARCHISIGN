@@ -663,6 +663,7 @@ export async function registerRoutes(
         yPos: 0.95,
         type: "initial",
         value: initials,
+        placed: true,
       });
     }
 
@@ -794,6 +795,7 @@ export async function registerRoutes(
           yPos: 0.9,
           type: "signature",
           value: signer.fullName,
+          placed: true,
         }, tx);
       }
 
@@ -833,7 +835,10 @@ export async function registerRoutes(
           const signersWithAnnotations = await Promise.all(
             allSigners.map(async (s) => ({
               signer: { id: s.id, fullName: s.fullName, signedAt: s.signedAt },
-              annotations: await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, s.id),
+              // Only stamp annotations the admin actually placed; unplaced
+              // template rows (placed=false) must never leak onto the PDF.
+              annotations: (await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, s.id))
+                .filter((a) => a.placed),
             }))
           );
 

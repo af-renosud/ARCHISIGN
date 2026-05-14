@@ -138,6 +138,7 @@ export default function EnvelopeFieldEditor() {
     pagesMissingInitial: { signer: string; pages: number[] }[];
   } | null>(null);
   const [expandedSigners, setExpandedSigners] = useState<Set<number>>(new Set());
+  const [pageAspects, setPageAspects] = useState<Map<number, number>>(new Map());
 
   const [undoStack, setUndoStack] = useState<PlacedField[][]>([]);
   const [redoStack, setRedoStack] = useState<PlacedField[][]>([]);
@@ -250,6 +251,38 @@ export default function EnvelopeFieldEditor() {
       setPlacementMode(envelope.signaturePlacementMode as SignaturePlacementMode);
     }
   }, [envelope?.signaturePlacementMode]);
+
+  // Load real page dimensions via pdfjs so the editor canvas (and rail
+  // thumbnails) match the actual PDF aspect ratio per page. The editor
+  // previously hardcoded 8.5/11, which silently shifted A4 placements.
+  useEffect(() => {
+    const pdfUrl = envelope?.originalPdfUrl;
+    if (!pdfUrl || !totalPages) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const pdfjs = await import("pdfjs-dist");
+        const workerUrl = (await import("pdfjs-dist/build/pdf.worker.mjs?url")).default;
+        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+        const doc = await pdfjs.getDocument({ url: pdfUrl, withCredentials: false }).promise;
+        const next = new Map<number, number>();
+        for (let p = 1; p <= Math.min(totalPages, doc.numPages); p++) {
+          const page = await doc.getPage(p);
+          const vp = page.getViewport({ scale: 1 });
+          next.set(p, vp.width / vp.height);
+        }
+        if (!cancelled) setPageAspects(next);
+      } catch (err) {
+        console.warn("Failed to load PDF page dimensions:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [envelope?.originalPdfUrl, totalPages]);
+
+  const aspectFor = useCallback(
+    (pageNum: number) => pageAspects.get(pageNum) ?? (8.5 / 11),
+    [pageAspects],
+  );
 
   const placementModeMutation = useMutation({
     mutationFn: async (vars: { mode: SignaturePlacementMode; previous: SignaturePlacementMode }) => {
@@ -1069,7 +1102,8 @@ export default function EnvelopeFieldEditor() {
                 key={pageNum}
                 type="button"
                 onClick={() => goToRailPage(pageNum)}
-                className={`relative w-full aspect-[8.5/11] rounded border-2 transition-all overflow-hidden ${
+                style={{ aspectRatio: aspectFor(pageNum) }}
+                className={`relative w-full rounded border-2 transition-all overflow-hidden ${
                   isActive
                     ? "border-primary shadow"
                     : locked
@@ -1191,7 +1225,7 @@ export default function EnvelopeFieldEditor() {
                       className={`relative bg-white dark:bg-gray-900 rounded-lg shadow-sm border-2 transition-colors ${
                         isActive ? "border-primary" : "border-transparent"
                       } ${locked ? "opacity-60" : ""}`}
-                      style={{ aspectRatio: "8.5/11" }}
+                      style={{ aspectRatio: aspectFor(pageNum) }}
                     >
                       {envelope.originalPdfUrl ? (
                         <iframe
