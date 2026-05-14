@@ -249,6 +249,39 @@ export const insertSettingSchema = createInsertSchema(settings);
 export type Setting = typeof settings.$inferSelect;
 export type InsertSetting = z.infer<typeof insertSettingSchema>;
 
+export const wishlistKindEnum = pgEnum("wishlist_kind", ["function", "amendment"]);
+export const wishlistStatusEnum = pgEnum("wishlist_status", ["open", "in_progress", "done", "rejected"]);
+
+export const wishlistItems = pgTable("wishlist_items", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  title: text("title").notNull(),
+  description: text("description"),
+  kind: wishlistKindEnum("kind").notNull().default("function"),
+  status: wishlistStatusEnum("status").notNull().default("open"),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertWishlistItemSchema = createInsertSchema(wishlistItems).omit({
+  id: true, createdAt: true, updatedAt: true,
+});
+export type WishlistItem = typeof wishlistItems.$inferSelect;
+export type InsertWishlistItem = z.infer<typeof insertWishlistItemSchema>;
+
+export const wishlistCreateRequestSchema = z.object({
+  title: z.string().min(1, "Title is required").max(200),
+  description: z.string().max(5000).nullish(),
+  kind: z.enum(["function", "amendment"]).default("function"),
+});
+
+export const wishlistUpdateRequestSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().max(5000).nullish(),
+  kind: z.enum(["function", "amendment"]).optional(),
+  status: z.enum(["open", "in_progress", "done", "rejected"]).optional(),
+});
+
 export const insertRollbackVersionSchema = createInsertSchema(rollbackVersions).omit({ id: true, createdAt: true });
 export type RollbackVersion = typeof rollbackVersions.$inferSelect;
 export type InsertRollbackVersion = z.infer<typeof insertRollbackVersionSchema>;

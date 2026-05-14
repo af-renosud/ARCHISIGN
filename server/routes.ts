@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
-import { insertRollbackVersionSchema, insertBackupSchema, createEnvelopeRequestSchema, createSignerRequestSchema, createApiEnvelopeRequestSchema } from "@shared/schema";
+import { insertRollbackVersionSchema, insertBackupSchema, createEnvelopeRequestSchema, createSignerRequestSchema, createApiEnvelopeRequestSchema, wishlistCreateRequestSchema, wishlistUpdateRequestSchema } from "@shared/schema";
 import { z } from "zod";
 import multer from "multer";
 import path from "path";
@@ -979,6 +979,33 @@ export async function registerRoutes(
       results.push(await storage.upsertSetting(s));
     }
     res.json(results);
+  }));
+
+  app.get("/api/wishlist", asyncHandler(async (_req, res) => {
+    res.json(await storage.getWishlistItems());
+  }));
+  app.post("/api/wishlist", asyncHandler(async (req, res) => {
+    const parsed = wishlistCreateRequestSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+    const created = await storage.createWishlistItem({
+      title: parsed.data.title,
+      description: parsed.data.description ?? null,
+      kind: parsed.data.kind,
+      createdBy: (req.user as any)?.email ?? null,
+    });
+    res.status(201).json(created);
+  }));
+  app.patch("/api/wishlist/:id", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const parsed = wishlistUpdateRequestSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: "Invalid data", errors: parsed.error.flatten() });
+    const updated = await storage.updateWishlistItem(id, parsed.data as any);
+    if (!updated) return res.status(404).json({ message: "Wishlist item not found" });
+    res.json(updated);
+  }));
+  app.delete("/api/wishlist/:id", validateId, asyncHandler(async (req, res) => {
+    await storage.deleteWishlistItem((req as any).validatedId);
+    res.json({ success: true });
   }));
 
   app.post("/api/envelopes/:id/soft-delete", validateId, asyncHandler(async (req, res) => {

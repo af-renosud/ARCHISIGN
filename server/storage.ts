@@ -1,6 +1,6 @@
 import {
   envelopes, signers, annotations, communicationLogs, auditEvents, settings,
-  rollbackVersions, backups, webhookDeliveries, contacts, contactBulkDedup,
+  rollbackVersions, backups, webhookDeliveries, contacts, contactBulkDedup, wishlistItems,
   type Envelope, type InsertEnvelope,
   type Signer, type InsertSigner,
   type Annotation, type InsertAnnotation,
@@ -12,6 +12,7 @@ import {
   type WebhookDelivery, type InsertWebhookDelivery,
   type Contact, type InsertContact,
   type ContactBulkDedup, type InsertContactBulkDedup,
+  type WishlistItem, type InsertWishlistItem,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, or, sql, isNull, isNotNull, inArray, lt, ilike } from "drizzle-orm";
@@ -46,6 +47,12 @@ export interface IStorage {
   getSetting(key: string): Promise<Setting | undefined>;
   upsertSetting(data: InsertSetting): Promise<Setting>;
   getSettingsByCategory(category: string): Promise<Setting[]>;
+
+  getWishlistItems(): Promise<WishlistItem[]>;
+  getWishlistItem(id: number): Promise<WishlistItem | undefined>;
+  createWishlistItem(data: InsertWishlistItem): Promise<WishlistItem>;
+  updateWishlistItem(id: number, data: Partial<WishlistItem>): Promise<WishlistItem | undefined>;
+  deleteWishlistItem(id: number): Promise<void>;
 
   getDeletedEnvelopes(): Promise<Envelope[]>;
   softDeleteEnvelope(id: number): Promise<Envelope | undefined>;
@@ -233,6 +240,33 @@ export class DatabaseStorage implements IStorage {
 
   async getSettingsByCategory(category: string): Promise<Setting[]> {
     return db.select().from(settings).where(eq(settings.category, category));
+  }
+
+  async getWishlistItems(): Promise<WishlistItem[]> {
+    return db.select().from(wishlistItems).orderBy(desc(wishlistItems.createdAt));
+  }
+
+  async getWishlistItem(id: number): Promise<WishlistItem | undefined> {
+    const [item] = await db.select().from(wishlistItems).where(eq(wishlistItems.id, id));
+    return item;
+  }
+
+  async createWishlistItem(data: InsertWishlistItem): Promise<WishlistItem> {
+    const [item] = await db.insert(wishlistItems).values(data).returning();
+    return item;
+  }
+
+  async updateWishlistItem(id: number, data: Partial<WishlistItem>): Promise<WishlistItem | undefined> {
+    const [item] = await db
+      .update(wishlistItems)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(wishlistItems.id, id))
+      .returning();
+    return item;
+  }
+
+  async deleteWishlistItem(id: number): Promise<void> {
+    await db.delete(wishlistItems).where(eq(wishlistItems.id, id));
   }
 
   async getDeletedEnvelopes(): Promise<Envelope[]> {

@@ -20,6 +20,7 @@ import PreDeployment from "@/pages/pre-deployment";
 import RollbackLedger from "@/pages/rollback-ledger";
 import DataRecovery from "@/pages/data-recovery";
 import ContactsPage from "@/pages/contacts";
+import WishlistPage from "@/pages/wishlist";
 import LoginPage from "@/pages/login";
 import { Loader2 } from "lucide-react";
 
@@ -56,6 +57,7 @@ function AdminRouter() {
       <Route path="/envelopes/:id/fields" component={EnvelopeFieldEditor} />
       <Route path="/contacts" component={ContactsPage} />
       <Route path="/settings" component={SettingsPage} />
+      <Route path="/wishlist" component={WishlistPage} />
       <Route path="/pre-deployment" component={PreDeployment} />
       <Route path="/rollback-ledger" component={RollbackLedger} />
       <Route path="/data-recovery" component={DataRecovery} />

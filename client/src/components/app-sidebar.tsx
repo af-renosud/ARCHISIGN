@@ -1,4 +1,4 @@
-import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database, ChevronRight, LogOut, Users } from "lucide-react";
+import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database, ChevronRight, LogOut, Users, Lightbulb } from "lucide-react";
 import archisignLogo from "@assets/Generated_Image_February_13__2026_-_7_21AM-removebg-preview_1770963731125.png";
 import { useLocation, Link } from "wouter";
 import {
@@ -29,6 +29,7 @@ import { useAuth } from "@/hooks/use-auth";
 import type { Envelope } from "@shared/schema";
 
 const settingsSubItems = [
+  { title: "Wishlist", url: "/wishlist", icon: Lightbulb },
   { title: "Rollback Ledger", url: "/rollback-ledger", icon: History },
   { title: "Data Recovery", url: "/data-recovery", icon: Database },
   { title: "Pre-Deployment", url: "/pre-deployment", icon: Shield },
