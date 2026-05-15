@@ -1,4 +1,4 @@
-import type { Express, RequestHandler } from "express";
+import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
@@ -15,6 +15,7 @@ import { generateToken, generateOtp, hashOtp, verifyOtp, buildSigningLink, gener
 import { sendSigningInvitation, sendResendInvitation, sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
 import { asyncHandler } from "./middleware/asyncHandler";
 import { validateId } from "./middleware/validators";
+import { buildAdminGuard } from "./middleware/adminGuard";
 import { buildV1EnvelopesRouter, buildSignedPdfFetchHandler, mintSignedPdfUrl } from "./routes/v1Envelopes";
 import { buildV1ContactsRouter } from "./routes/v1Contacts";
 import { buildContactsRouter } from "./routes/contacts";
@@ -92,108 +93,14 @@ export async function registerRoutes(
   // Archisign is a single-organisation app: only verified emails on the
   // configured domain (default renosud.com) may reach the admin API. The
   // optional ADMIN_EMAILS allowlist still applies as a further narrowing
-  // filter on top of the domain rule.
-  const ALLOWED_EMAIL_DOMAIN = (process.env.ARCHISIGN_ALLOWED_EMAIL_DOMAIN || "renosud.com")
-    .trim()
-    .toLowerCase()
-    .replace(/^@/, "");
-
-  const isAdminAuthorized: RequestHandler = (req, res, next) => {
-    const p = req.path;
-    if (p.startsWith("/api/sign/")) {
-      return next();
-    }
-    if (p.startsWith("/api/v1/")) {
-      // Auth for /api/v1/* is handled by the apiKeyAuth middleware on the
-      // v1 router (Inter-App Contract v1.0 §3.4). The signed-pdf-fetch
-      // endpoint is unauthenticated by API key — its URL signature is the auth.
-      return next();
-    }
-    // OIDC handshake endpoints must stay unguarded so users can sign in,
-    // sign out, and complete the callback. /api/auth/user is intentionally
-    // NOT exempted — it must be domain-checked so the frontend never sees a
-    // "logged in" state for a denied user.
-    if (p === "/api/login" || p === "/api/logout" || p === "/api/callback") {
-      return next();
-    }
-    if (p.startsWith("/uploads")) {
-      return next();
-    }
-    if (p.startsWith("/api/")) {
-      return isAuthenticated(req, res, () => {
-        const user = req.user as any;
-        const userEmail: string | undefined = user?.claims?.email;
-        const normEmail = (userEmail || "").trim().toLowerCase();
-
-        const deny = (reason: "domain_mismatch" | "email_not_in_allowlist") => {
-          console.warn(
-            `[AUTH] Unauthorized admin access attempt by ${userEmail || "unknown"} on ${req.method} ${req.path} (${reason})`,
-          );
-          storage.createAuditEvent({
-            envelopeId: null,
-            eventType: "Unauthorized admin access attempt",
-            actorEmail: userEmail || "unknown",
-            ipAddress: req.ip || null,
-            metadata: JSON.stringify({
-              path: req.path,
-              method: req.method,
-              reason,
-              allowedDomain: ALLOWED_EMAIL_DOMAIN,
-            }),
-          }).catch(() => {});
-
-          const code =
-            reason === "domain_mismatch" ? "domain_not_allowed" : "email_not_in_allowlist";
-          const message =
-            reason === "domain_mismatch"
-              ? `Access denied. Archisign is restricted to @${ALLOWED_EMAIL_DOMAIN} accounts.`
-              : "Access denied. Your account is not on the admin allowlist.";
-
-          // Destroy the OIDC session so the user is fully signed out
-          // client-side and the login page is shown on the next load.
-          // req.logout() only clears the passport user binding; we also
-          // destroy the session record and clear the connect.sid cookie.
-          // All three APIs accept a callback and don't throw synchronously,
-          // so we chain them and send the 403 once the session is gone.
-          req.logout((logoutErr) => {
-            if (logoutErr) {
-              console.warn(`[AUTH] req.logout failed during deny path: ${logoutErr}`);
-            }
-            req.session.destroy((destroyErr) => {
-              if (destroyErr) {
-                console.warn(`[AUTH] session.destroy failed during deny path: ${destroyErr}`);
-              }
-              res.clearCookie("connect.sid", { path: "/" });
-              res.status(403).json({ code, message, allowedDomain: ALLOWED_EMAIL_DOMAIN });
-            });
-          });
-        };
-
-        // E2E bypass uses a synthetic non-renosud email; skip the domain
-        // check when running under that explicit dev/test flag.
-        const isE2EBypass =
-          process.env.E2E_AUTH_BYPASS === "1" &&
-          (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test");
-
-        if (!isE2EBypass && (!normEmail || !normEmail.endsWith("@" + ALLOWED_EMAIL_DOMAIN))) {
-          return deny("domain_mismatch");
-        }
-
-        const allowedEmails = (process.env.ADMIN_EMAILS || "")
-          .split(",")
-          .map((e) => e.trim().toLowerCase())
-          .filter(Boolean);
-
-        if (allowedEmails.length > 0 && !allowedEmails.includes(normEmail)) {
-          return deny("email_not_in_allowlist");
-        }
-
-        next();
-      });
-    }
-    next();
-  };
-  app.use(isAdminAuthorized);
+  // filter on top of the domain rule. The guard is implemented in
+  // ./middleware/adminGuard so it can be unit-tested in isolation.
+  app.use(
+    buildAdminGuard({
+      isAuthenticated,
+      createAuditEvent: (event) => storage.createAuditEvent(event),
+    }),
+  );
 
   // Mounted AFTER the admin guard so /api/auth/user is also subject to
   // the domain + allowlist check (see note above).
