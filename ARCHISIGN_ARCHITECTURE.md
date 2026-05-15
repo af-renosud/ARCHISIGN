@@ -89,9 +89,24 @@
 
 ## 7. Authentication & Authorization
 
-- **Admin area:** Replit Auth (OIDC) with optional `ADMIN_EMAILS` allowlist.
-- **External signers:** Token-based access (`/api/sign/:token/*`) with OTP verification — no session required.
-- **Service-to-service:** API key validation (`X-API-KEY` header) for `/api/v1/*` routes against `ARCHIDOC_API_KEY`.
+- **Admin area:** Replit Auth (OIDC), restricted to a single organisation.
+  The admin guard `isAdminAuthorized` (in `server/routes.ts`) enforces, for
+  every `/api/*` request that isn't a signer-token, v1 API-key, or OIDC
+  handshake endpoint:
+  1. A valid Replit Auth session.
+  2. The session email must end in `@<ARCHISIGN_ALLOWED_EMAIL_DOMAIN>`
+     (default `renosud.com`).
+  3. If `ADMIN_EMAILS` is set, the email must also appear in that CSV
+     allowlist (case-insensitive).
+  Failures destroy the session and respond `403` with a JSON body
+  `{ code, message, allowedDomain }` where `code` is `domain_not_allowed`
+  or `email_not_in_allowlist`. The denial is recorded in `audit_events`
+  with `reason` in the metadata. The `E2E_AUTH_BYPASS=1` dev/test flag
+  skips the domain check (but never runs in production).
+- **External signers:** Token-based access (`/api/sign/:token/*`) with OTP
+  verification — no session required.
+- **Service-to-service:** API key validation (`X-API-KEY` header) for
+  `/api/v1/*` routes against `ARCHIDOC_API_KEY` / `ARCHITRAK_API_KEY`.
 - Unauthorized access attempts are logged to the `audit_events` table.
 
 ---

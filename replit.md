@@ -128,8 +128,9 @@ Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. AS1 → AS5 fully landed:
 - Non-archidoc tenants get `403 tenant_forbidden` on every `/api/v1/contacts/archidoc/*` call
 
 ## Authentication & Authorization
-- **Admin**: Replit Auth OIDC (Google / GitHub / Apple / email-pwd); all `/api/*` protected EXCEPT `/api/sign/:token/*` and `/api/v1/*`
-- **Optional allowlist**: `ADMIN_EMAILS` (CSV)
+- **Admin**: Replit Auth OIDC (Google / GitHub / Apple / email-pwd); all `/api/*` protected EXCEPT `/api/sign/:token/*`, `/api/v1/*`, and the OIDC handshake (`/api/login`, `/api/logout`, `/api/callback`)
+- **Single-org domain rule**: admin guard requires the session email to end in `@<ARCHISIGN_ALLOWED_EMAIL_DOMAIN>` (default `renosud.com`). Denial → session destroyed + `403 {code, message, allowedDomain}` (`code` = `domain_not_allowed` or `email_not_in_allowlist`) + `audit_events` row with `reason` metadata. `E2E_AUTH_BYPASS=1` (dev/test only) skips the domain check.
+- **Optional allowlist**: `ADMIN_EMAILS` (CSV) — applied as a *further* narrowing filter on top of the domain rule
 - **Sessions**: connect-pg-simple, 7-day TTL, `SESSION_SECRET` required
 - **API keys**: `apiKeyAuth` resolves `X-API-KEY` against CSV in `ARCHIDOC_API_KEY` / `ARCHITRAK_API_KEY`; attaches `req.apiKeyAuth = {tenant, keyHash}`
 - **Audit**: unauthorised attempts logged to `audit_events`
@@ -174,7 +175,8 @@ Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. AS1 → AS5 fully landed:
 | ARCHISIGN_SIGNED_URL_SECRET             | secret | No          | HMAC secret for /signed-pdf-fetch URLs; falls back to `ARCHISIGN_WEBHOOK_SECRET` |
 | ARCHISIGN_RETENTION_REMEDIATION_CONTACT | env    | No          | Email returned in 410 retention_breach + retention_breach event body        |
 | ARCHISIGN_DISABLE_SCHEDULERS            | env    | No          | Set to `1` to disable expirySweep + integrityCheck (test/CI)                |
-| ADMIN_EMAILS                            | env    | No          | CSV allowlist of admin emails                                               |
+| ARCHISIGN_ALLOWED_EMAIL_DOMAIN          | env    | No          | Email domain admin sign-in is restricted to (default `renosud.com`)         |
+| ADMIN_EMAILS                            | env    | No          | CSV allowlist of admin emails (further narrowing on top of the domain rule) |
 | SESSION_SECRET                          | secret | Auto        | Express session secret                                                      |
 | DEFAULT_OBJECT_STORAGE_BUCKET_ID        | secret | Auto        | Object Storage bucket ID                                                    |
 | PRIVATE_OBJECT_DIR                      | secret | Auto        | Object Storage private directory path                                       |

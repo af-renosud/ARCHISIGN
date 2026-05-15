@@ -10,6 +10,35 @@ async function fetchUser(): Promise<User | null> {
     return null;
   }
 
+  // 403 means the admin guard rejected the session (wrong domain or not on
+  // the allowlist). Surface a flag the login page can read, then treat the
+  // user as logged out so the login screen is shown.
+  if (response.status === 403) {
+    try {
+      const body = await response.clone().json();
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem(
+          "archisign:auth-denied",
+          JSON.stringify({
+            code: body?.code ?? "access_denied",
+            message: body?.message ?? "Access denied.",
+            allowedDomain: body?.allowedDomain ?? null,
+          }),
+        );
+      }
+    } catch {
+      // Ignore body parse failures; the login page falls back to a
+      // generic message.
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem(
+          "archisign:auth-denied",
+          JSON.stringify({ code: "access_denied", message: "Access denied." }),
+        );
+      }
+    }
+    return null;
+  }
+
   if (!response.ok) {
     throw new Error(`${response.status}: ${response.statusText}`);
   }
