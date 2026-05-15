@@ -142,26 +142,6 @@ export async function registerRoutes(
             }),
           }).catch(() => {});
 
-          // Destroy the OIDC session so the user is fully signed out
-          // client-side and the login page is shown on the next load.
-          // req.logout() only clears the passport user binding; we also
-          // destroy the session record and clear the cookie.
-          try {
-            (req as any).logout?.(() => {});
-          } catch {
-            // best-effort; the 403 below still tells the client.
-          }
-          try {
-            (req as any).session?.destroy?.(() => {});
-          } catch {
-            // ignore — best-effort.
-          }
-          try {
-            res.clearCookie("connect.sid", { path: "/" });
-          } catch {
-            // ignore — best-effort.
-          }
-
           const code =
             reason === "domain_mismatch" ? "domain_not_allowed" : "email_not_in_allowlist";
           const message =
@@ -169,7 +149,24 @@ export async function registerRoutes(
               ? `Access denied. Archisign is restricted to @${ALLOWED_EMAIL_DOMAIN} accounts.`
               : "Access denied. Your account is not on the admin allowlist.";
 
-          return res.status(403).json({ code, message, allowedDomain: ALLOWED_EMAIL_DOMAIN });
+          // Destroy the OIDC session so the user is fully signed out
+          // client-side and the login page is shown on the next load.
+          // req.logout() only clears the passport user binding; we also
+          // destroy the session record and clear the connect.sid cookie.
+          // All three APIs accept a callback and don't throw synchronously,
+          // so we chain them and send the 403 once the session is gone.
+          req.logout((logoutErr) => {
+            if (logoutErr) {
+              console.warn(`[AUTH] req.logout failed during deny path: ${logoutErr}`);
+            }
+            req.session.destroy((destroyErr) => {
+              if (destroyErr) {
+                console.warn(`[AUTH] session.destroy failed during deny path: ${destroyErr}`);
+              }
+              res.clearCookie("connect.sid", { path: "/" });
+              res.status(403).json({ code, message, allowedDomain: ALLOWED_EMAIL_DOMAIN });
+            });
+          });
         };
 
         // E2E bypass uses a synthetic non-renosud email; skip the domain
