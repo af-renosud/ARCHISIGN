@@ -1,12 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Filter, ChevronDown } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -28,12 +31,56 @@ const statusConfig: Record<string, { label: string; variant: "default" | "second
   declined: { label: "Declined", variant: "destructive", icon: AlertTriangle },
 };
 
+const ALL_STATUSES = ["draft", "sent", "viewed", "queried", "signed", "declined"] as const;
+type StatusKey = (typeof ALL_STATUSES)[number];
+const DEFAULT_STATUSES: StatusKey[] = ["draft", "sent", "viewed", "queried", "declined"];
+const STATUS_FILTER_STORAGE_KEY = "archisign:dashboard:statusFilter";
+
+function loadStoredStatuses(): StatusKey[] {
+  if (typeof window === "undefined") return DEFAULT_STATUSES;
+  try {
+    const raw = window.localStorage.getItem(STATUS_FILTER_STORAGE_KEY);
+    if (!raw) return DEFAULT_STATUSES;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_STATUSES;
+    const valid = parsed.filter((s): s is StatusKey =>
+      (ALL_STATUSES as readonly string[]).includes(s),
+    );
+    return valid;
+  } catch {
+    return DEFAULT_STATUSES;
+  }
+}
+
 export default function Dashboard() {
   const [, navigate] = useLocation();
   const [projectSearch, setProjectSearch] = useState("");
   const [partnerSearch, setPartnerSearch] = useState("");
   const [generalSearch, setGeneralSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [selectedStatuses, setSelectedStatuses] = useState<StatusKey[]>(loadStoredStatuses);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(STATUS_FILTER_STORAGE_KEY, JSON.stringify(selectedStatuses));
+    } catch {
+      // Quota / private-mode / disabled-storage failures are non-fatal — the
+      // filter still works in-memory; persistence simply degrades gracefully.
+    }
+  }, [selectedStatuses]);
+
+  const selectedSet = new Set<StatusKey>(selectedStatuses);
+  const allSelected = selectedStatuses.length === ALL_STATUSES.length;
+  const noneSelected = selectedStatuses.length === 0;
+
+  function toggleStatus(status: StatusKey, checked: boolean) {
+    setSelectedStatuses((prev) => {
+      const set = new Set(prev);
+      if (checked) set.add(status);
+      else set.delete(status);
+      return ALL_STATUSES.filter((s) => set.has(s));
+    });
+  }
 
   const { data: envelopes, isLoading } = useQuery<(Envelope & { signers: Signer[] })[]>({
     queryKey: ["/api/envelopes"],
@@ -63,14 +110,7 @@ export default function Dashboard() {
         s.email.toLowerCase().includes(generalSearch.toLowerCase())
       );
 
-    let matchesStatus = false;
-    if (statusFilter === "all") {
-      matchesStatus = true;
-    } else if (statusFilter === "awaiting") {
-      matchesStatus = env.status === "sent" || env.status === "viewed";
-    } else {
-      matchesStatus = env.status === statusFilter;
-    }
+    const matchesStatus = selectedSet.has(env.status as StatusKey);
     return matchesProject && matchesPartner && matchesGeneral && matchesStatus;
   });
 
@@ -81,12 +121,26 @@ export default function Dashboard() {
     signed: envelopes?.filter(e => e.status === "signed").length || 0,
   };
 
-  function handleStatCardClick(filterValue: string) {
-    setStatusFilter(prev => prev === filterValue ? "all" : filterValue);
+  function applyStatusPreset(preset: StatusKey[]) {
+    setSelectedStatuses(ALL_STATUSES.filter((s) => preset.includes(s)));
     setProjectSearch("");
     setPartnerSearch("");
     setGeneralSearch("");
   }
+
+  function arraysEqualAsSets(a: StatusKey[], b: StatusKey[]) {
+    if (a.length !== b.length) return false;
+    const sa = new Set(a);
+    return b.every((x) => sa.has(x));
+  }
+
+  const statusFilterLabel = noneSelected
+    ? "No statuses"
+    : allSelected
+      ? "All statuses"
+      : selectedStatuses.length === 1
+        ? statusConfig[selectedStatuses[0]]?.label ?? selectedStatuses[0]
+        : `${selectedStatuses.length} statuses`;
 
   return (
     <div className="flex flex-col h-full">
@@ -108,16 +162,16 @@ export default function Dashboard() {
             value={stats.total}
             icon={FileText}
             borderColor="border-primary"
-            onClick={() => handleStatCardClick("all")}
-            active={statusFilter === "all"}
+            onClick={() => applyStatusPreset([...ALL_STATUSES])}
+            active={allSelected}
           />
           <StatCard
             label="Awaiting Signature"
             value={stats.pending}
             icon={Clock}
             borderColor="border-destructive"
-            onClick={() => handleStatCardClick("awaiting")}
-            active={statusFilter === "awaiting"}
+            onClick={() => applyStatusPreset(["sent", "viewed"])}
+            active={arraysEqualAsSets(selectedStatuses, ["sent", "viewed"])}
           />
           <StatCard
             label="Queries Raised"
@@ -125,16 +179,16 @@ export default function Dashboard() {
             icon={AlertTriangle}
             highlight
             borderColor="border-chart-4"
-            onClick={() => handleStatCardClick("queried")}
-            active={statusFilter === "queried"}
+            onClick={() => applyStatusPreset(["queried"])}
+            active={arraysEqualAsSets(selectedStatuses, ["queried"])}
           />
           <StatCard
             label="Completed"
             value={stats.signed}
             icon={CheckCircle2}
             borderColor="border-chart-3"
-            onClick={() => handleStatCardClick("signed")}
-            active={statusFilter === "signed"}
+            onClick={() => applyStatusPreset(["signed"])}
+            active={arraysEqualAsSets(selectedStatuses, ["signed"])}
           />
         </div>
 
@@ -171,20 +225,78 @@ export default function Dashboard() {
                   data-testid="input-search-general"
                 />
               </div>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[160px]" data-testid="select-status-filter">
-                  <SelectValue placeholder="All Statuses" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Statuses</SelectItem>
-                  <SelectItem value="draft">Draft</SelectItem>
-                  <SelectItem value="sent">Sent</SelectItem>
-                  <SelectItem value="viewed">Viewed</SelectItem>
-                  <SelectItem value="queried">Queried</SelectItem>
-                  <SelectItem value="signed">Signed</SelectItem>
-                  <SelectItem value="awaiting">Awaiting Signature</SelectItem>
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="w-[200px] justify-between font-normal"
+                    data-testid="button-status-filter"
+                  >
+                    <span className="flex items-center gap-2 truncate">
+                      <Filter className="h-4 w-4 text-muted-foreground" />
+                      <span className="truncate">{statusFilterLabel}</span>
+                    </span>
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-64 p-0">
+                  <div className="flex items-center justify-between px-3 py-2">
+                    <span className="text-sm font-medium">Show statuses</span>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setSelectedStatuses([...ALL_STATUSES])}
+                        data-testid="button-status-filter-all"
+                      >
+                        All
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setSelectedStatuses([])}
+                        data-testid="button-status-filter-none"
+                      >
+                        None
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setSelectedStatuses([...DEFAULT_STATUSES])}
+                        data-testid="button-status-filter-default"
+                      >
+                        Default
+                      </Button>
+                    </div>
+                  </div>
+                  <Separator />
+                  <div className="p-2 space-y-1">
+                    {ALL_STATUSES.map((status) => {
+                      const cfg = statusConfig[status];
+                      const Icon = cfg.icon;
+                      const checked = selectedSet.has(status);
+                      return (
+                        <label
+                          key={status}
+                          className="flex items-center gap-3 rounded-md px-2 py-1.5 cursor-pointer hover-elevate"
+                          data-testid={`row-status-filter-${status}`}
+                        >
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(v) => toggleStatus(status, v === true)}
+                            data-testid={`checkbox-status-${status}`}
+                          />
+                          <Icon className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-sm flex-1">{cfg.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
           </CardContent>
         </Card>
