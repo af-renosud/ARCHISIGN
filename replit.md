@@ -26,6 +26,7 @@ Companion specs:
 | `npm run start`    | Prod server: `node dist/index.cjs`                     |
 | `npm run check`    | `tsc` typecheck                                        |
 | `npm run db:push`  | `drizzle-kit push` — push schema to DB (no migrations) |
+| `./scripts/run-node-tests.sh` | Run every Node-level suite under `server/**/__tests__/*.test.ts` (WebhookSignature, ContactService, v1Contacts, adminGuard, …); also invoked automatically by `scripts/post-merge.sh` so pre-deploy fails if any suite fails |
 
 Workflow `Start application` runs `npm run dev`. Deployment target is `autoscale` (port 5000 → 80).
 
