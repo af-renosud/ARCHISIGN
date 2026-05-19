@@ -607,7 +607,7 @@ export async function registerRoutes(
           : null,
       },
       totalPages: envelope.totalPages,
-      initialed: [...new Set(initialedPages)],
+      initialed: Array.from(new Set(initialedPages)),
       placedFields,
     });
   }));
@@ -654,7 +654,7 @@ export async function registerRoutes(
     });
 
     const existingAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(signer.envelopeId, signer.id);
-    const initialedPages = [...new Set(existingAnnotations.filter(a => a.type === "initial").map(a => a.pageNumber))];
+    const initialedPages = Array.from(new Set(existingAnnotations.filter(a => a.type === "initial").map(a => a.pageNumber)));
 
     res.json({ success: true, initialed: initialedPages });
   }));

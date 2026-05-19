@@ -15,9 +15,11 @@ import {
   type WishlistItem, type InsertWishlistItem,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, and, or, sql, isNull, isNotNull, inArray, lt, ilike } from "drizzle-orm";
+import { eq, desc, and, or, sql, isNull, isNotNull, inArray, lt, ilike, type ExtractTablesWithRelations } from "drizzle-orm";
+import type { NodePgTransaction } from "drizzle-orm/node-postgres";
+import * as schema from "@shared/schema";
 
-export type DbExecutor = typeof db;
+export type DbExecutor = typeof db | NodePgTransaction<typeof schema, ExtractTablesWithRelations<typeof schema>>;
 
 export interface IStorage {
   getEnvelopes(): Promise<(Envelope & { signers: Signer[] })[]>;

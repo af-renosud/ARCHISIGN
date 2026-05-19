@@ -175,7 +175,7 @@ export const contacts = pgTable("contacts", {
 ]);
 
 export const insertContactSchema = createInsertSchema(contacts).omit({
-  id: true, createdAt: true, updatedAt: true,
+  createdAt: true, updatedAt: true,
 });
 export type Contact = typeof contacts.$inferSelect;
 export type InsertContact = z.infer<typeof insertContactSchema>;
@@ -264,7 +264,7 @@ export const wishlistItems = pgTable("wishlist_items", {
 });
 
 export const insertWishlistItemSchema = createInsertSchema(wishlistItems).omit({
-  id: true, createdAt: true, updatedAt: true,
+  createdAt: true, updatedAt: true,
 });
 export type WishlistItem = typeof wishlistItems.$inferSelect;
 export type InsertWishlistItem = z.infer<typeof insertWishlistItemSchema>;
@@ -282,11 +282,11 @@ export const wishlistUpdateRequestSchema = z.object({
   status: z.enum(["open", "in_progress", "done", "rejected"]).optional(),
 });
 
-export const insertRollbackVersionSchema = createInsertSchema(rollbackVersions).omit({ id: true, createdAt: true });
+export const insertRollbackVersionSchema = createInsertSchema(rollbackVersions).omit({ createdAt: true });
 export type RollbackVersion = typeof rollbackVersions.$inferSelect;
 export type InsertRollbackVersion = z.infer<typeof insertRollbackVersionSchema>;
 
-export const insertBackupSchema = createInsertSchema(backups).omit({ id: true, createdAt: true });
+export const insertBackupSchema = createInsertSchema(backups).omit({ createdAt: true });
 export type Backup = typeof backups.$inferSelect;
 export type InsertBackup = z.infer<typeof insertBackupSchema>;
 
@@ -315,19 +315,19 @@ export const auditEventRelations = relations(auditEvents, ({ one }) => ({
   envelope: one(envelopes, { fields: [auditEvents.envelopeId], references: [envelopes.id] }),
 }));
 
-export const insertEnvelopeSchema = createInsertSchema(envelopes).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertEnvelopeSchema = createInsertSchema(envelopes).omit({ createdAt: true, updatedAt: true });
 export const insertSignerSchema = createInsertSchema(signers).omit({
-  id: true, lastViewedAt: true, signedAt: true,
+  lastViewedAt: true, signedAt: true,
   otpCode: true, otpExpiresAt: true, otpVerified: true,
   otpIssuedAt: true, otpVerifiedAt: true,
   signerIpAddress: true, signerUserAgent: true,
   accessTokenRotatedAt: true, previousAccessTokenHash: true,
 });
-export const insertAnnotationSchema = createInsertSchema(annotations).omit({ id: true, createdAt: true });
-export const insertCommunicationLogSchema = createInsertSchema(communicationLogs).omit({ id: true, timestamp: true });
-export const insertAuditEventSchema = createInsertSchema(auditEvents).omit({ id: true, timestamp: true });
+export const insertAnnotationSchema = createInsertSchema(annotations).omit({ createdAt: true });
+export const insertCommunicationLogSchema = createInsertSchema(communicationLogs).omit({ timestamp: true });
+export const insertAuditEventSchema = createInsertSchema(auditEvents).omit({ timestamp: true });
 export const insertWebhookDeliverySchema = createInsertSchema(webhookDeliveries).omit({
-  id: true, createdAt: true, updatedAt: true, succeededAt: true, deadLetteredAt: true, lastAttemptAt: true,
+  createdAt: true, updatedAt: true, succeededAt: true, deadLetteredAt: true, lastAttemptAt: true,
 });
 
 export const createEnvelopeRequestSchema = z.object({
