@@ -15,9 +15,16 @@ export const sessions = pgTable(
 
 // User storage table — keyed on the Google `sub` claim. Profile fields are
 // upserted on every successful sign-in by GoogleAuthService.
+//
+// NOTE: `email` is intentionally NOT unique. The stable identity is the
+// Google subject ID (`id`). Stale rows left over from the old Replit Auth
+// integration share emails with new Google sign-ins, and a unique
+// constraint on email would (and did) block the upsert. With Google as
+// the identity provider, the same email re-appearing under a new `id` is
+// just a provider migration, not a duplicate identity.
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  email: varchar("email").unique(),
+  email: varchar("email"),
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
