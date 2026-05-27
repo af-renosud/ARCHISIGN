@@ -40,7 +40,7 @@ Run a full database audit on the Archisign e-signature platform before deploymen
 ### 3. Unique Constraints & Indexes
 - Verify \`signers.access_token\` has a UNIQUE constraint (used for tokenized signer URLs)
 - Verify \`settings.key\` is the primary key (used for upsert via onConflictDoUpdate)
-- Verify \`users.email\` has a UNIQUE constraint
+- Verify \`users.email\` is NOT unique — \`id\` (Google subject claim) is the stable identity; emails may repeat across stale Replit-Auth rows and new Google rows during migration
 - Verify \`sessions\` has an index on \`expire\` (\`IDX_session_expire\`)
 - Check for missing indexes on frequently queried columns: \`signers.envelope_id\`, \`annotations.envelope_id\`, \`annotations.signer_id\`, \`communication_logs.envelope_id\`, \`audit_events.envelope_id\`
 
