@@ -15,7 +15,7 @@ Companion specs:
 - **PDF**: `pdf-lib` + `@pdf-lib/fontkit` (server stamp); `pdfjs-dist` 5 (client canvas render)
 - **File Storage**: Replit Object Storage (GCS-backed) via `@google-cloud/storage`; client uploads via Uppy
 - **Email**: Gmail API (`googleapis`) through Replit Google Mail connector
-- **Auth**: Replit Auth OIDC (`openid-client` + `passport`) for admin; token + OTP for external signers
+- **Auth**: Google Workspace OAuth 2.0 (`openid-client` + `passport`, OIDC discovery against `accounts.google.com`) for admin; token + OTP for external signers
 - **Tests**: Playwright (`tests/e2e`) + a Node test suite for `WebhookSignature`
 
 ## Commands
@@ -44,7 +44,7 @@ client/src/
     rollback-ledger.tsx        Version ledger
     data-recovery.tsx          Soft-deleted envelopes + backup management
     pre-deployment.tsx         Pre-deployment audit prompts
-    login.tsx                  Split-screen Replit Auth
+    login.tsx                  Split-screen Google sign-in
     not-found.tsx
   components/
     locked-page-view.tsx       pdfjs-dist canvas with on-page placeholders
@@ -78,7 +78,7 @@ server/
 
 shared/
   schema.ts                    Drizzle tables, enums, Zod schemas, relations
-  models/auth.ts               users + sessions (Replit Auth)
+  models/auth.ts               users + sessions (Google OAuth)
 
 scripts/
   post-merge.sh                Post-merge reconciliation hook
@@ -103,7 +103,7 @@ Driver: `pg` + Drizzle. Schema push via `npm run db:push` (no migration files).
 - `contacts` — address-book mirror; `source` (`local` | `archidoc`), `archidocUserId` (unique), `archidocSourceUpdatedAt` (stale arbitration), `category`, `lastUsedAt` (Recent group), `archivedAt`
 - `settings` — k/v config (email copy, firm name, …)
 - `rollback_versions`, `backups`
-- `users`, `sessions` — Replit Auth + connect-pg-simple
+- `users`, `sessions` — Google OAuth + connect-pg-simple
 
 ## Inter-App Wire Contract v1.0 (frozen 2026-04-25)
 Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. AS1 → AS5 fully landed:
@@ -129,7 +129,7 @@ Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. AS1 → AS5 fully landed:
 - Non-archidoc tenants get `403 tenant_forbidden` on every `/api/v1/contacts/archidoc/*` call
 
 ## Authentication & Authorization
-- **Admin**: Replit Auth OIDC (Google / GitHub / Apple / email-pwd); all `/api/*` protected EXCEPT `/api/sign/:token/*`, `/api/v1/*`, and the OIDC handshake (`/api/login`, `/api/logout`, `/api/callback`)
+- **Admin**: Direct Google Workspace OAuth 2.0 (OIDC discovery against `https://accounts.google.com`) via `server/services/GoogleAuthService.ts`. `/api/login` redirects to Google with `hd=<allowed_domain>` + `prompt=select_account`; `/api/auth/google/callback` is the registered redirect URI; the verify callback re-checks the signed `hd` ID-token claim server-side (the URL `hd` param is never trusted on its own), confirms `email_verified`, and confirms the email-suffix matches the configured domain. Personal Gmail accounts and other Workspaces are rejected. All `/api/*` protected EXCEPT `/api/sign/:token/*`, `/api/v1/*`, and the OAuth handshake (`/api/login`, `/api/logout`, `/api/auth/google/callback`). Failures redirect to `/login?error=auth_failed`.
 - **Single-org domain rule**: admin guard requires the session email to end in `@<ARCHISIGN_ALLOWED_EMAIL_DOMAIN>` (default `renosud.com`). Denial → session destroyed + `403 {code, message, allowedDomain}` (`code` = `domain_not_allowed` or `email_not_in_allowlist`) + `audit_events` row with `reason` metadata. `E2E_AUTH_BYPASS=1` (dev/test only) skips the domain check.
 - **Optional allowlist**: `ADMIN_EMAILS` (CSV) — applied as a *further* narrowing filter on top of the domain rule
 - **Sessions**: connect-pg-simple, 7-day TTL, `SESSION_SECRET` required
@@ -182,7 +182,9 @@ Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. AS1 → AS5 fully landed:
 | DEFAULT_OBJECT_STORAGE_BUCKET_ID        | secret | Auto        | Object Storage bucket ID                                                    |
 | PRIVATE_OBJECT_DIR                      | secret | Auto        | Object Storage private directory path                                       |
 | PUBLIC_OBJECT_SEARCH_PATHS              | secret | Auto        | Object Storage public search paths                                          |
-| REPLIT_CONNECTORS_HOSTNAME, REPL_IDENTITY, ISSUER_URL, REPL_ID, WEB_REPL_RENEWAL | env | Auto | Replit OIDC + connector plumbing |
+| GOOGLE_OAUTH_CLIENT_ID                  | secret | Yes         | Google Workspace OAuth 2.0 web client ID (Renosud Google Cloud Console) |
+| GOOGLE_OAUTH_CLIENT_SECRET              | secret | Yes         | Google Workspace OAuth 2.0 web client secret; pairs with the client ID above |
+| REPLIT_CONNECTORS_HOSTNAME, REPL_IDENTITY, WEB_REPL_RENEWAL | env | Auto | Replit connector plumbing (Gmail, Object Storage) |
 
 ## AI-Agent Gotchas
 - **Don't edit `package.json`** — use the package manager tool instead.
@@ -190,7 +192,7 @@ Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. AS1 → AS5 fully landed:
 - **Schema changes ship via `npm run db:push`** — there are no migration files; do not invent a `migrations/` folder.
 - **`PdfService.stampSignedPdf` is the authoritative coordinate system.** Any client-side preview (e.g. `LockedPageView`) must project from the same PDF-point geometry — never re-derive from CSS pixels.
 - **All outbound webhooks must go through `EventDispatcher.emitEvent`** — never call HTTP directly; the ledger and v2 dual-emit depend on it.
-- **`/api/v1/*` is API-key auth only** — never wrap it in the admin OIDC middleware.
+- **`/api/v1/*` is API-key auth only** — never wrap it in the admin OAuth middleware.
 - **Object Storage filename inputs**: validate `..` / `/` rejection on any new endpoint that accepts a filename.
 - This is **Archisign**. The companion projects are **ArchiDoc** (document ingest) and **Architrak** (project tracker). Requests about meeting agendas, attendees, plan changes, image-paste editors, etc. belong to those — not here.
 
