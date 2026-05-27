@@ -100,7 +100,7 @@ Run a full application code and security audit on the Archisign e-signature plat
 - Check that input-accepting routes validate via Zod schemas: \`createEnvelopeRequestSchema\`, \`createSignerRequestSchema\`, \`createApiEnvelopeRequestSchema\` (with \`.refine()\`), \`insertRollbackVersionSchema\`
 
 ### 3. Authentication & Authorization
-- Verify Replit Auth OIDC is configured (\`ISSUER_URL\` env var auto-set by Replit)
+- Verify Google OAuth credentials are configured (\`GOOGLE_OAUTH_CLIENT_ID\` + \`GOOGLE_OAUTH_CLIENT_SECRET\`) and that the production \`/api/auth/google/callback\` URL is on the Google Cloud Console redirect URI list
 - Verify \`setupAuth()\` and \`registerAuthRoutes()\` are called in \`registerRoutes()\` before admin middleware
 - Verify admin middleware (\`isAdminAuthorized\`) protects all \`/api/*\` routes except:
   - \`/api/sign/:token/*\` — public signer flow (bypassed)

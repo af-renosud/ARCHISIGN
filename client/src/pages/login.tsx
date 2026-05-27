@@ -12,6 +12,25 @@ type DenialNotice = {
 
 function readDenialNotice(): DenialNotice | null {
   if (typeof window === "undefined") return null;
+
+  // Surfaced by GoogleAuthService when the OAuth round-trip fails (user
+  // hit Deny, picked a non-renosud Google account, or the hd claim was
+  // missing). Showing this banner is what breaks the otherwise infinite
+  // /api/login → Google → /api/login redirect loop.
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("error") === "auth_failed") {
+    // Clean the URL so a refresh doesn't redisplay the banner.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("error");
+    window.history.replaceState({}, "", url.pathname + url.search);
+    return {
+      code: "auth_failed",
+      message:
+        "Google sign-in was cancelled or your account isn't part of the Renosud workspace. Try again with your @renosud.com account.",
+      allowedDomain: null,
+    };
+  }
+
   const raw = window.sessionStorage.getItem("archisign:auth-denied");
   if (!raw) return null;
   window.sessionStorage.removeItem("archisign:auth-denied");
@@ -95,7 +114,7 @@ export default function LoginPage() {
               Admin Access
             </h2>
             <p className="text-sm text-muted-foreground">
-              Sign in with your Renosud account to access the dashboard.
+              Sign in with your Renosud Google Workspace account to access the dashboard.
             </p>
           </div>
           <Button
@@ -103,7 +122,7 @@ export default function LoginPage() {
             className="w-full bg-[#F59E0B] text-white border-2 border-[#D97706] font-semibold"
             data-testid="button-login"
           >
-            <a href="/api/login">Sign In</a>
+            <a href="/api/login">Sign in with Google</a>
           </Button>
           <p className="text-xs text-muted-foreground" data-testid="text-login-restriction">
             Restricted to Renosud staff. Only verified

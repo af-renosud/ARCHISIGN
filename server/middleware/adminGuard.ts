@@ -34,7 +34,12 @@ export function buildAdminGuard(
     const p = req.path;
     if (p.startsWith("/api/sign/")) return next();
     if (p.startsWith("/api/v1/")) return next();
-    if (p === "/api/login" || p === "/api/logout" || p === "/api/callback") {
+    if (
+      p === "/api/login" ||
+      p === "/api/logout" ||
+      p === "/api/callback" ||
+      p === "/api/auth/google/callback"
+    ) {
       return next();
     }
     if (p.startsWith("/uploads")) return next();
