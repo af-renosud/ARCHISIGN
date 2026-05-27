@@ -144,12 +144,27 @@ function callbackUrl(hostname: string): string {
   return `https://${hostname}/api/auth/google/callback`;
 }
 
-type AuthFailureReason =
+export type AuthFailureReason =
   | "email_unverified"
   | "hd_mismatch"
   | "email_domain_mismatch"
   | "missing_claims"
   | "oauth_error";
+
+export interface SignInRejectionInfo {
+  email?: string | null;
+  hd?: string | null;
+}
+
+export interface RejectionAuditSink {
+  createAuditEvent: (event: {
+    envelopeId: number | null;
+    eventType: string;
+    actorEmail: string;
+    ipAddress: string | null;
+    metadata: string;
+  }) => Promise<unknown>;
+}
 
 /**
  * Write an `audit_events` row for a rejected Google sign-in. Mirrors the
@@ -158,33 +173,35 @@ type AuthFailureReason =
  * get in and was refused". Never throws — best-effort logging must not
  * affect the user-facing redirect.
  */
-async function recordSignInRejection(
-  req: Request,
-  reason: AuthFailureReason,
-  info: { email?: string | null; hd?: string | null } | null,
-): Promise<void> {
-  try {
-    await storage.createAuditEvent({
-      envelopeId: null,
-      eventType: "Unauthorized admin sign-in attempt",
-      actorEmail: info?.email || "unknown",
-      ipAddress: req.ip || null,
-      metadata: JSON.stringify({
-        path: req.path,
-        method: req.method,
-        reason,
-        hd: info?.hd ?? null,
-        provider: "google",
-      }),
-    });
-  } catch (err) {
-    console.warn(
-      `[AUTH] Failed to write audit event for rejected sign-in (${reason}): ${err}`,
-    );
-  }
+export function buildRecordSignInRejection(sink: RejectionAuditSink) {
+  return async function recordSignInRejection(
+    req: Request,
+    reason: AuthFailureReason,
+    info: SignInRejectionInfo | null,
+  ): Promise<void> {
+    try {
+      await sink.createAuditEvent({
+        envelopeId: null,
+        eventType: "Unauthorized admin sign-in attempt",
+        actorEmail: info?.email || "unknown",
+        ipAddress: req.ip || null,
+        metadata: JSON.stringify({
+          path: req.path,
+          method: req.method,
+          reason,
+          hd: info?.hd ?? null,
+          provider: "google",
+        }),
+      });
+    } catch (err) {
+      console.warn(
+        `[AUTH] Failed to write audit event for rejected sign-in (${reason}): ${err}`,
+      );
+    }
+  };
 }
 
-async function upsertUser(claims: ProjectedClaims): Promise<void> {
+async function defaultUpsertUser(claims: ProjectedClaims): Promise<void> {
   await authStorage.upsertUser({
     id: claims.sub,
     email: claims.email,
@@ -194,16 +211,17 @@ async function upsertUser(claims: ProjectedClaims): Promise<void> {
   });
 }
 
-export async function setupAuth(app: Express): Promise<void> {
-  app.set("trust proxy", 1);
-  app.use(getSession());
-  app.use(passport.initialize());
-  app.use(passport.session());
-
-  const config = await getGoogleConfig();
-  const domain = allowedDomain();
-
-  const verify: VerifyFunction = async (tokens, verified) => {
+/**
+ * Build the passport verify callback that enforces Workspace-domain `hd`
+ * verification, upserts the user, and surfaces a structured failure reason
+ * to the callback handler. Exported so integration tests can drive it
+ * without standing up a real Google OIDC client.
+ */
+export function buildGoogleVerify(
+  domain: string,
+  upsertUser: (c: ProjectedClaims) => Promise<void> = defaultUpsertUser,
+): VerifyFunction {
+  return async (tokens, verified) => {
     try {
       const raw = (tokens as client.TokenEndpointResponse &
         client.TokenEndpointResponseHelpers).claims();
@@ -245,6 +263,75 @@ export async function setupAuth(app: Express): Promise<void> {
       verified(err as Error);
     }
   };
+}
+
+export interface GoogleCallbackHandlerOpts {
+  passportInstance: passport.Authenticator;
+  resolveStrategyName: (req: Request) => string;
+  recordRejection: (
+    req: Request,
+    reason: AuthFailureReason,
+    info: SignInRejectionInfo | null,
+  ) => Promise<void>;
+}
+
+/**
+ * Build the `/api/auth/google/callback` handler. Centralises the
+ * authenticate → audit-on-fail → login → redirect flow so it can be
+ * exercised by integration tests without a live Google round-trip.
+ */
+export function buildGoogleCallbackHandler(
+  opts: GoogleCallbackHandlerOpts,
+): RequestHandler {
+  return (req, res, next) => {
+    const name = opts.resolveStrategyName(req);
+    opts.passportInstance.authenticate(
+      name,
+      (
+        err: Error | null,
+        user: Express.User | false,
+        info: { message?: string; email?: string | null; hd?: string | null } | null,
+      ) => {
+        if (err) {
+          void opts.recordRejection(req, "oauth_error", {
+            email: info?.email ?? null,
+            hd: info?.hd ?? null,
+          });
+          console.warn(`[AUTH] Google callback error: ${err.message}`);
+          return res.redirect("/login?error=auth_failed");
+        }
+        if (!user) {
+          const reason = (info?.message as AuthFailureReason) ?? "oauth_error";
+          void opts.recordRejection(req, reason, info);
+          return res.redirect("/login?error=auth_failed");
+        }
+        req.logIn(user, (loginErr) => {
+          if (loginErr) {
+            void opts.recordRejection(req, "oauth_error", {
+              email: (user as any)?.claims?.email ?? null,
+              hd: (user as any)?.claims?.hd ?? null,
+            });
+            console.warn(`[AUTH] req.logIn failed: ${loginErr.message}`);
+            return res.redirect("/login?error=auth_failed");
+          }
+          res.redirect("/");
+        });
+      },
+    )(req, res, next);
+  };
+}
+
+export async function setupAuth(app: Express): Promise<void> {
+  app.set("trust proxy", 1);
+  app.use(getSession());
+  app.use(passport.initialize());
+  app.use(passport.session());
+
+  const config = await getGoogleConfig();
+  const domain = allowedDomain();
+
+  const verify = buildGoogleVerify(domain);
+  const recordSignInRejection = buildRecordSignInRejection(storage);
 
   // Per-hostname strategy registration so a single OAuth client serves both
   // the Replit dev domain and the production .replit.app domain, provided
@@ -282,46 +369,17 @@ export async function setupAuth(app: Express): Promise<void> {
     } as any)(req, res, next);
   });
 
-  app.get("/api/auth/google/callback", (req, res, next) => {
-    const name = ensureStrategy(req.hostname);
-    // Use the custom-callback form so we can write an audit row on
-    // failure BEFORE redirecting. The standard `failureRedirect` option
-    // would lose the failure-info payload from the verify callback.
-    passport.authenticate(
-      name,
-      (
-        err: Error | null,
-        user: Express.User | false,
-        info: { message?: string; email?: string | null; hd?: string | null } | null,
-      ) => {
-        if (err) {
-          // OIDC error from Google (e.g. invalid_grant, state mismatch).
-          void recordSignInRejection(req, "oauth_error", {
-            email: info?.email ?? null,
-            hd: info?.hd ?? null,
-          });
-          console.warn(`[AUTH] Google callback error: ${err.message}`);
-          return res.redirect("/login?error=auth_failed");
-        }
-        if (!user) {
-          const reason = (info?.message as AuthFailureReason) ?? "oauth_error";
-          void recordSignInRejection(req, reason, info);
-          return res.redirect("/login?error=auth_failed");
-        }
-        req.logIn(user, (loginErr) => {
-          if (loginErr) {
-            void recordSignInRejection(req, "oauth_error", {
-              email: (user as any)?.claims?.email ?? null,
-              hd: (user as any)?.claims?.hd ?? null,
-            });
-            console.warn(`[AUTH] req.logIn failed: ${loginErr.message}`);
-            return res.redirect("/login?error=auth_failed");
-          }
-          res.redirect("/");
-        });
-      },
-    )(req, res, next);
-  });
+  // Use the custom-callback form so we can write an audit row on failure
+  // BEFORE redirecting. The standard `failureRedirect` option would lose
+  // the failure-info payload from the verify callback.
+  app.get(
+    "/api/auth/google/callback",
+    buildGoogleCallbackHandler({
+      passportInstance: passport,
+      resolveStrategyName: (req) => ensureStrategy(req.hostname),
+      recordRejection: recordSignInRejection,
+    }),
+  );
 
   app.get("/api/logout", (req, res) => {
     const finish = () => {
