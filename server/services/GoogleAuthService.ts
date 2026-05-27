@@ -12,6 +12,7 @@ import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
 
 import { authStorage } from "../replit_integrations/auth/storage";
+import { storage } from "../storage";
 
 const GOOGLE_ISSUER = new URL("https://accounts.google.com");
 const STRATEGY_PREFIX = "google";
@@ -143,6 +144,46 @@ function callbackUrl(hostname: string): string {
   return `https://${hostname}/api/auth/google/callback`;
 }
 
+type AuthFailureReason =
+  | "email_unverified"
+  | "hd_mismatch"
+  | "email_domain_mismatch"
+  | "missing_claims"
+  | "oauth_error";
+
+/**
+ * Write an `audit_events` row for a rejected Google sign-in. Mirrors the
+ * shape the admin guard uses for unauthorised admin access attempts so the
+ * security audit log has a single, consistent format for "someone tried to
+ * get in and was refused". Never throws — best-effort logging must not
+ * affect the user-facing redirect.
+ */
+async function recordSignInRejection(
+  req: Request,
+  reason: AuthFailureReason,
+  info: { email?: string | null; hd?: string | null } | null,
+): Promise<void> {
+  try {
+    await storage.createAuditEvent({
+      envelopeId: null,
+      eventType: "Unauthorized admin sign-in attempt",
+      actorEmail: info?.email || "unknown",
+      ipAddress: req.ip || null,
+      metadata: JSON.stringify({
+        path: req.path,
+        method: req.method,
+        reason,
+        hd: info?.hd ?? null,
+        provider: "google",
+      }),
+    });
+  } catch (err) {
+    console.warn(
+      `[AUTH] Failed to write audit event for rejected sign-in (${reason}): ${err}`,
+    );
+  }
+}
+
 async function upsertUser(claims: ProjectedClaims): Promise<void> {
   await authStorage.upsertUser({
     id: claims.sub,
@@ -167,16 +208,29 @@ export async function setupAuth(app: Express): Promise<void> {
       const raw = (tokens as client.TokenEndpointResponse &
         client.TokenEndpointResponseHelpers).claims();
       if (!raw) {
-        return verified(null, false);
+        return verified(null, false, {
+          message: "missing_claims",
+          email: null,
+          hd: null,
+        } as any);
       }
       const projected = projectClaims(raw as Record<string, unknown>);
 
       if (!isDomainAuthorised(projected, domain)) {
+        const reason: AuthFailureReason = !projected.email_verified
+          ? "email_unverified"
+          : !projected.hd || projected.hd.toLowerCase() !== domain
+            ? "hd_mismatch"
+            : "email_domain_mismatch";
         console.warn(
           `[AUTH] Google sign-in rejected for ${projected.email ?? "unknown"} ` +
-            `(hd=${projected.hd ?? "none"}, verified=${projected.email_verified})`,
+            `(reason=${reason}, hd=${projected.hd ?? "none"}, verified=${projected.email_verified})`,
         );
-        return verified(null, false);
+        return verified(null, false, {
+          message: reason,
+          email: projected.email,
+          hd: projected.hd,
+        } as any);
       }
 
       await upsertUser(projected);
@@ -230,11 +284,43 @@ export async function setupAuth(app: Express): Promise<void> {
 
   app.get("/api/auth/google/callback", (req, res, next) => {
     const name = ensureStrategy(req.hostname);
-    passport.authenticate(name, {
-      successReturnToOrRedirect: "/",
-      failureRedirect: "/login?error=auth_failed",
-      failureMessage: false,
-    } as any)(req, res, next);
+    // Use the custom-callback form so we can write an audit row on
+    // failure BEFORE redirecting. The standard `failureRedirect` option
+    // would lose the failure-info payload from the verify callback.
+    passport.authenticate(
+      name,
+      (
+        err: Error | null,
+        user: Express.User | false,
+        info: { message?: string; email?: string | null; hd?: string | null } | null,
+      ) => {
+        if (err) {
+          // OIDC error from Google (e.g. invalid_grant, state mismatch).
+          void recordSignInRejection(req, "oauth_error", {
+            email: info?.email ?? null,
+            hd: info?.hd ?? null,
+          });
+          console.warn(`[AUTH] Google callback error: ${err.message}`);
+          return res.redirect("/login?error=auth_failed");
+        }
+        if (!user) {
+          const reason = (info?.message as AuthFailureReason) ?? "oauth_error";
+          void recordSignInRejection(req, reason, info);
+          return res.redirect("/login?error=auth_failed");
+        }
+        req.logIn(user, (loginErr) => {
+          if (loginErr) {
+            void recordSignInRejection(req, "oauth_error", {
+              email: (user as any)?.claims?.email ?? null,
+              hd: (user as any)?.claims?.hd ?? null,
+            });
+            console.warn(`[AUTH] req.logIn failed: ${loginErr.message}`);
+            return res.redirect("/login?error=auth_failed");
+          }
+          res.redirect("/");
+        });
+      },
+    )(req, res, next);
   });
 
   app.get("/api/logout", (req, res) => {

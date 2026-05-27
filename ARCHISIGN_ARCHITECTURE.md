@@ -89,20 +89,39 @@
 
 ## 7. Authentication & Authorization
 
-- **Admin area:** Replit Auth (OIDC), restricted to a single organisation.
-  The admin guard `isAdminAuthorized` (in `server/routes.ts`) enforces, for
-  every `/api/*` request that isn't a signer-token, v1 API-key, or OIDC
-  handshake endpoint:
-  1. A valid Replit Auth session.
+- **Admin area:** Direct Google Workspace OAuth 2.0 (OIDC discovery against
+  `https://accounts.google.com`), restricted to a single organisation. All
+  OIDC/crypto lives in `server/services/GoogleAuthService.ts`; routes stay
+  thin orchestrators. The flow is:
+  1. `GET /api/login` redirects to Google with `hd=<allowed_domain>` (Workspace
+     account chooser hint) and `prompt=select_account`.
+  2. `GET /api/auth/google/callback` is the registered redirect URI. The
+     verify callback re-checks the signed `hd` ID-token claim server-side
+     (the URL `hd` param is never trusted on its own), confirms
+     `email_verified`, and confirms the email-suffix matches the configured
+     domain. Personal Gmail accounts and other Workspaces are rejected.
+  3. `GET /api/logout` calls `req.logout()` + `req.session.destroy()`,
+     clears the `connect.sid` cookie, and redirects to `/login`.
+  4. Failures of any kind redirect to `/login?error=auth_failed`, which the
+     login page surfaces as a banner — this is what prevents the previous
+     deny/consent loop.
+  After a successful Google sign-in, the admin guard
+  (`server/middleware/adminGuard.ts`) enforces, for every `/api/*` request
+  that isn't a signer-token, v1 API-key, or auth handshake endpoint:
+  1. A valid session.
   2. The session email must end in `@<ARCHISIGN_ALLOWED_EMAIL_DOMAIN>`
-     (default `renosud.com`).
+     (default `renosud.com`) — defence-in-depth against the OIDC check.
   3. If `ADMIN_EMAILS` is set, the email must also appear in that CSV
      allowlist (case-insensitive).
-  Failures destroy the session and respond `403` with a JSON body
+  Guard failures destroy the session and respond `403` with a JSON body
   `{ code, message, allowedDomain }` where `code` is `domain_not_allowed`
-  or `email_not_in_allowlist`. The denial is recorded in `audit_events`
-  with `reason` in the metadata. The `E2E_AUTH_BYPASS=1` dev/test flag
-  skips the domain check (but never runs in production).
+  or `email_not_in_allowlist`. Both OAuth-level and guard-level denials
+  are recorded in `audit_events` with `reason` in the metadata. The
+  `E2E_AUTH_BYPASS=1` dev/test flag skips the domain check (but never runs
+  in production).
+  Required secrets: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
+  (Web OAuth client provisioned in the Renosud Google Cloud Console with
+  the dev + prod `/api/auth/google/callback` URLs registered).
 - **External signers:** Token-based access (`/api/sign/:token/*`) with OTP
   verification — no session required.
 - **Service-to-service:** API key validation (`X-API-KEY` header) for
