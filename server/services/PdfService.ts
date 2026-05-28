@@ -30,11 +30,13 @@ export interface CertificateSigner {
   email: string;
   signedAt: Date | string | null;
   sentAt?: Date | string | null;
+  resentAt?: Date | string | null;
   lastViewedAt?: Date | string | null;
   otpIssuedAt?: Date | string | null;
   otpVerifiedAt?: Date | string | null;
   signerIpAddress?: string | null;
   signerUserAgent?: string | null;
+  adoptionNote?: string | null;
 }
 
 export interface CertificateAuditEvent {
@@ -52,12 +54,21 @@ export interface EnvelopeCertificateContext {
   origin?: string | null;
   firmName: string;
   firmEmail?: string | null;
+  senderIpAddress?: string | null;
+  timeZone?: string | null;
   totalDocumentPages: number;
   signatureCount: number;
   initialCount: number;
   signers: CertificateSigner[];
   auditEvents: CertificateAuditEvent[];
   envelopeCreatedAt: Date | string;
+  envelopeCompletedAt?: Date | string | null;
+}
+
+interface Milestone {
+  label: string;
+  timestamp: Date | string | null;
+  actor: string;
 }
 
 const CERT_MARKER_PREFIX = "archisign-cert-v1:";
@@ -309,10 +320,30 @@ export async function stampSignedPdf(
 
   let certificatePagesAdded = 0;
   if (certificateContext) {
-    certificatePagesAdded = await renderCertificatePages(finalDoc, {
-      ...certificateContext,
-      envelopeId,
-    }, finalFont, finalFontBold, documentHash);
+    // Two-pass render so the "Pages: X of Y" field on the certificate
+    // can show the real total. First pass discards into a throwaway doc
+    // purely to count pages; second pass writes into the real doc.
+    const draftDoc = await PDFDocument.create();
+    draftDoc.registerFontkit(fontkit);
+    const draftFont = await draftDoc.embedFont(StandardFonts.Helvetica);
+    const draftFontBold = await draftDoc.embedFont(StandardFonts.HelveticaBold);
+    const draftCount = await renderCertificatePages(
+      draftDoc,
+      { ...certificateContext, envelopeId },
+      draftFont,
+      draftFontBold,
+      documentHash,
+      0,
+    );
+
+    certificatePagesAdded = await renderCertificatePages(
+      finalDoc,
+      { ...certificateContext, envelopeId },
+      finalFont,
+      finalFontBold,
+      documentHash,
+      draftCount,
+    );
 
     // Embed marker so a later re-stamp can detect & strip our pages.
     try {
@@ -330,12 +361,69 @@ export async function stampSignedPdf(
   return { signedPdfBytes, documentHash };
 }
 
+function deriveMilestones(ctx: EnvelopeCertificateContext): Milestone[] {
+  // Project the audit-event stream into the canonical milestone sequence
+  // (Sent → Delivered → OTP verified → Signed → Completed). Missing rows
+  // render as a placeholder so the structure of the certificate is stable
+  // regardless of which events were captured.
+  const events = [...ctx.auditEvents].sort((a, b) =>
+    new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+  const matchEvent = (re: RegExp) => events.find((e) => re.test(e.eventType));
+
+  const sentEvt = matchEvent(/sent|invitation/i);
+  const deliveredEvt = matchEvent(/deliver/i);
+  const completedEvt = matchEvent(/complete/i);
+
+  const earliestOtpVerified = ctx.signers
+    .map((s) => (s.otpVerifiedAt ? new Date(s.otpVerifiedAt).getTime() : null))
+    .filter((t): t is number => t !== null)
+    .sort((a, b) => a - b)[0];
+
+  const latestSignedAt = ctx.signers
+    .map((s) => (s.signedAt ? new Date(s.signedAt).getTime() : null))
+    .filter((t): t is number => t !== null)
+    .sort((a, b) => b - a)[0];
+
+  return [
+    {
+      label: "Sent",
+      timestamp: sentEvt ? sentEvt.timestamp : (ctx.envelopeCreatedAt ?? null),
+      actor: sentEvt?.actorEmail || ctx.firmEmail || ctx.firmName,
+    },
+    {
+      label: "Delivered",
+      timestamp: deliveredEvt ? deliveredEvt.timestamp : null,
+      actor: deliveredEvt?.actorEmail || "—",
+    },
+    {
+      label: "OTP verified",
+      timestamp: earliestOtpVerified ? new Date(earliestOtpVerified) : null,
+      actor: ctx.signers.find((s) => s.otpVerifiedAt)?.email || "—",
+    },
+    {
+      label: "Signed",
+      timestamp: latestSignedAt ? new Date(latestSignedAt) : null,
+      actor: ctx.signers.find((s) => s.signedAt)?.email || "—",
+    },
+    {
+      label: "Completed",
+      timestamp:
+        ctx.envelopeCompletedAt ??
+        (completedEvt ? completedEvt.timestamp : null) ??
+        (latestSignedAt ? new Date(latestSignedAt) : null),
+      actor: completedEvt?.actorEmail || ctx.firmEmail || ctx.firmName,
+    },
+  ];
+}
+
 async function renderCertificatePages(
   pdfDoc: any,
   ctx: EnvelopeCertificateContext,
   font: any,
   fontBold: any,
   documentHash: string,
+  expectedTotalPages: number,
 ): Promise<number> {
   const { rgb } = await import("pdf-lib");
 
@@ -348,24 +436,27 @@ async function renderCertificatePages(
   const SMALL = 9;
   const BODY = 10;
 
+  const timeZoneLabel = ctx.timeZone || "UTC";
+
   let page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   let pagesAdded = 1;
   let y = PAGE_HEIGHT - MARGIN_TOP;
 
+  const drawPageFooter = () => {
+    const totalLabel = expectedTotalPages > 0 ? String(expectedTotalPages) : "?";
+    page.drawText(
+      `Envelope ${ctx.envelopeId} · ${ctx.firmName} · Certificate of Completion · page ${pagesAdded} of ${totalLabel} · doc-hash ${truncate(documentHash, 24)}`,
+      { x: MARGIN_X, y: MARGIN_BOTTOM - 25, size: 7, font, color: rgb(0.4, 0.4, 0.4) },
+    );
+  };
+
   const ensureSpace = (needed: number) => {
     if (y - needed < MARGIN_BOTTOM) {
+      drawPageFooter();
       page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
       pagesAdded += 1;
       y = PAGE_HEIGHT - MARGIN_TOP;
-      drawPageFooter();
     }
-  };
-
-  const drawPageFooter = () => {
-    page.drawText(
-      `Envelope ${ctx.envelopeId} · ${ctx.firmName} · Certificate of Completion · doc-hash ${truncate(documentHash, 24)}`,
-      { x: MARGIN_X, y: MARGIN_BOTTOM - 25, size: 7, font, color: rgb(0.4, 0.4, 0.4) },
-    );
   };
 
   const drawText = (
@@ -399,14 +490,19 @@ async function renderCertificatePages(
   drawHr();
   y -= 14;
 
+  const originator = ctx.firmEmail ? `${ctx.firmName} <${ctx.firmEmail}>` : ctx.firmName;
+  const totalCertPagesLabel = expectedTotalPages > 0 ? `${expectedTotalPages}` : "1";
+
   // Header summary — two columns
   const colX2 = PAGE_WIDTH / 2 + 10;
   const header: Array<[string, string, string, string]> = [
     [`Envelope ID:`, String(ctx.envelopeId), `Status:`, ctx.status],
     [`Subject:`, truncate(ctx.subject || "", 60), `Origin:`, ctx.origin || "local"],
-    [`External Ref:`, ctx.externalRef || "—", `Originator:`, ctx.firmEmail || ctx.firmName],
+    [`External Ref:`, ctx.externalRef || "—", `Originator:`, truncate(originator, 60)],
+    [`Sender IP:`, ctx.senderIpAddress || "—", `Time zone:`, timeZoneLabel],
     [`Document Pages:`, String(ctx.totalDocumentPages), `Signatures:`, String(ctx.signatureCount)],
     [`Initials:`, String(ctx.initialCount), `Created:`, formatTs(ctx.envelopeCreatedAt)],
+    [`Completed:`, formatTs(ctx.envelopeCompletedAt ?? null), `Certificate Pages:`, totalCertPagesLabel],
   ];
   for (const [l1, v1, l2, v2] of header) {
     ensureSpace(LINE);
@@ -421,6 +517,21 @@ async function renderCertificatePages(
   drawHr();
   y -= 14;
 
+  // Milestone timeline
+  drawText("Milestones", { size: 12, bold: true });
+  y -= 16;
+  for (const m of deriveMilestones(ctx)) {
+    ensureSpace(LINE);
+    drawText(m.label, { size: SMALL, bold: true });
+    page.drawText(formatTs(m.timestamp), { x: MARGIN_X + 110, y, size: SMALL, font, color: rgb(0.1, 0.1, 0.1) });
+    page.drawText(truncate(m.actor, 50), { x: MARGIN_X + 260, y, size: SMALL, font, color: rgb(0.1, 0.1, 0.1) });
+    y -= LINE;
+  }
+
+  y -= 8;
+  drawHr();
+  y -= 14;
+
   // Per-signer blocks
   drawText("Signer Events", { size: 12, bold: true });
   y -= 16;
@@ -428,12 +539,16 @@ async function renderCertificatePages(
     const authId = s.signedAt
       ? generateAuthenticationId(s.id, ctx.envelopeId, s.signedAt)
       : "—";
+    const adoption =
+      s.adoptionNote ||
+      "Signer typed their name; Archisign rendered it as their signature graphic, which the signer adopted as their electronic signature.";
 
     const lines: Array<[string, string]> = [
       ["Name", s.fullName],
       ["Email", s.email],
-      ["Security level", "Email + token, OTP verified"],
+      ["Security level", "Email + tokenised link, OTP verified"],
       ["Sent", formatTs(s.sentAt)],
+      ["Resent", formatTs(s.resentAt ?? null)],
       ["Viewed", formatTs(s.lastViewedAt)],
       ["OTP issued", formatTs(s.otpIssuedAt)],
       ["OTP verified", formatTs(s.otpVerifiedAt)],
@@ -443,7 +558,7 @@ async function renderCertificatePages(
       ["Authentication ID", authId],
     ];
 
-    ensureSpace(lines.length * LINE + 12);
+    ensureSpace(lines.length * LINE + 28);
     drawText(s.fullName, { size: 11, bold: true });
     y -= LINE + 2;
     for (const [k, v] of lines) {
@@ -452,12 +567,26 @@ async function renderCertificatePages(
       page.drawText(v, { x: MARGIN_X + 110, y, size: SMALL, font, color: rgb(0.1, 0.1, 0.1) });
       y -= LINE;
     }
+    // Adoption note (wrapped to two lines if necessary)
+    const half = 95;
+    const adoption1 = adoption.length > half ? adoption.slice(0, adoption.lastIndexOf(" ", half)) : adoption;
+    const adoption2 = adoption.length > half ? adoption.slice(adoption.lastIndexOf(" ", half) + 1) : "";
+    ensureSpace(LINE);
+    drawText("Signature adoption", { size: SMALL, bold: true });
+    page.drawText(truncate(adoption1, 95), { x: MARGIN_X + 110, y, size: SMALL, font, color: rgb(0.1, 0.1, 0.1) });
+    y -= LINE;
+    if (adoption2) {
+      ensureSpace(LINE);
+      page.drawText(truncate(adoption2, 95), { x: MARGIN_X + 110, y, size: SMALL, font, color: rgb(0.1, 0.1, 0.1) });
+      y -= LINE;
+    }
     y -= 6;
     drawHr();
     y -= 10;
   }
 
-  // Envelope timeline from audit events
+  // Envelope timeline from audit events (full ledger, for reference)
+  ensureSpace(LINE * 3);
   drawText("Envelope Summary Events", { size: 12, bold: true });
   y -= 16;
   ensureSpace(LINE);

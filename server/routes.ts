@@ -830,16 +830,28 @@ export async function registerRoutes(
             getGmailProfile().catch(() => null),
           ]);
           const placedAnnotations = allAnnotations.filter((a) => a.placed);
+          const auditEventsAll = fullEnvelope?.auditEvents || [];
+          const senderIp =
+            auditEventsAll.find((e) => /sent|invitation|created/i.test(e.eventType))?.ipAddress ||
+            null;
+          const completionTs = allSigners
+            .map((s) => (s.signedAt ? new Date(s.signedAt).getTime() : 0))
+            .reduce((a, b) => Math.max(a, b), 0);
+
           const certSigners = allSigners.map((s) => {
-            const sentEvt = (fullEnvelope?.auditEvents || []).find(
-              (e) => e.actorEmail === s.email && /sent|invitation/i.test(e.eventType),
-            );
+            const signerEvents = auditEventsAll.filter((e) => e.actorEmail === s.email);
+            const sentEvts = signerEvents
+              .filter((e) => /sent|invitation|resent/i.test(e.eventType))
+              .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+            const firstSent = sentEvts[0];
+            const resent = sentEvts.slice(1).pop();
             return {
               id: s.id,
               fullName: s.fullName,
               email: s.email,
               signedAt: s.signedAt,
-              sentAt: sentEvt?.timestamp || fullEnvelope?.createdAt || null,
+              sentAt: firstSent?.timestamp || fullEnvelope?.createdAt || null,
+              resentAt: resent?.timestamp || null,
               lastViewedAt: s.lastViewedAt,
               otpIssuedAt: s.otpIssuedAt,
               otpVerifiedAt: s.otpVerifiedAt,
@@ -855,17 +867,20 @@ export async function registerRoutes(
             origin: envelope.origin,
             firmName: emailCfgForCert.firmName,
             firmEmail: firmEmail || null,
+            senderIpAddress: senderIp,
+            timeZone: "UTC",
             totalDocumentPages: envelope.totalPages,
             signatureCount: placedAnnotations.filter((a) => a.type === "signature").length,
             initialCount: placedAnnotations.filter((a) => a.type === "initial").length,
             signers: certSigners,
-            auditEvents: (fullEnvelope?.auditEvents || []).map((e) => ({
+            auditEvents: auditEventsAll.map((e) => ({
               eventType: e.eventType,
               actorEmail: e.actorEmail,
               ipAddress: e.ipAddress,
               timestamp: e.timestamp,
             })),
             envelopeCreatedAt: envelope.createdAt,
+            envelopeCompletedAt: completionTs ? new Date(completionTs) : null,
           };
 
           const { signedPdfBytes } = await stampSignedPdf(
