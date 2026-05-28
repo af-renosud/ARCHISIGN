@@ -361,6 +361,48 @@ export async function stampSignedPdf(
   return { signedPdfBytes, documentHash };
 }
 
+/**
+ * Render a standalone PDF containing ONLY the certificate pages — no signed
+ * document body. Used by the admin "Download certificate" action so auditors
+ * / insurers can be sent just the certificate without the underlying contract.
+ *
+ * For legacy envelopes signed before the certificate pipeline existed there is
+ * no recorded `documentHash`; pass `undefined` and the integrity section will
+ * surface a "—" placeholder so the structure of the certificate is stable.
+ */
+export async function renderCertificatePdf(
+  ctx: EnvelopeCertificateContext,
+  documentHash?: string | null,
+): Promise<Uint8Array> {
+  const { PDFDocument, StandardFonts } = await import("pdf-lib");
+  const fontkit = (await import("@pdf-lib/fontkit")).default;
+
+  const hashLabel = documentHash && documentHash.length > 0 ? documentHash : "—";
+
+  // Two-pass render so the page footer can show the real "page X of Y" total.
+  const draftDoc = await PDFDocument.create();
+  draftDoc.registerFontkit(fontkit);
+  const draftFont = await draftDoc.embedFont(StandardFonts.Helvetica);
+  const draftFontBold = await draftDoc.embedFont(StandardFonts.HelveticaBold);
+  const draftCount = await renderCertificatePages(draftDoc, ctx, draftFont, draftFontBold, hashLabel, 0);
+
+  const finalDoc = await PDFDocument.create();
+  finalDoc.registerFontkit(fontkit);
+  const finalFont = await finalDoc.embedFont(StandardFonts.Helvetica);
+  const finalFontBold = await finalDoc.embedFont(StandardFonts.HelveticaBold);
+  await renderCertificatePages(finalDoc, ctx, finalFont, finalFontBold, hashLabel, draftCount);
+
+  try {
+    finalDoc.setTitle(`Certificate of Completion — Envelope ${ctx.envelopeId}`);
+    finalDoc.setSubject(`Archisign Certificate — ${ctx.subject || ""}`);
+    finalDoc.setKeywords([`${CERT_MARKER_PREFIX}standalone`, `envelope:${ctx.envelopeId}`]);
+  } catch {
+    // Best-effort metadata.
+  }
+
+  return await finalDoc.save();
+}
+
 function deriveMilestones(ctx: EnvelopeCertificateContext): Milestone[] {
   // Project the audit-event stream into the canonical milestone sequence
   // (Sent → Delivered → OTP verified → Signed → Completed). Missing rows

@@ -14,7 +14,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Send, Copy, ExternalLink, FileText, Eye, Clock,
   AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2, RefreshCw, PenTool,
-  KeyRound, EyeOff, Award, Fingerprint
+  KeyRound, EyeOff, Award, Fingerprint, Download
 } from "lucide-react";
 import type { Envelope, Signer, CommunicationLog, AuditEvent, Contact } from "@shared/schema";
 import { buildSharedEmailMap, isSharedInbox } from "@/components/ContactCombobox";
@@ -594,6 +594,52 @@ interface CertificatePanelProps {
   envelope: EnvelopeDetail;
 }
 
+function DownloadCertificateButton({ envelopeId }: { envelopeId: number }) {
+  const { toast } = useToast();
+  const [downloading, setDownloading] = useState(false);
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      const res = await fetch(`/api/envelopes/${envelopeId}/certificate.pdf`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => "");
+        throw new Error(msg || `Download failed (HTTP ${res.status})`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `certificate_envelope_${envelopeId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      toast({
+        title: "Could not download certificate",
+        description: err?.message || "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloading(false);
+    }
+  };
+  return (
+    <Button
+      variant="default"
+      size="sm"
+      onClick={handleDownload}
+      disabled={downloading}
+      data-testid="button-download-certificate"
+    >
+      <Download className="h-3 w-3 mr-1.5" />
+      {downloading ? "Preparing..." : "Download certificate"}
+    </Button>
+  );
+}
+
 function fmtTs(d: Date | string | null | undefined): string {
   if (!d) return "—";
   const dt = d instanceof Date ? d : new Date(d);
@@ -652,6 +698,12 @@ function CertificatePanel({ envelope }: CertificatePanelProps) {
   // signing route; legacy envelopes signed before this feature have a
   // signed PDF but no hash, so they correctly fall into the empty state.
   const hasCert = !!envelope.documentHash;
+  // Certificate of *Completion* — only meaningful once every signer has
+  // signed. Partially-signed envelopes must NOT expose a download button or
+  // they'd produce a certificate that misrepresents the envelope state.
+  const allSigned =
+    (envelope.signers?.length ?? 0) > 0 &&
+    envelope.signers.every((s) => !!s.signedAt);
   if (!hasCert) {
     return (
       <div
@@ -662,22 +714,20 @@ function CertificatePanel({ envelope }: CertificatePanelProps) {
         <p className="text-sm text-muted-foreground">No certificate available</p>
         <p className="text-xs text-muted-foreground/70 mt-1">
           {envelope.signedPdfUrl
-            ? "This envelope was signed before completion certificates were generated."
+            ? "This envelope was signed before completion certificates were generated. The certificate can still be regenerated from the recorded audit trail."
             : "A completion certificate is generated once all signers have signed."}
         </p>
-        {envelope.signedPdfUrl && (
-          <a
-            href={envelope.signedPdfUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-3"
-          >
-            <Button variant="outline" size="sm" data-testid="button-open-signed-pdf-legacy">
-              <ExternalLink className="h-3 w-3 mr-1.5" />
-              Open signed PDF
-            </Button>
-          </a>
-        )}
+        <div className="mt-3 flex items-center gap-2 flex-wrap justify-center">
+          {envelope.signedPdfUrl && (
+            <a href={envelope.signedPdfUrl} target="_blank" rel="noopener noreferrer">
+              <Button variant="outline" size="sm" data-testid="button-open-signed-pdf-legacy">
+                <ExternalLink className="h-3 w-3 mr-1.5" />
+                Open signed PDF
+              </Button>
+            </a>
+          )}
+          {allSigned && <DownloadCertificateButton envelopeId={envelope.id} />}
+        </div>
       </div>
     );
   }
@@ -705,12 +755,15 @@ function CertificatePanel({ envelope }: CertificatePanelProps) {
                 Mirrors the certificate page appended to the signed PDF.
               </p>
             </div>
-            <a href={envelope.signedPdfUrl!} target="_blank" rel="noopener noreferrer">
-              <Button variant="outline" size="sm" data-testid="button-open-signed-pdf-cert">
-                <ExternalLink className="h-3 w-3 mr-1.5" />
-                Open signed PDF
-              </Button>
-            </a>
+            <div className="flex items-center gap-2 flex-wrap">
+              <a href={envelope.signedPdfUrl!} target="_blank" rel="noopener noreferrer">
+                <Button variant="outline" size="sm" data-testid="button-open-signed-pdf-cert">
+                  <ExternalLink className="h-3 w-3 mr-1.5" />
+                  Open signed PDF
+                </Button>
+              </a>
+              <DownloadCertificateButton envelopeId={envelope.id} />
+            </div>
           </div>
           <Separator />
           <div className="grid sm:grid-cols-2 gap-x-6 gap-y-2">

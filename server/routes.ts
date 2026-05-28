@@ -10,7 +10,7 @@ import path from "path";
 import fs from "fs";
 import fsPromises from "fs/promises";
 import { uploadFile, downloadFile, streamFileToResponse, fileExists, deleteFile, uploadBackup, downloadBackup, deleteBackupFile } from "./fileStorage";
-import { getPageCount, stampSignedPdf } from "./services/PdfService";
+import { getPageCount, stampSignedPdf, renderCertificatePdf, type EnvelopeCertificateContext } from "./services/PdfService";
 import { generateToken, generateOtp, hashOtp, verifyOtp, buildSigningLink, generateAuthenticationId } from "./services/SecurityService";
 import { sendSigningInvitation, sendResendInvitation, sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
 import { asyncHandler } from "./middleware/asyncHandler";
@@ -33,6 +33,76 @@ const upload = multer({
     }
   },
 });
+
+// Shared certificate-context builder used by both the completion-stamping
+// path (where the cert is appended to the signed PDF) and the standalone
+// /certificate.pdf admin download. Kept in the route layer per the
+// architecture rule that PdfService stays a pure renderer with no storage
+// or settings dependencies.
+async function buildCertificateContext(envelopeId: number): Promise<EnvelopeCertificateContext | null> {
+  const [emailCfg, fullEnvelope, allAnnotations, firmEmail] = await Promise.all([
+    loadEmailSettings(),
+    storage.getEnvelope(envelopeId),
+    storage.getAnnotationsByEnvelope(envelopeId),
+    getGmailProfile().catch(() => null),
+  ]);
+  if (!fullEnvelope) return null;
+  const placedAnnotations = allAnnotations.filter((a) => a.placed);
+  const auditEventsAll = fullEnvelope.auditEvents || [];
+  const senderIp =
+    auditEventsAll.find((e) => /sent|invitation|created/i.test(e.eventType))?.ipAddress || null;
+  const completionTs = (fullEnvelope.signers || [])
+    .map((s) => (s.signedAt ? new Date(s.signedAt).getTime() : 0))
+    .reduce((a, b) => Math.max(a, b), 0);
+  const allSigned = (fullEnvelope.signers || []).length > 0 &&
+    fullEnvelope.signers.every((s) => !!s.signedAt);
+
+  const certSigners = (fullEnvelope.signers || []).map((s) => {
+    const signerEvents = auditEventsAll.filter((e) => e.actorEmail === s.email);
+    const sentEvts = signerEvents
+      .filter((e) => /sent|invitation|resent/i.test(e.eventType))
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const firstSent = sentEvts[0];
+    const resent = sentEvts.slice(1).pop();
+    return {
+      id: s.id,
+      fullName: s.fullName,
+      email: s.email,
+      signedAt: s.signedAt,
+      sentAt: firstSent?.timestamp || fullEnvelope.createdAt || null,
+      resentAt: resent?.timestamp || null,
+      lastViewedAt: s.lastViewedAt,
+      otpIssuedAt: s.otpIssuedAt,
+      otpVerifiedAt: s.otpVerifiedAt,
+      signerIpAddress: s.signerIpAddress,
+      signerUserAgent: s.signerUserAgent,
+    };
+  });
+
+  return {
+    envelopeId: fullEnvelope.id,
+    subject: fullEnvelope.subject,
+    externalRef: fullEnvelope.externalRef,
+    status: allSigned ? "Completed" : fullEnvelope.status,
+    origin: fullEnvelope.origin,
+    firmName: emailCfg.firmName,
+    firmEmail: firmEmail || null,
+    senderIpAddress: senderIp,
+    timeZone: "UTC",
+    totalDocumentPages: fullEnvelope.totalPages,
+    signatureCount: placedAnnotations.filter((a) => a.type === "signature").length,
+    initialCount: placedAnnotations.filter((a) => a.type === "initial").length,
+    signers: certSigners,
+    auditEvents: auditEventsAll.map((e) => ({
+      eventType: e.eventType,
+      actorEmail: e.actorEmail,
+      ipAddress: e.ipAddress,
+      timestamp: e.timestamp,
+    })),
+    envelopeCreatedAt: fullEnvelope.createdAt,
+    envelopeCompletedAt: completionTs ? new Date(completionTs) : null,
+  };
+}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -820,68 +890,10 @@ export async function registerRoutes(
             }))
           );
 
-          // Assemble certificate context. Pulled here (not in PdfService) so
-          // the service stays a pure renderer — storage + settings stay in
-          // the route layer per architecture rules.
-          const [emailCfgForCert, fullEnvelope, allAnnotations, firmEmail] = await Promise.all([
-            loadEmailSettings(),
-            storage.getEnvelope(envelope.id),
-            storage.getAnnotationsByEnvelope(envelope.id),
-            getGmailProfile().catch(() => null),
-          ]);
-          const placedAnnotations = allAnnotations.filter((a) => a.placed);
-          const auditEventsAll = fullEnvelope?.auditEvents || [];
-          const senderIp =
-            auditEventsAll.find((e) => /sent|invitation|created/i.test(e.eventType))?.ipAddress ||
-            null;
-          const completionTs = allSigners
-            .map((s) => (s.signedAt ? new Date(s.signedAt).getTime() : 0))
-            .reduce((a, b) => Math.max(a, b), 0);
-
-          const certSigners = allSigners.map((s) => {
-            const signerEvents = auditEventsAll.filter((e) => e.actorEmail === s.email);
-            const sentEvts = signerEvents
-              .filter((e) => /sent|invitation|resent/i.test(e.eventType))
-              .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-            const firstSent = sentEvts[0];
-            const resent = sentEvts.slice(1).pop();
-            return {
-              id: s.id,
-              fullName: s.fullName,
-              email: s.email,
-              signedAt: s.signedAt,
-              sentAt: firstSent?.timestamp || fullEnvelope?.createdAt || null,
-              resentAt: resent?.timestamp || null,
-              lastViewedAt: s.lastViewedAt,
-              otpIssuedAt: s.otpIssuedAt,
-              otpVerifiedAt: s.otpVerifiedAt,
-              signerIpAddress: s.signerIpAddress,
-              signerUserAgent: s.signerUserAgent,
-            };
-          });
-          const certificateContext = {
-            envelopeId: envelope.id,
-            subject: envelope.subject,
-            externalRef: envelope.externalRef,
-            status: "Completed",
-            origin: envelope.origin,
-            firmName: emailCfgForCert.firmName,
-            firmEmail: firmEmail || null,
-            senderIpAddress: senderIp,
-            timeZone: "UTC",
-            totalDocumentPages: envelope.totalPages,
-            signatureCount: placedAnnotations.filter((a) => a.type === "signature").length,
-            initialCount: placedAnnotations.filter((a) => a.type === "initial").length,
-            signers: certSigners,
-            auditEvents: auditEventsAll.map((e) => ({
-              eventType: e.eventType,
-              actorEmail: e.actorEmail,
-              ipAddress: e.ipAddress,
-              timestamp: e.timestamp,
-            })),
-            envelopeCreatedAt: envelope.createdAt,
-            envelopeCompletedAt: completionTs ? new Date(completionTs) : null,
-          };
+          // Pull context via the shared builder so the standalone
+          // /certificate.pdf download endpoint renders identical data.
+          const certificateContext =
+            (await buildCertificateContext(envelope.id)) ?? undefined;
 
           const { signedPdfBytes, documentHash } = await stampSignedPdf(
             Buffer.from(downloaded.data),
@@ -964,6 +976,39 @@ export async function registerRoutes(
     }
 
     res.json({ success: true, allSigned });
+  }));
+
+  // Admin "Download certificate" — re-renders the Certificate of Completion
+  // through PdfService and returns only the certificate pages as a PDF, so
+  // auditors / insurers can be sent just the certificate. Works for any
+  // signed envelope, including legacy rows signed before the certificate
+  // pipeline existed (those have no documentHash, so the integrity section
+  // shows "—" rather than failing).
+  app.get("/api/envelopes/:id/certificate.pdf", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    // Certificate of *Completion* — only available once every signer has
+    // signed. Partially-signed envelopes 409 so we never produce a
+    // certificate that misrepresents an in-progress envelope as completed.
+    const allSigned =
+      (envelope.signers?.length ?? 0) > 0 &&
+      envelope.signers.every((s) => !!s.signedAt);
+    if (!allSigned) {
+      return res.status(409).json({
+        message: "Certificate is only available once all signers have signed",
+      });
+    }
+    const ctx = await buildCertificateContext(id);
+    if (!ctx) return res.status(404).json({ message: "Envelope not found" });
+    const pdfBytes = await renderCertificatePdf(ctx, envelope.documentHash || null);
+    const safeSubject = (envelope.subject || "envelope").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 60);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="certificate_${safeSubject}_${id}.pdf"`,
+    );
+    res.send(Buffer.from(pdfBytes));
   }));
 
   app.get("/api/sign/:token/download", asyncHandler(async (req, res) => {
