@@ -883,7 +883,7 @@ export async function registerRoutes(
             envelopeCompletedAt: completionTs ? new Date(completionTs) : null,
           };
 
-          const { signedPdfBytes } = await stampSignedPdf(
+          const { signedPdfBytes, documentHash } = await stampSignedPdf(
             Buffer.from(downloaded.data),
             signersWithAnnotations,
             envelope.id,
@@ -893,7 +893,7 @@ export async function registerRoutes(
 
           const signedFileName = `signed_${Date.now()}.pdf`;
           const signedPdfUrl = await uploadFile(signedFileName, Buffer.from(signedPdfBytes));
-          await storage.updateEnvelope(envelope.id, { signedPdfUrl });
+          await storage.updateEnvelope(envelope.id, { signedPdfUrl, documentHash });
         }
       } catch (pdfErr) {
         console.error("PDF signing failed:", pdfErr);

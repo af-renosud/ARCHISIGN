@@ -39,6 +39,7 @@ export const envelopes = pgTable("envelopes", {
   retentionIncidentRef: text("retention_incident_ref"),
   retentionDetectedAt: timestamp("retention_detected_at"),
   signaturePlacementMode: signaturePlacementModeEnum("signature_placement_mode").notNull().default("fixed_bottom_centre"),
+  documentHash: text("document_hash"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   deletedAt: timestamp("deleted_at"),

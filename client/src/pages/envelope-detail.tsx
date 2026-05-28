@@ -14,7 +14,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Send, Copy, ExternalLink, FileText, Eye, Clock,
   AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2, RefreshCw, PenTool,
-  KeyRound, EyeOff
+  KeyRound, EyeOff, Award, Fingerprint
 } from "lucide-react";
 import type { Envelope, Signer, CommunicationLog, AuditEvent, Contact } from "@shared/schema";
 import { buildSharedEmailMap, isSharedInbox } from "@/components/ContactCombobox";
@@ -255,6 +255,10 @@ export default function EnvelopeDetail() {
             <TabsTrigger value="audit" data-testid="tab-audit">
               <Shield className="h-3.5 w-3.5 mr-1.5" />
               Audit Trail
+            </TabsTrigger>
+            <TabsTrigger value="certificate" data-testid="tab-certificate">
+              <Award className="h-3.5 w-3.5 mr-1.5" />
+              Certificate
             </TabsTrigger>
           </TabsList>
 
@@ -531,6 +535,10 @@ export default function EnvelopeDetail() {
               </div>
             )}
           </TabsContent>
+
+          <TabsContent value="certificate" className="mt-4">
+            <CertificatePanel envelope={envelope} />
+          </TabsContent>
         </Tabs>
       </div>
 
@@ -578,6 +586,281 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div className="flex items-start justify-between gap-4">
       <span className="text-sm text-muted-foreground flex-shrink-0">{label}</span>
       <span className="text-sm text-right break-all">{value}</span>
+    </div>
+  );
+}
+
+interface CertificatePanelProps {
+  envelope: EnvelopeDetail;
+}
+
+function fmtTs(d: Date | string | null | undefined): string {
+  if (!d) return "—";
+  const dt = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(dt.getTime())) return "—";
+  // Render in true UTC so the "UTC" label matches the value. date-fns/format
+  // would otherwise emit the local timezone with a misleading "UTC" suffix.
+  return dt.toISOString().replace("T", " ").replace(/\..*$/, " UTC");
+}
+
+function deriveMilestones(env: EnvelopeDetail) {
+  const events = [...(env.auditEvents || [])].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+  );
+  const match = (re: RegExp) => events.find((e) => re.test(e.eventType));
+  const sentEvt = match(/sent|invitation/i);
+  const deliveredEvt = match(/deliver/i);
+  const completedEvt = match(/complete/i);
+  const otpVerifiedSigner = env.signers
+    .filter((s) => s.otpVerifiedAt)
+    .sort(
+      (a, b) =>
+        new Date(a.otpVerifiedAt!).getTime() - new Date(b.otpVerifiedAt!).getTime(),
+    )[0];
+  const lastSignedSigner = env.signers
+    .filter((s) => s.signedAt)
+    .sort(
+      (a, b) => new Date(b.signedAt!).getTime() - new Date(a.signedAt!).getTime(),
+    )[0];
+  return [
+    { label: "Sent", timestamp: sentEvt?.timestamp ?? env.createdAt, actor: sentEvt?.actorEmail || "—" },
+    { label: "Delivered", timestamp: deliveredEvt?.timestamp ?? null, actor: deliveredEvt?.actorEmail || "—" },
+    {
+      label: "OTP verified",
+      timestamp: otpVerifiedSigner?.otpVerifiedAt ?? null,
+      actor: otpVerifiedSigner?.email || "—",
+    },
+    {
+      label: "Signed",
+      timestamp: lastSignedSigner?.signedAt ?? null,
+      actor: lastSignedSigner?.email || "—",
+    },
+    {
+      label: "Completed",
+      timestamp:
+        (completedEvt?.timestamp ?? null) ||
+        (lastSignedSigner?.signedAt ?? null),
+      actor: completedEvt?.actorEmail || lastSignedSigner?.email || "—",
+    },
+  ];
+}
+
+function CertificatePanel({ envelope }: CertificatePanelProps) {
+  // A certificate is only "available" for envelopes whose signed PDF was
+  // produced by the certificate-appending pipeline. We use documentHash as
+  // the marker because it is populated atomically with signed_pdf_url by the
+  // signing route; legacy envelopes signed before this feature have a
+  // signed PDF but no hash, so they correctly fall into the empty state.
+  const hasCert = !!envelope.documentHash;
+  if (!hasCert) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center py-12 text-center"
+        data-testid="certificate-empty"
+      >
+        <Award className="h-10 w-10 text-muted-foreground/30 mb-3" />
+        <p className="text-sm text-muted-foreground">No certificate available</p>
+        <p className="text-xs text-muted-foreground/70 mt-1">
+          {envelope.signedPdfUrl
+            ? "This envelope was signed before completion certificates were generated."
+            : "A completion certificate is generated once all signers have signed."}
+        </p>
+        {envelope.signedPdfUrl && (
+          <a
+            href={envelope.signedPdfUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3"
+          >
+            <Button variant="outline" size="sm" data-testid="button-open-signed-pdf-legacy">
+              <ExternalLink className="h-3 w-3 mr-1.5" />
+              Open signed PDF
+            </Button>
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  const milestones = deriveMilestones(envelope);
+  const latestSignedAtMs = envelope.signers
+    .map((s) => (s.signedAt ? new Date(s.signedAt).getTime() : 0))
+    .reduce((a, b) => Math.max(a, b), 0);
+  const completedAt = latestSignedAtMs ? new Date(latestSignedAtMs) : null;
+  const eventsAsc = [...(envelope.auditEvents || [])].sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+  );
+
+  return (
+    <div className="space-y-4" data-testid="certificate-panel">
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <h3 className="font-semibold text-base flex items-center gap-2">
+                <Award className="h-4 w-4 text-primary" />
+                Certificate of Completion
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Mirrors the certificate page appended to the signed PDF.
+              </p>
+            </div>
+            <a href={envelope.signedPdfUrl!} target="_blank" rel="noopener noreferrer">
+              <Button variant="outline" size="sm" data-testid="button-open-signed-pdf-cert">
+                <ExternalLink className="h-3 w-3 mr-1.5" />
+                Open signed PDF
+              </Button>
+            </a>
+          </div>
+          <Separator />
+          <div className="grid sm:grid-cols-2 gap-x-6 gap-y-2">
+            <InfoRow label="Envelope ID" value={String(envelope.id)} />
+            <InfoRow label="Status" value={envelope.status} />
+            <InfoRow label="Subject" value={envelope.subject} />
+            <InfoRow label="Origin" value={envelope.origin || "local"} />
+            <InfoRow label="External Ref" value={envelope.externalRef || "—"} />
+            <InfoRow label="Document Pages" value={String(envelope.totalPages)} />
+            <InfoRow label="Created" value={fmtTs(envelope.createdAt)} />
+            <InfoRow label="Completed" value={fmtTs(completedAt)} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-5 space-y-3">
+          <h3 className="font-medium text-sm">Milestones</h3>
+          <Separator />
+          <div className="divide-y">
+            {milestones.map((m) => (
+              <div
+                key={m.label}
+                className="grid grid-cols-[120px_1fr_auto] gap-3 py-2 text-sm items-center"
+                data-testid={`cert-milestone-${m.label.toLowerCase().replace(/\s+/g, "-")}`}
+              >
+                <span className="font-medium">{m.label}</span>
+                <span className="text-muted-foreground truncate" title={m.actor}>
+                  {m.actor}
+                </span>
+                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                  {fmtTs(m.timestamp)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-5 space-y-3">
+          <h3 className="font-medium text-sm">Signer Identity Evidence</h3>
+          <Separator />
+          <div className="space-y-4">
+            {envelope.signers.map((s) => (
+              <div
+                key={s.id}
+                className="rounded-md border p-3 space-y-2"
+                data-testid={`cert-signer-${s.id}`}
+              >
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div>
+                    <p className="font-medium text-sm" data-testid={`cert-signer-name-${s.id}`}>
+                      {s.fullName}
+                    </p>
+                    <p className="text-xs text-muted-foreground">{s.email}</p>
+                  </div>
+                  {s.signedAt ? (
+                    <Badge variant="default">
+                      <CheckCircle2 className="h-3 w-3 mr-1" />
+                      Signed
+                    </Badge>
+                  ) : (
+                    <Badge variant="secondary">
+                      <Clock className="h-3 w-3 mr-1" />
+                      Pending
+                    </Badge>
+                  )}
+                </div>
+                <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+                  <InfoRow label="Security level" value="Email + tokenised link, OTP verified" />
+                  <InfoRow label="Last viewed" value={fmtTs(s.lastViewedAt)} />
+                  <InfoRow label="OTP issued" value={fmtTs(s.otpIssuedAt)} />
+                  <InfoRow label="OTP verified" value={fmtTs(s.otpVerifiedAt)} />
+                  <InfoRow label="Signed" value={fmtTs(s.signedAt)} />
+                  <InfoRow label="IP address" value={s.signerIpAddress || "—"} />
+                  <div className="sm:col-span-2">
+                    <InfoRow
+                      label="User agent"
+                      value={s.signerUserAgent || "—"}
+                    />
+                  </div>
+                </div>
+                {s.signedAt && (
+                  <p className="text-xs text-muted-foreground italic pt-1">
+                    Signer typed their name; Archisign rendered it as their signature graphic,
+                    which the signer adopted as their electronic signature.
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-5 space-y-3">
+          <h3 className="font-medium text-sm">Envelope Audit Timeline</h3>
+          <Separator />
+          {eventsAsc.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No audit events recorded.</p>
+          ) : (
+            <div className="divide-y">
+              {eventsAsc.map((ev) => (
+                <div
+                  key={ev.id}
+                  className="grid grid-cols-[1fr_auto] gap-3 py-2 text-sm items-center"
+                  data-testid={`cert-audit-${ev.id}`}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate">{ev.eventType}</p>
+                    {ev.actorEmail && (
+                      <p className="text-xs text-muted-foreground truncate">
+                        {ev.actorEmail}
+                        {ev.ipAddress ? ` · ${ev.ipAddress}` : ""}
+                      </p>
+                    )}
+                  </div>
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">
+                    {fmtTs(ev.timestamp)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-5 space-y-3">
+          <h3 className="font-medium text-sm flex items-center gap-2">
+            <Fingerprint className="h-4 w-4 text-muted-foreground" />
+            Document Integrity
+          </h3>
+          <Separator />
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">SHA-256 (signed body)</Label>
+            <code
+              className="block break-all text-xs font-mono px-3 py-2 rounded-md bg-muted select-all"
+              data-testid="cert-document-hash"
+            >
+              {envelope.documentHash}
+            </code>
+            <p className="text-xs text-muted-foreground pt-1">
+              This certificate is bound to the signed document by the hash above. Any
+              modification to the signed body invalidates this hash.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
