@@ -820,11 +820,60 @@ export async function registerRoutes(
             }))
           );
 
+          // Assemble certificate context. Pulled here (not in PdfService) so
+          // the service stays a pure renderer — storage + settings stay in
+          // the route layer per architecture rules.
+          const [emailCfgForCert, fullEnvelope, allAnnotations, firmEmail] = await Promise.all([
+            loadEmailSettings(),
+            storage.getEnvelope(envelope.id),
+            storage.getAnnotationsByEnvelope(envelope.id),
+            getGmailProfile().catch(() => null),
+          ]);
+          const placedAnnotations = allAnnotations.filter((a) => a.placed);
+          const certSigners = allSigners.map((s) => {
+            const sentEvt = (fullEnvelope?.auditEvents || []).find(
+              (e) => e.actorEmail === s.email && /sent|invitation/i.test(e.eventType),
+            );
+            return {
+              id: s.id,
+              fullName: s.fullName,
+              email: s.email,
+              signedAt: s.signedAt,
+              sentAt: sentEvt?.timestamp || fullEnvelope?.createdAt || null,
+              lastViewedAt: s.lastViewedAt,
+              otpIssuedAt: s.otpIssuedAt,
+              otpVerifiedAt: s.otpVerifiedAt,
+              signerIpAddress: s.signerIpAddress,
+              signerUserAgent: s.signerUserAgent,
+            };
+          });
+          const certificateContext = {
+            envelopeId: envelope.id,
+            subject: envelope.subject,
+            externalRef: envelope.externalRef,
+            status: "Completed",
+            origin: envelope.origin,
+            firmName: emailCfgForCert.firmName,
+            firmEmail: firmEmail || null,
+            totalDocumentPages: envelope.totalPages,
+            signatureCount: placedAnnotations.filter((a) => a.type === "signature").length,
+            initialCount: placedAnnotations.filter((a) => a.type === "initial").length,
+            signers: certSigners,
+            auditEvents: (fullEnvelope?.auditEvents || []).map((e) => ({
+              eventType: e.eventType,
+              actorEmail: e.actorEmail,
+              ipAddress: e.ipAddress,
+              timestamp: e.timestamp,
+            })),
+            envelopeCreatedAt: envelope.createdAt,
+          };
+
           const { signedPdfBytes } = await stampSignedPdf(
             Buffer.from(downloaded.data),
             signersWithAnnotations,
             envelope.id,
             envelope.signaturePlacementMode ?? "fixed_bottom_centre",
+            certificateContext,
           );
 
           const signedFileName = `signed_${Date.now()}.pdf`;
