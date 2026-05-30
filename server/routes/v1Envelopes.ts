@@ -139,6 +139,7 @@ export function buildV1EnvelopesRouter(): Router {
       : [{ email: data.signerEmail!, fullName: data.signerName || data.signerEmail! }];
 
     const subject = data.subject || "Document for signature";
+    const senderMessage = data.body && data.body.trim() ? data.body.trim() : null;
 
     let envelope: { id: number; createdAt: Date; expiresAt: Date | null; status: string };
     let createdSigners: Array<{ id: number; accessToken: string; email: string }>;
@@ -155,6 +156,7 @@ export function buildV1EnvelopesRouter(): Router {
           gmailThreadId: null,
           expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
           origin: data.origin || req.apiKeyAuth!.tenant,
+          message: senderMessage,
         } as any, tx);
 
         const signers: Array<{ id: number; accessToken: string; email: string }> = [];

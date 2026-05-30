@@ -12,7 +12,7 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#39;");
 }
 
-interface EmailSettings {
+export interface EmailSettings {
   registrationLine: string;
   footerText: string;
   firmName: string;
@@ -75,6 +75,31 @@ interface EnvelopeInfo {
   gmailThreadId: string | null;
 }
 
+export function buildInvitationBodyHtml(
+  signer: Pick<SignerInfo, "fullName">,
+  envelope: Pick<EnvelopeInfo, "subject" | "externalRef" | "message">,
+  signingUrl: string,
+  emailCfg: EmailSettings,
+): string {
+  return `
+      <h2 style="color: #1e40af; margin-top: 0;">Document Ready for Signing</h2>
+      <p>Dear ${escapeHtml(signer.fullName)},</p>
+      <p>${emailCfg.invitationBody}</p>
+      ${envelope.message && envelope.message.trim() ? `
+      <div style="margin: 16px 0;">
+        <p style="margin: 0 0 4px 0; font-size: 13px; font-weight: 600; color: #475569;">Message from the sender:</p>
+        <p style="margin: 0; white-space: pre-line;">${escapeHtml(envelope.message)}</p>
+      </div>` : ""}
+      <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0;">
+        <p style="margin: 4px 0;"><strong>Subject:</strong> ${escapeHtml(envelope.subject)}</p>
+        ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
+      </div>
+      <p>Please click the button below to verify your identity and review the document:</p>
+      <a href="${signingUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">Review & Sign Document</a>
+      <p style="margin-top: 24px; color: #64748b; font-size: 12px;">This is a secure link. Do not share it with anyone.</p>
+  `;
+}
+
 export async function sendSigningInvitation(
   signer: SignerInfo,
   envelope: EnvelopeInfo,
@@ -82,19 +107,11 @@ export async function sendSigningInvitation(
   emailCfg: EmailSettings,
 ): Promise<{ threadId?: string }> {
   const signingUrl = buildSigningLink(baseUrl, signer.accessToken);
-  const htmlBody = wrapEmail(`
-      <h2 style="color: #1e40af; margin-top: 0;">Document Ready for Signing</h2>
-      <p>Dear ${escapeHtml(signer.fullName)},</p>
-      <p>${emailCfg.invitationBody}</p>
-      <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0;">
-        <p style="margin: 4px 0;"><strong>Subject:</strong> ${escapeHtml(envelope.subject)}</p>
-        ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
-        ${envelope.message ? `<p style="margin: 12px 0 4px 0; white-space: pre-line;">${escapeHtml(envelope.message)}</p>` : ""}
-      </div>
-      <p>Please click the button below to verify your identity and review the document:</p>
-      <a href="${signingUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">Review & Sign Document</a>
-      <p style="margin-top: 24px; color: #64748b; font-size: 12px;">This is a secure link. Do not share it with anyone.</p>
-  `, baseUrl, emailCfg);
+  const htmlBody = wrapEmail(
+    buildInvitationBodyHtml(signer, envelope, signingUrl, emailCfg),
+    baseUrl,
+    emailCfg,
+  );
 
   const result = await sendEmail(
     signer.email,

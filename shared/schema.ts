@@ -346,6 +346,7 @@ export const createSignerRequestSchema = z.object({
 
 export const createApiEnvelopeRequestSchema = z.object({
   subject: z.string().min(1, "Subject is required").optional(),
+  body: z.string().nullish(),
   signerEmail: z.string().email("Invalid signer email").optional(),
   signerName: z.string().optional(),
   signers: z.array(z.object({
