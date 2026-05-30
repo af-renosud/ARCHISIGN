@@ -417,7 +417,7 @@ Embedded inside the `envelope.signed` payload as a **single object** (not an arr
 ```
 Header: X-API-KEY: <ARCHITRAK_API_KEY | ARCHIDOC_API_KEY>
 Body:   { pdfFetchUrl, externalRef?, metadata?, signers[], fields[],
-          webhookUrl, expiresAt?, identityVerification: { method } }
+          webhookUrl, expiresAt?, body?, identityVerification: { method } }
 
 Response 201: { envelopeId, status: "draft", createdAt, expiresAt,
                 signers: [{ id, accessToken, accessUrl, otpDestination }] }
@@ -431,6 +431,8 @@ Errors:
 ```
 
 `pdfFetchUrl` is fetched server-side by Archisign within 60s. Architrak/Archidoc must serve a signed URL with TTL ≥ 60s (Architrak uses 15-min TTL by convention, comfortably above the budget).
+
+**`body` (optional sender message).** A free-text string the sending app may supply to greet or instruct the signer. It is **optional**; omit it, send `null`, or send an empty/whitespace-only string and it is treated as absent. When present it is **trimmed** (leading/trailing whitespace removed); a value that is whitespace-only after trimming is discarded. The trimmed message is stored on the envelope and **surfaces only in the signer invitation email**, rendered under a "Message from the sender:" heading with newlines preserved. It does **not** appear in any API response, in any webhook payload (§3.3), or in the signed PDF. This is an additive, optional v1.0 input with no effect on any response or webhook wire shape; no contract version bump applies.
 
 #### §3.5.2 `POST /api/v1/envelopes/:envelopeId/send`
 
