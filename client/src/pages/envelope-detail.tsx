@@ -81,6 +81,8 @@ export default function EnvelopeDetail() {
   const [replyMessage, setReplyMessage] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
+  const [resendDialogOpen, setResendDialogOpen] = useState(false);
+  const [resendMessage, setResendMessage] = useState("");
   const [revealedCreds, setRevealedCreds] = useState<Record<number, boolean>>({});
 
   const { data: envelope, isLoading } = useQuery<EnvelopeDetail>({
@@ -121,9 +123,12 @@ export default function EnvelopeDetail() {
   });
 
   const resendMutation = useMutation({
-    mutationFn: () => apiRequest("POST", `/api/envelopes/${id}/resend`),
+    mutationFn: (message: string) =>
+      apiRequest("POST", `/api/envelopes/${id}/resend`, message.trim() ? { message: message.trim() } : {}),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
+      setResendDialogOpen(false);
+      setResendMessage("");
       toast({ title: "Invitations resent", description: "Reminder emails have been sent to all pending signers." });
     },
     onError: (err: Error) => {
@@ -219,7 +224,7 @@ export default function EnvelopeDetail() {
               </>
             )}
             {["sent", "viewed", "queried"].includes(envelope.status) && (
-              <Button variant="outline" onClick={() => resendMutation.mutate()} disabled={resendMutation.isPending} data-testid="button-resend-envelope">
+              <Button variant="outline" onClick={() => setResendDialogOpen(true)} disabled={resendMutation.isPending} data-testid="button-resend-envelope">
                 <RefreshCw className={`h-4 w-4 mr-2 ${resendMutation.isPending ? "animate-spin" : ""}`} />
                 {resendMutation.isPending ? "Resending..." : "Resend Invitations"}
               </Button>
@@ -573,6 +578,41 @@ export default function EnvelopeDetail() {
             >
               <Trash2 className="h-4 w-4 mr-2" />
               {deleteMutation.isPending ? "Deleting..." : "Delete Envelope"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={resendDialogOpen} onOpenChange={(open) => { setResendDialogOpen(open); if (!open) setResendMessage(""); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Resend Invitations</DialogTitle>
+            <DialogDescription>
+              Reminder emails will be sent to all pending signers. You can optionally include a short message that will appear in the reminder email.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="resend-message">Optional message</Label>
+            <Textarea
+              id="resend-message"
+              placeholder="e.g. Just a friendly reminder — please sign by Friday."
+              value={resendMessage}
+              onChange={(e) => setResendMessage(e.target.value)}
+              className="min-h-[100px]"
+              data-testid="input-resend-message"
+            />
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => { setResendDialogOpen(false); setResendMessage(""); }} data-testid="button-cancel-resend">
+              Cancel
+            </Button>
+            <Button
+              onClick={() => resendMutation.mutate(resendMessage)}
+              disabled={resendMutation.isPending}
+              data-testid="button-confirm-resend"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${resendMutation.isPending ? "animate-spin" : ""}`} />
+              {resendMutation.isPending ? "Resending..." : "Resend Invitations"}
             </Button>
           </DialogFooter>
         </DialogContent>

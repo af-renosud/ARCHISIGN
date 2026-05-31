@@ -75,6 +75,19 @@ interface EnvelopeInfo {
   gmailThreadId: string | null;
 }
 
+// Shared "Message from the sender:" block, rendered only when a non-empty
+// message is supplied. Used by both the first invitation (envelope.message)
+// and the resend reminder (a transient per-resend note). Always HTML-escaped
+// with line breaks preserved.
+function renderSenderMessageBlock(message?: string | null): string {
+  if (!message || !message.trim()) return "";
+  return `
+      <div style="margin: 16px 0;">
+        <p style="margin: 0 0 4px 0; font-size: 13px; font-weight: 600; color: #475569;">Message from the sender:</p>
+        <p style="margin: 0; white-space: pre-line;">${escapeHtml(message)}</p>
+      </div>`;
+}
+
 export function buildInvitationBodyHtml(
   signer: Pick<SignerInfo, "fullName">,
   envelope: Pick<EnvelopeInfo, "subject" | "externalRef" | "message">,
@@ -85,11 +98,28 @@ export function buildInvitationBodyHtml(
       <h2 style="color: #1e40af; margin-top: 0;">Document Ready for Signing</h2>
       <p>Dear ${escapeHtml(signer.fullName)},</p>
       <p>${emailCfg.invitationBody}</p>
-      ${envelope.message && envelope.message.trim() ? `
-      <div style="margin: 16px 0;">
-        <p style="margin: 0 0 4px 0; font-size: 13px; font-weight: 600; color: #475569;">Message from the sender:</p>
-        <p style="margin: 0; white-space: pre-line;">${escapeHtml(envelope.message)}</p>
-      </div>` : ""}
+      ${renderSenderMessageBlock(envelope.message)}
+      <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0;">
+        <p style="margin: 4px 0;"><strong>Subject:</strong> ${escapeHtml(envelope.subject)}</p>
+        ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
+      </div>
+      <p>Please click the button below to verify your identity and review the document:</p>
+      <a href="${signingUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">Review & Sign Document</a>
+      <p style="margin-top: 24px; color: #64748b; font-size: 12px;">This is a secure link. Do not share it with anyone.</p>
+  `;
+}
+
+export function buildResendBodyHtml(
+  signer: Pick<SignerInfo, "fullName">,
+  envelope: Pick<EnvelopeInfo, "subject" | "externalRef">,
+  signingUrl: string,
+  customMessage?: string | null,
+): string {
+  return `
+      <h2 style="color: #1e40af; margin-top: 0;">Reminder: Document Awaiting Your Signature</h2>
+      <p>Dear ${escapeHtml(signer.fullName)},</p>
+      <p>This is a reminder that a document is still awaiting your signature.</p>
+      ${renderSenderMessageBlock(customMessage)}
       <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0;">
         <p style="margin: 4px 0;"><strong>Subject:</strong> ${escapeHtml(envelope.subject)}</p>
         ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
@@ -127,20 +157,14 @@ export async function sendResendInvitation(
   envelope: EnvelopeInfo,
   baseUrl: string,
   emailCfg: EmailSettings,
+  customMessage?: string | null,
 ): Promise<void> {
   const signingUrl = buildSigningLink(baseUrl, signer.accessToken);
-  const htmlBody = wrapEmail(`
-      <h2 style="color: #1e40af; margin-top: 0;">Reminder: Document Awaiting Your Signature</h2>
-      <p>Dear ${escapeHtml(signer.fullName)},</p>
-      <p>This is a reminder that a document is still awaiting your signature.</p>
-      <div style="background: #f8fafc; border-radius: 8px; padding: 16px; margin: 16px 0;">
-        <p style="margin: 4px 0;"><strong>Subject:</strong> ${escapeHtml(envelope.subject)}</p>
-        ${envelope.externalRef ? `<p style="margin: 4px 0;"><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
-      </div>
-      <p>Please click the button below to verify your identity and review the document:</p>
-      <a href="${signingUrl}" style="display: inline-block; background: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">Review & Sign Document</a>
-      <p style="margin-top: 24px; color: #64748b; font-size: 12px;">This is a secure link. Do not share it with anyone.</p>
-  `, baseUrl, emailCfg);
+  const htmlBody = wrapEmail(
+    buildResendBodyHtml(signer, envelope, signingUrl, customMessage),
+    baseUrl,
+    emailCfg,
+  );
 
   await sendEmail(
     signer.email,

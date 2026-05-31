@@ -452,6 +452,17 @@ export async function registerRoutes(
       return res.status(400).json({ message: `Cannot resend envelope with status "${envelope.status}".` });
     }
 
+    const resendBodySchema = z.object({
+      message: z.string().max(5000).optional().nullable(),
+    });
+    const resendParsed = resendBodySchema.safeParse(req.body ?? {});
+    if (!resendParsed.success) {
+      return res.status(400).json({ message: "Invalid resend data", errors: resendParsed.error.flatten().fieldErrors });
+    }
+    const customMessage = resendParsed.data.message && resendParsed.data.message.trim()
+      ? resendParsed.data.message.trim()
+      : null;
+
     const pendingSigners = envelope.signers.filter(s => !s.signedAt);
     if (pendingSigners.length === 0) {
       return res.status(400).json({ message: "All signers have already signed." });
@@ -464,7 +475,7 @@ export async function registerRoutes(
 
     for (const signer of pendingSigners) {
       try {
-        await sendResendInvitation(signer, envelope, baseUrl, emailCfg);
+        await sendResendInvitation(signer, envelope, baseUrl, emailCfg, customMessage);
         emailResults.push({ email: signer.email, success: true });
       } catch (err: any) {
         console.error(`Failed to resend email to ${signer.email}:`, err);
@@ -479,7 +490,7 @@ export async function registerRoutes(
         eventType: "Envelope resend failed - all emails failed",
         actorEmail: (req.user as any)?.claims?.email || firmEmail || null,
         ipAddress: req.ip || null,
-        metadata: JSON.stringify(emailResults),
+        metadata: JSON.stringify({ recipients: emailResults, messageIncluded: customMessage !== null }),
       });
       return res.status(502).json({ message: "Failed to resend emails to all pending signers.", failures: emailResults });
     }
@@ -489,7 +500,7 @@ export async function registerRoutes(
       eventType: "Envelope resent to pending signers",
       actorEmail: (req.user as any)?.claims?.email || firmEmail || null,
       ipAddress: req.ip || null,
-      metadata: JSON.stringify({ recipients: emailResults }),
+      metadata: JSON.stringify({ recipients: emailResults, messageIncluded: customMessage !== null }),
     });
 
     const updated = await storage.getEnvelope(id);
