@@ -285,6 +285,30 @@ export default function EnvelopeDetail() {
                   <h3 className="font-medium text-sm">Timeline</h3>
                   <Separator />
                   <InfoRow label="Created" value={format(new Date(envelope.createdAt), "PPp")} />
+                  {(() => {
+                    const evts = [...(envelope.auditEvents || [])].sort(
+                      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+                    );
+                    const sentEvt = evts.find((e) => /sent for signing|sent via api|invitation/i.test(e.eventType));
+                    const resentEvts = evts.filter((e) => /resent/i.test(e.eventType));
+                    return (
+                      <>
+                        {sentEvt && (
+                          <div data-testid="row-timeline-sent">
+                            <InfoRow label="Sent" value={format(new Date(sentEvt.timestamp), "PPp")} />
+                          </div>
+                        )}
+                        {resentEvts.map((e, i) => (
+                          <div key={e.id ?? i} data-testid={`row-timeline-resent-${i}`}>
+                            <InfoRow
+                              label={resentEvts.length > 1 ? `Resent (${i + 1})` : "Resent"}
+                              value={format(new Date(e.timestamp), "PPp")}
+                            />
+                          </div>
+                        ))}
+                      </>
+                    );
+                  })()}
                   <InfoRow label="Last Updated" value={format(new Date(envelope.updatedAt), "PPp")} />
                   {envelope.signers?.some(s => s.lastViewedAt) && (
                     <InfoRow label="Last Viewed" value={format(new Date(envelope.signers.find(s => s.lastViewedAt)!.lastViewedAt!), "PPp")} />
