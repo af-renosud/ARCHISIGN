@@ -572,7 +572,10 @@ export default function EnvelopeDetail() {
       </div>
 
       <Dialog open={deleteDialogOpen} onOpenChange={(open) => { setDeleteDialogOpen(open); if (!open) setDeleteReason(""); }}>
-        <DialogContent>
+        <DialogContent
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Delete Envelope</DialogTitle>
             <DialogDescription>
@@ -608,7 +611,10 @@ export default function EnvelopeDetail() {
       </Dialog>
 
       <Dialog open={resendDialogOpen} onOpenChange={(open) => { setResendDialogOpen(open); if (!open) setResendMessage(""); }}>
-        <DialogContent>
+        <DialogContent
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Resend Invitations</DialogTitle>
             <DialogDescription>
