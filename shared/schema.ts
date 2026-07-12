@@ -374,7 +374,6 @@ export const createApiEnvelopeRequestSchema = z.object({
     width: z.number().positive(),
     height: z.number().positive(),
   })).nullish(),
-  origin: z.string().nullish(),
 }).refine(
   (data) => (data.signers && data.signers.length > 0) || data.signerEmail,
   { message: "At least one signer is required: provide 'signers' array or 'signerEmail'", path: ["signers"] }

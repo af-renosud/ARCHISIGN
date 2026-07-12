@@ -12,6 +12,7 @@ import { ContactService } from "../services/ContactService";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { apiKeyAuth } from "../middleware/apiKeyAuth";
 import { rateLimit } from "../middleware/rateLimit";
+import { safeFetch, assertSafeUrl } from "../utils/ssrfGuard";
 
 const PDF_FETCH_TIMEOUT_MS = 60_000;
 const PDF_MAX_BYTES = 25 * 1024 * 1024;
@@ -58,7 +59,7 @@ function verifySignedPdfUrl(envelopeId: number, exp: string, sig: string): boole
 }
 
 async function fetchPdfFromUrl(url: string): Promise<Buffer> {
-  const response = await fetch(url, {
+  const response = await safeFetch(url, "pdfFetchUrl", {
     signal: AbortSignal.timeout(PDF_FETCH_TIMEOUT_MS),
   });
   if (!response.ok) {
@@ -99,6 +100,14 @@ export function buildV1EnvelopesRouter(): Router {
       const expMs = new Date(data.expiresAt).getTime();
       if (!Number.isFinite(expMs) || expMs < Date.now() + EXPIRES_AT_FLOOR_MS) {
         return res.status(400).json({ error: "invalid_request", message: "expiresAt must be at least 1 minute in the future" });
+      }
+    }
+
+    if (data.webhookUrl) {
+      try {
+        await assertSafeUrl(data.webhookUrl, "webhookUrl");
+      } catch (err: any) {
+        return res.status(400).json({ error: "invalid_request", message: err.message });
       }
     }
 
@@ -155,7 +164,7 @@ export function buildV1EnvelopesRouter(): Router {
           status: "draft",
           gmailThreadId: null,
           expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
-          origin: data.origin || req.apiKeyAuth!.tenant,
+          origin: req.apiKeyAuth!.tenant,
           message: senderMessage,
         } as any, tx);
 
@@ -229,7 +238,7 @@ export function buildV1EnvelopesRouter(): Router {
       return res.status(400).json({ error: "invalid_request", message: "envelopeId must be an integer" });
     }
     const envelope = await storage.getEnvelope(envelopeId);
-    if (!envelope) {
+    if (!envelope || envelope.origin !== req.apiKeyAuth!.tenant) {
       return res.status(404).json({ error: "envelope_not_found" });
     }
 
@@ -344,7 +353,7 @@ export function buildV1EnvelopesRouter(): Router {
       return res.status(400).json({ error: "invalid_request", message: "envelopeId must be an integer" });
     }
     const envelope = await storage.getEnvelope(envelopeId);
-    if (!envelope) {
+    if (!envelope || envelope.origin !== req.apiKeyAuth!.tenant) {
       return res.status(404).json({ error: "envelope_not_found" });
     }
 

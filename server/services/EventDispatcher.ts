@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { storage } from "../storage";
 import { signV1, signV2, isV2Enabled, V2_TIMESTAMP_HEADER } from "./WebhookSignature";
+import { safeFetch } from "../utils/ssrfGuard";
 import type { Envelope, WebhookDelivery } from "@shared/schema";
 
 export type CanonicalEvent =
@@ -142,7 +143,7 @@ function buildHeaders(rawBody: string, tenantKey?: string): Record<string, strin
 
 async function attemptDelivery(webhookUrl: string, body: string, headers: Record<string, string>): Promise<{ ok: boolean; statusCode: number | null; error: string | null; retryable: boolean }> {
   try {
-    const response = await fetch(webhookUrl, {
+    const response = await safeFetch(webhookUrl, "webhookUrl", {
       method: "POST",
       headers,
       body,
@@ -154,6 +155,11 @@ async function attemptDelivery(webhookUrl: string, body: string, headers: Record
     const retryable = response.status >= 500 || response.status === 429;
     return { ok: false, statusCode: response.status, error: `HTTP ${response.status} ${response.statusText}`, retryable };
   } catch (err: any) {
+    const isBlocked = err?.code === "ECONNREFUSED" && err?.httpStatus === 400;
+    if (isBlocked) {
+      console.error(`[EventDispatcher] Blocked delivery to private/internal host: ${webhookUrl}`);
+      return { ok: false, statusCode: null, error: "blocked: private/internal destination", retryable: false };
+    }
     return { ok: false, statusCode: null, error: err?.message || String(err), retryable: true };
   }
 }
