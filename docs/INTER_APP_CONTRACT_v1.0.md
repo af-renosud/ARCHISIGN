@@ -911,3 +911,76 @@ Bulk response shape (v1.3.1):
 - Archidoc:  `confirmed v1.3.1` 2026-05-11
 - Archisign: `confirmed v1.3.1` 2026-05-11
 
+
+---
+
+## §9 v1.4 amendment — §3.5.1.1 rev2: Email rendering of `subject` and `body` (proposed 2026-07-12)
+
+Bilateral Architrak↔Archisign amendment, negotiated over two rounds on 2026-07-12
+(Architrak proposal → Archisign counter-proposal on clause (a) → Architrak rev2
+folding the counter-proposal in). Cross-copy authoritative identifiers: clause
+anchor **§3.5.1.1** + proposal date **2026-07-12**. Tagged **v1.4** in Archisign's
+lineage (this copy holds v1.0 + v1.3/v1.3.1; the v1.1 §5.3.2.1 timestamp amendment
+is Architrak↔Archidoc-only and out of this lineage per Architrak's §7 history —
+"Archisign is not in scope for this v1.1 amendment").
+
+### §9.1 Clause §3.5.1.1 (rev2, verbatim)
+
+**(a) subject — MUST render (rev2).** When /create receives a `subject` that is a
+non-empty string after trimming, Archisign MUST include that string verbatim and
+unmodified as a contiguous substring of the signer-invitation email's RFC 5322
+Subject header — no truncation, re-casing, or internal alteration — applying
+RFC 2047 encoding as required for non-ASCII content (UTF-8 accents and em-dashes
+MUST survive intact). Archisign MAY frame the caller's subject with its
+firm-name/prefix framing (as of 2026-07-12: `[<firm name>] <configurable prefix>
+<caller subject>`, default prefix "Signature Required:"); the framing MUST NOT
+alter, split, or duplicate the caller's subject string, and dropping the caller's
+subject from the header entirely is a breach. The same framed subject construction
+MUST be applied on every subsequent invitation email for that envelope (idempotent
+re-send and resend-on-expiry). When `subject` is absent, null, or empty/whitespace
+after trimming, Archisign uses its default subject. Sender constraints: plain
+text, no line breaks, ≤ 256 Unicode code points. Archisign MAY reject longer
+values with `400 subject_too_long`; it MUST NOT silently truncate.
+
+**(b) body — election (Archisign elects RENDERED).**
+
+> RENDERED — `body` is rendered in the signer-invitation email under a
+> "Message from the sender:" heading, between the standard intro line and the
+> Subject/Reference box. Plain text only: line breaks preserved, content
+> HTML-escaped by Archisign (markup will not render). Empty / whitespace-only /
+> null / omitted `body` shows no message block. Sender constraints: ≤ 2 000
+> Unicode code points; `400 body_too_long` rather than silent truncation.
+
+Archisign's election: **RENDERED** (current template already conforms; the
+2 000-code-point cap is enforced at /create — code points, not UTF-16 units).
+
+**(c) Rendering echo — anti-silent-drift mechanism.** The /create 201 response
+gains one additive, backward-compatible field:
+
+```json
+"emailRendering": {
+  "subjectApplied": true,
+  "bodyApplied": false
+}
+```
+
+`subjectApplied` is true iff clause (a) will use the sender's subject on the
+invitation email (i.e. a non-empty trimmed subject was supplied — not the
+default). `bodyApplied` is true iff the (b) election is RENDERED and a non-empty
+body was supplied. Receivers MUST tolerate the field's absence and any
+additional keys inside it.
+
+**(d) Change control.** Once countersigned, any change to (a)–(c) — including
+dropping the subject override, changing the body election, moving the template
+position, or altering the length limits — requires a further versioned amendment
+through the §7 protocol. Silent behavioural drift is a contract breach even when
+the wire shapes are unchanged.
+
+### §9.2 Countersign table (§7.2-style)
+
+| Party | Countersigned | Date (UTC) | body election | Notes |
+|---|---|---|---|---|
+| Architrak | yes | 2026-07-12 | — (proposer) | rev2 proposed and self-countersigned 2026-07-12; reaffirmed for rev2 |
+| Archisign | yes | ____ (filled at send time) | RENDERED | echo + body cap shipped in this copy before countersign; lineage tag v1.4 |
+
+The clause enters force at 00:00:00 UTC the day after the later countersign date.

@@ -128,6 +128,9 @@ Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. AS1 → AS5 fully landed:
 - Audit events `contact.synced`, `contact.archived`, `contact.bulk_imported` carry `envelopeId = null`
 - Non-archidoc tenants get `403 tenant_forbidden` on every `/api/v1/contacts/archidoc/*` call
 
+### v1.4 §3.5.1.1 rev2 (2026-07-12) — email rendering
+Caller `subject` guaranteed verbatim as contiguous substring of invitation Subject (`[firm] prefix` framing permitted); `body` elected RENDERED; additive `emailRendering {subjectApplied, bodyApplied}` echo on /create 201; `body` > 2 000 code points → `400 body_too_long`. Full text: contract doc §9.
+
 ## Authentication & Authorization
 - **Admin**: Direct Google Workspace OAuth 2.0 (OIDC discovery against `https://accounts.google.com`) via `server/services/GoogleAuthService.ts`. `/api/login` redirects to Google with `hd=<allowed_domain>` + `prompt=select_account`; `/api/auth/google/callback` is the registered redirect URI; the verify callback re-checks the signed `hd` ID-token claim server-side (the URL `hd` param is never trusted on its own), confirms `email_verified`, and confirms the email-suffix matches the configured domain. Personal Gmail accounts and other Workspaces are rejected. All `/api/*` protected EXCEPT `/api/sign/:token/*`, `/api/v1/*`, and the OAuth handshake (`/api/login`, `/api/logout`, `/api/auth/google/callback`). Failures redirect to `/login?error=auth_failed`.
 - **Single-org domain rule**: admin guard requires the session email to end in `@<ARCHISIGN_ALLOWED_EMAIL_DOMAIN>` (default `renosud.com`). Denial → session destroyed + `403 {code, message, allowedDomain}` (`code` = `domain_not_allowed` or `email_not_in_allowlist`) + `audit_events` row with `reason` metadata. `E2E_AUTH_BYPASS=1` (dev/test only) skips the domain check.

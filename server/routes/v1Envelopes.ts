@@ -18,6 +18,8 @@ const PDF_FETCH_TIMEOUT_MS = 60_000;
 const PDF_MAX_BYTES = 25 * 1024 * 1024;
 const SIGNED_URL_TTL_MS = 15 * 60 * 1000;
 const EXPIRES_AT_FLOOR_MS = 60_000;
+// v1.4 §3.5.1.1(b): sender body cap, counted in Unicode code points (not UTF-16 units).
+const BODY_MAX_CODE_POINTS = 2000;
 
 function signedUrlSecret(): string {
   const secret = process.env.ARCHISIGN_SIGNED_URL_SECRET || process.env.ARCHISIGN_WEBHOOK_SECRET;
@@ -96,6 +98,14 @@ export function buildV1EnvelopesRouter(): Router {
     const data = parsed.data;
     const baseUrl = `${req.protocol}://${req.get("host")}`;
 
+    // v1.4 §3.5.1.1(b): reject over-length body outright — no silent truncation.
+    if (typeof data.body === "string" && Array.from(data.body).length > BODY_MAX_CODE_POINTS) {
+      return res.status(400).json({
+        error: "body_too_long",
+        message: `body exceeds ${BODY_MAX_CODE_POINTS} Unicode code points`,
+      });
+    }
+
     if (data.expiresAt) {
       const expMs = new Date(data.expiresAt).getTime();
       if (!Number.isFinite(expMs) || expMs < Date.now() + EXPIRES_AT_FLOOR_MS) {
@@ -147,7 +157,11 @@ export function buildV1EnvelopesRouter(): Router {
       ? data.signers
       : [{ email: data.signerEmail!, fullName: data.signerName || data.signerEmail! }];
 
-    const subject = data.subject || "Document for signature";
+    // v1.4 §3.5.1.1(a): empty/whitespace-after-trim subject falls back to the
+    // default; otherwise the caller's string is used verbatim (framed by the
+    // firm-name prefix at send time — the contiguous-substring guarantee).
+    const callerSubject = typeof data.subject === "string" ? data.subject.trim() : "";
+    const subject = callerSubject.length > 0 ? data.subject! : "Document for signature";
     const senderMessage = data.body && data.body.trim() ? data.body.trim() : null;
 
     let envelope: { id: number; createdAt: Date; expiresAt: Date | null; status: string };
@@ -220,6 +234,11 @@ export function buildV1EnvelopesRouter(): Router {
         accessUrl: buildAccessUrl(baseUrl, s.accessToken),
         otpDestination: s.email,
       })),
+      // v1.4 §3.5.1.1(c): additive echo of what the invitation email will render.
+      emailRendering: {
+        subjectApplied: callerSubject.length > 0,
+        bodyApplied: senderMessage !== null,
+      },
     });
   }));
 

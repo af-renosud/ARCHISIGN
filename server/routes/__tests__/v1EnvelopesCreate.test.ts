@@ -125,3 +125,67 @@ test("v1 create: omitted body persists message as null", async () => {
   assert.equal(createdEnvelopes.length, 1);
   assert.equal(createdEnvelopes[0].message, null);
 });
+
+// --- v1.4 §3.5.1.1(c): emailRendering echo ---
+
+test("v1.4 echo: subject + body supplied -> both applied true", async () => {
+  const r = await create({ ...baseRequest, body: "Please sign." });
+  assert.equal(r.status, 201);
+  assert.deepEqual(r.body.emailRendering, { subjectApplied: true, bodyApplied: true });
+});
+
+test("v1.4 echo: omitted subject and body -> both applied false", async () => {
+  const { subject: _s, ...noSubject } = baseRequest;
+  const r = await create({ ...noSubject });
+  assert.equal(r.status, 201);
+  assert.deepEqual(r.body.emailRendering, { subjectApplied: false, bodyApplied: false });
+});
+
+test("v1.4 echo: whitespace-only subject -> subjectApplied false, default subject stored", async () => {
+  const r = await create({ ...baseRequest, subject: "   \t " });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.emailRendering.subjectApplied, false);
+  assert.equal(createdEnvelopes[0].subject, "Document for signature");
+});
+
+test("v1.4 echo: subject with surrounding spaces -> applied true, caller string stored verbatim", async () => {
+  const r = await create({ ...baseRequest, subject: "  Devis — lot 3  " });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.emailRendering.subjectApplied, true);
+  assert.equal(createdEnvelopes[0].subject, "  Devis — lot 3  ");
+});
+
+test("v1.4 echo: whitespace-only body -> bodyApplied false", async () => {
+  const r = await create({ ...baseRequest, body: "   \n  " });
+  assert.equal(r.status, 201);
+  assert.deepEqual(r.body.emailRendering, { subjectApplied: true, bodyApplied: false });
+});
+
+// --- v1.4 §3.5.1.1(b): body length cap in Unicode code points ---
+
+test("v1.4 cap: body of exactly 2000 code points is accepted", async () => {
+  const r = await create({ ...baseRequest, body: "a".repeat(2000) });
+  assert.equal(r.status, 201);
+  assert.equal(createdEnvelopes[0].message, "a".repeat(2000));
+});
+
+test("v1.4 cap: body of 2001 code points -> 400 body_too_long", async () => {
+  const r = await create({ ...baseRequest, body: "a".repeat(2001) });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, "body_too_long");
+  assert.equal(createdEnvelopes.length, 0);
+});
+
+test("v1.4 cap: astral emoji counts as one code point, not two UTF-16 units", async () => {
+  // 2000 x U+1F600 = 4000 UTF-16 units but exactly 2000 code points -> accepted.
+  const body = "\u{1F600}".repeat(2000);
+  const r = await create({ ...baseRequest, body });
+  assert.equal(r.status, 201);
+  assert.equal(createdEnvelopes[0].message, body);
+});
+
+test("v1.4 cap: 2001 astral code points -> rejected", async () => {
+  const r = await create({ ...baseRequest, body: "\u{1F600}".repeat(2001) });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, "body_too_long");
+});
