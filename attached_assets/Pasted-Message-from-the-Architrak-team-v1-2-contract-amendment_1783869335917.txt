@@ -1,0 +1,44 @@
+Message from the Architrak team — v1.2 contract amendment proposal requiring your countersign
+
+Architrak proposes a versioned v1.2 amendment (new clause §3.5.1.1) to our shared INTER_APP_CONTRACT (currently at v1.1), following the same §7 amendment protocol we used for the v1.1 §5.3.2.1 timestamp amendment: review, elect, record your countersign in §7.2 of your contract copy, and reply so Architrak can mirror it in theirs.
+
+Why: Architrak sends subject and body on POST /api/v1/envelopes/create. A July 2026 live inbox check confirmed your service renders subject verbatim as the invitation-email subject (UTF-8 em-dash intact) — this is now load-bearing for Architrak's client-facing English subject line, but it is undocumented, so a refactor on your side could silently drop it without breaching any frozen wire shape. The same check showed body is NOT rendered in your current production template — contradicting the May 2026 written description ("Message from the sender:" heading); Architrak has corrected its §3.5.1 accordingly. This amendment makes the subject rendering a guaranteed, versioned obligation, makes the body behaviour explicit either way, and adds a machine-visible drift signal.
+
+Proposed clause §3.5.1.1 (verbatim):
+
+(a) subject — MUST render. When /create receives a subject that is a non-empty string after trimming, Archisign MUST set the signer-invitation email's RFC 5322 Subject header to that string verbatim — no prefixing, suffixing, truncation, or re-casing — applying RFC 2047 encoding as required for non-ASCII content (UTF-8 accents and em-dashes MUST survive intact). The same subject MUST be reused on every subsequent invitation email for that envelope (idempotent re-send per §3.5.2 and resend-on-expiry per §3.5.4). When subject is absent, null, or empty/whitespace after trimming, Archisign uses its default subject. Sender constraints: plain text, no line breaks, ≤ 256 Unicode code points. Archisign MAY reject longer values with 400 subject_too_long; it MUST NOT silently truncate.
+
+(b) body — you MUST elect exactly one behaviour at countersign time and record the election in §7.2:
+
+RENDERED — body is rendered in the signer-invitation email under a "Message from the sender:" heading, between the standard intro line and the Subject/Reference box. Plain text only: line breaks preserved, content HTML-escaped by Archisign (markup will not render). Empty / whitespace-only / null / omitted body shows no message block. Sender constraints: ≤ 2 000 Unicode code points; 400 body_too_long rather than silent truncation.
+NOT-RENDERED — body is accepted for wire compatibility but never rendered; the contract then records the field as accepted-but-ignored, and Architrak continues delivering the architect's note via its own context email. (This is the status quo; electing it costs you no engineering.)
+Architrak's preference is RENDERED, but the election is yours.
+
+(c) Rendering echo — anti-silent-drift mechanism. The /create 201 response gains one additive, backward-compatible field:
+
+"emailRendering": {
+  "subjectApplied": true,   // true iff clause (a) will use the sender's subject on the invitation email
+  "bodyApplied": false      // true iff (b) election is RENDERED and a non-empty body was supplied
+}
+
+Receivers MUST tolerate the field's absence and any additional keys inside it. Architrak already tolerates/reads this optional object and logs an operator-visible warning when subjectApplied === false for a non-empty sent subject — inert until you ship the echo. This echo is the only engineering ask for the mandatory part.
+
+(d) Change control. Once countersigned, any change to (a)–(c) — including dropping the subject override, changing the body election, moving the template position, or altering the length limits — requires a further versioned amendment through the §7 protocol. Silent behavioural drift is a contract breach even when the wire shapes are unchanged.
+
+If any constraint doesn't fit your implementation (length limits, error codes, template position for RENDERED), counter-propose — the numbers are starting points, not hills.
+
+What to do:
+
+Review the clause and verify it against your invitation-email template and /create handler.
+Elect RENDERED or NOT-RENDERED for body.
+Record your countersign (date UTC, YYYY-MM-DD) + election in the §7.2 table of your contract copy.
+Reply in EXACTLY this format so Architrak can record it in their §7.2:
+ARCHISIGN COUNTERSIGN — v1.2 §3.5.1.1
+Countersigned: yes / no
+Date (UTC, YYYY-MM-DD): <date>
+body election: RENDERED / NOT-RENDERED
+Countersigned by: <team/agent name>
+Counter-proposals (limits, error codes, template position — or "none"): <details>
+emailRendering echo implementation status: <shipped / planned date>
+
+The clause enters force at 00:00:00 UTC the day after the later countersign date (Architrak countersigned 2026-07-12).
