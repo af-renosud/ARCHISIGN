@@ -91,6 +91,8 @@ async function startApp(opts: {
 
   app.get("/api/envelopes", (_req, res) => res.json([]));
 
+  app.get("/uploads/:filename", (_req, res) => res.json({ ok: true }));
+
   return await new Promise<Harness>((resolve) => {
     const server = app.listen(0, () => {
       const addr = server.address() as AddressInfo;
@@ -261,6 +263,69 @@ test("admin guard: unauthenticated request gets 401, no audit event", async () =
     const res = await call(h.baseUrl, "/api/envelopes", new CookieJar());
     assert.equal(res.status, 401);
     assert.equal(h.auditEvents.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("admin guard: /uploads is blocked for unauthenticated requests (401)", async () => {
+  const h = await startApp({});
+  try {
+    const res = await call(h.baseUrl, "/uploads/secret.pdf", new CookieJar());
+    assert.equal(res.status, 401);
+    assert.equal(h.auditEvents.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("admin guard: /uploads is blocked for non-domain-allowed authenticated users (403)", async () => {
+  const h = await startApp({});
+  const jar = new CookieJar();
+  try {
+    await call(h.baseUrl, "/api/login?email=outsider@example.com", jar);
+    const res = await call(h.baseUrl, "/uploads/secret.pdf", jar);
+    assert.equal(res.status, 403);
+    assert.equal(res.body.code, "domain_not_allowed");
+    assert.equal(h.auditEvents.length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("admin guard: /uploads is accessible for valid admin users", async () => {
+  const h = await startApp({});
+  const jar = new CookieJar();
+  try {
+    await call(h.baseUrl, "/api/login?email=alice@renosud.com", jar);
+    const res = await call(h.baseUrl, "/uploads/document.pdf", jar);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ok, true);
+    assert.equal(h.auditEvents.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("admin guard: /Uploads mixed-case path is blocked for unauthenticated requests (case-normalisation)", async () => {
+  const h = await startApp({});
+  try {
+    const res = await call(h.baseUrl, "/Uploads/secret.pdf", new CookieJar());
+    assert.equal(res.status, 401);
+    assert.equal(h.auditEvents.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("admin guard: /Uploads mixed-case path is blocked for non-domain-allowed authenticated users", async () => {
+  const h = await startApp({});
+  const jar = new CookieJar();
+  try {
+    await call(h.baseUrl, "/api/login?email=outsider@example.com", jar);
+    const res = await call(h.baseUrl, "/Uploads/secret.pdf", jar);
+    assert.equal(res.status, 403);
+    assert.equal(res.body.code, "domain_not_allowed");
   } finally {
     await h.close();
   }

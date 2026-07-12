@@ -32,6 +32,7 @@ export interface IStorage {
   getSignersByEnvelope(envelopeId: number, executor?: DbExecutor): Promise<Signer[]>;
   updateSigner(id: number, data: Partial<Signer>, executor?: DbExecutor): Promise<Signer | undefined>;
   atomicClaimSign(signerId: number, executor?: DbExecutor): Promise<Signer | undefined>;
+  atomicIncrementOtpAttempts(signerId: number, maxAttempts: number): Promise<Signer | undefined>;
 
   createAnnotation(data: InsertAnnotation, executor?: DbExecutor): Promise<Annotation>;
   getAnnotationsByEnvelopeAndSigner(envelopeId: number, signerId: number, executor?: DbExecutor): Promise<Annotation[]>;
@@ -173,6 +174,19 @@ export class DatabaseStorage implements IStorage {
       .update(signers)
       .set({ signedAt: new Date() })
       .where(and(eq(signers.id, signerId), isNull(signers.signedAt)))
+      .returning();
+    return updated;
+  }
+
+  async atomicIncrementOtpAttempts(signerId: number, maxAttempts: number): Promise<Signer | undefined> {
+    const [updated] = await db
+      .update(signers)
+      .set({
+        otpAttempts: sql`${signers.otpAttempts} + 1`,
+        otpCode: sql`CASE WHEN ${signers.otpAttempts} + 1 >= ${maxAttempts} THEN NULL ELSE ${signers.otpCode} END`,
+        otpExpiresAt: sql`CASE WHEN ${signers.otpAttempts} + 1 >= ${maxAttempts} THEN NULL ELSE ${signers.otpExpiresAt} END`,
+      })
+      .where(eq(signers.id, signerId))
       .returning();
     return updated;
   }

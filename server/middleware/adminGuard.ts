@@ -31,7 +31,7 @@ export function buildAdminGuard(
     .replace(/^@/, "");
 
   const guard: RequestHandler = (req, res, next) => {
-    const p = req.path;
+    const p = req.path.toLowerCase();
     if (p.startsWith("/api/sign/")) return next();
     if (p.startsWith("/api/v1/")) return next();
     if (
@@ -42,8 +42,7 @@ export function buildAdminGuard(
     ) {
       return next();
     }
-    if (p.startsWith("/uploads")) return next();
-    if (!p.startsWith("/api/")) return next();
+    if (!p.startsWith("/api/") && !p.startsWith("/uploads")) return next();
 
     return deps.isAuthenticated(req, res, () => {
       const user = req.user as any;

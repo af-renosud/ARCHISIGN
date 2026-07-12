@@ -506,6 +506,19 @@ export async function registerRoutes(
     const signer = await storage.getSignerByToken(req.params.token);
     if (!signer) return res.status(404).json({ message: "Invalid link" });
 
+    const OTP_COOLDOWN_MS = 60 * 1000;
+    if (signer.otpIssuedAt) {
+      const elapsed = Date.now() - new Date(signer.otpIssuedAt).getTime();
+      if (elapsed < OTP_COOLDOWN_MS) {
+        const retryAfter = Math.ceil((OTP_COOLDOWN_MS - elapsed) / 1000);
+        res.setHeader("Retry-After", String(retryAfter));
+        return res.status(429).json({
+          message: "Please wait before requesting another code.",
+          retryAfter,
+        });
+      }
+    }
+
     const otp = generateOtp();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
@@ -513,6 +526,7 @@ export async function registerRoutes(
       otpCode: hashOtp(otp),
       otpExpiresAt: expiresAt,
       otpIssuedAt: new Date(),
+      otpAttempts: 0,
     });
 
     const envelope = await storage.getEnvelope(signer.envelopeId);
@@ -551,14 +565,26 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Code has expired. Please request a new one." });
     }
 
+    const OTP_MAX_ATTEMPTS = 5;
     if (!verifyOtp(String(code), signer.otpCode)) {
-      return res.status(400).json({ message: "Invalid code. Please try again." });
+      const updated = await storage.atomicIncrementOtpAttempts(signer.id, OTP_MAX_ATTEMPTS);
+      const newAttempts = updated?.otpAttempts ?? OTP_MAX_ATTEMPTS;
+      if (newAttempts >= OTP_MAX_ATTEMPTS) {
+        return res.status(429).json({
+          message: "Too many incorrect attempts. Please request a new code.",
+        });
+      }
+      return res.status(400).json({
+        message: "Invalid code. Please try again.",
+        attemptsRemaining: OTP_MAX_ATTEMPTS - newAttempts,
+      });
     }
 
     await storage.updateSigner(signer.id, {
       otpVerified: true,
       otpCode: null,
       otpExpiresAt: null,
+      otpAttempts: 0,
       otpVerifiedAt: new Date(),
       lastViewedAt: new Date(),
       signerIpAddress: req.ip || signer.signerIpAddress || null,
@@ -611,7 +637,7 @@ export async function registerRoutes(
         id: envelope.id,
         subject: envelope.subject,
         externalRef: envelope.externalRef,
-        originalPdfUrl: envelope.originalPdfUrl,
+        originalPdfUrl: `/api/sign/${req.params.token}/original-pdf`,
         status: envelope.status,
         totalPages: envelope.totalPages,
         signaturePlacementMode: envelope.signaturePlacementMode,
@@ -629,6 +655,28 @@ export async function registerRoutes(
       initialed: Array.from(new Set(initialedPages)),
       placedFields,
     });
+  }));
+
+  app.get("/api/sign/:token/original-pdf", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
+    if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
+
+    const envelope = await storage.getEnvelope(signer.envelopeId);
+    if (!envelope || !envelope.originalPdfUrl) {
+      return res.status(404).json({ message: "Document not found" });
+    }
+
+    const fileName = envelope.originalPdfUrl.replace(/^.*\//, "");
+    if (!fileName || fileName.includes("..") || fileName.includes("/")) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    const streamed = await streamFileToResponse(`/uploads/${fileName}`, res);
+    if (!streamed && !res.headersSent) {
+      return res.status(404).json({ message: "File not found" });
+    }
   }));
 
   app.post("/api/sign/:token/initial", asyncHandler(async (req, res) => {

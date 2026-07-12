@@ -56,6 +56,7 @@ export const signers = pgTable("signers", {
   otpVerified: boolean("otp_verified").notNull().default(false),
   otpIssuedAt: timestamp("otp_issued_at"),
   otpVerifiedAt: timestamp("otp_verified_at"),
+  otpAttempts: integer("otp_attempts").notNull().default(0),
   signerIpAddress: text("signer_ip_address"),
   signerUserAgent: text("signer_user_agent"),
   lastViewedAt: timestamp("last_viewed_at"),
@@ -320,7 +321,7 @@ export const insertEnvelopeSchema = createInsertSchema(envelopes).omit({ created
 export const insertSignerSchema = createInsertSchema(signers).omit({
   lastViewedAt: true, signedAt: true,
   otpCode: true, otpExpiresAt: true, otpVerified: true,
-  otpIssuedAt: true, otpVerifiedAt: true,
+  otpIssuedAt: true, otpVerifiedAt: true, otpAttempts: true,
   signerIpAddress: true, signerUserAgent: true,
   accessTokenRotatedAt: true, previousAccessTokenHash: true,
 });
