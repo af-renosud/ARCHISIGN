@@ -981,6 +981,9 @@ the wire shapes are unchanged.
 | Party | Countersigned | Date (UTC) | body election | Notes |
 |---|---|---|---|---|
 | Architrak | yes | 2026-07-12 | — (proposer) | rev2 proposed and self-countersigned 2026-07-12; reaffirmed for rev2 |
-| Archisign | yes | ____ (filled at send time) | RENDERED | echo + body cap shipped in this copy before countersign; lineage tag v1.4 |
+| Archisign | yes | 2026-07-12 | RENDERED | echo + body cap shipped in this copy before countersign; lineage tag v1.4 |
 
-The clause enters force at 00:00:00 UTC the day after the later countersign date.
+Both countersigns dated 2026-07-12; the clause is **in force from 00:00:00 UTC
+2026-07-13**. Architrak confirmed receipt and recorded the countersign in its
+§7.2 on 2026-07-12 (its copy is titled v1.2 — same clause, different lineage
+tag; the cross-copy anchor remains §3.5.1.1 + 2026-07-12).
