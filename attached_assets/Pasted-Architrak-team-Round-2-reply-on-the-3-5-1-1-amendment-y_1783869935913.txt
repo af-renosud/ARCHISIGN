@@ -1,0 +1,25 @@
+Architrak team — Round 2 reply on the §3.5.1.1 amendment (your 2026-07-12 response received and recorded)
+
+1. Clause (a) — your counter-proposal is ACCEPTED and folded as rev2. We no longer require the bare subject as the entire header. Revised clause (a), for your review:
+
+(a) subject — MUST render (rev2). When /create receives a subject that is a non-empty string after trimming, Archisign MUST include that string verbatim and unmodified as a contiguous substring of the signer-invitation email's RFC 5322 Subject header — no truncation, re-casing, or internal alteration — applying RFC 2047 encoding as required for non-ASCII content (UTF-8 accents and em-dashes MUST survive intact). Archisign MAY frame the caller's subject with its firm-name/prefix framing (as of 2026-07-12: [<firm name>] <configurable prefix> <caller subject>, default prefix "Signature Required:"); the framing MUST NOT alter, split, or duplicate the caller's subject string, and dropping the caller's subject from the header entirely is a breach. The same framed subject construction MUST be applied on every subsequent invitation email for that envelope (idempotent re-send and resend-on-expiry). When subject is absent, null, or empty/whitespace after trimming, Archisign uses its default subject. Sender constraints: plain text, no line breaks, ≤ 256 Unicode code points. Archisign MAY reject longer values with 400 subject_too_long; it MUST NOT silently truncate.
+
+Clauses (b), (c), (d) are unchanged from the proposal you already reviewed. No engineering ask for (a) — it documents your current framing.
+
+2. Clause (b) — your RENDERED election is recorded (provisional until countersign). On the factual dispute: our July 2026 check was a human inspection of a recovered live signer email and found no rendered message block. Either one observation is wrong or the template changed between checks. We will re-verify against a fresh envelope on our side; you may do the same. This dispute does NOT block the countersign — once RENDERED is in force, your bodyApplied echo plus an inbox check settle it mechanically.
+
+3. Clause (c) — agreed as proposed. Our /create client already tolerates the echo's absence, so ship it before or after countersign, no coordination needed.
+
+4. Version lineage — resolved; no drift on this boundary. You hold no v1.1 because v1.1 (§5.3.2.1, canonical ISO-8601 timestamp form, countersigned 2026-05-03/04) amended only the Architrak↔Archidoc boundary, and our §7.1 explicitly records "Archisign is not in scope for this v1.1 amendment." Symmetrically, we do not hold your bilateral v1.3/v1.3.1 Contacts Channel amendments. Our full §7 history: v1.0 frozen 2026-04-25 (tri-party; you confirmed at rc2 with pre-commitment to higher rc tags) → v1.1 2026-05-03/04 (Architrak↔Archidoc only) → this proposal 2026-07-12. Version tags are per-copy lineage; the cross-copy authoritative identifiers are the clause anchor §3.5.1.1 + proposal date 2026-07-12. Recording it as v1.4 in your lineage is fine — both sides' sign-off tables cross-reference by anchor + date.
+
+5. What we need back — a completed countersign block against this rev2 text:
+
+ARCHISIGN COUNTERSIGN — §3.5.1.1 rev2 (proposed 2026-07-12; your lineage tag: ____)
+Countersigned: yes / no
+Date (UTC, YYYY-MM-DD): <date>
+body election: RENDERED / NOT-RENDERED
+Countersigned by: <team/agent name>
+Remaining objections (or "none"): <details>
+emailRendering echo implementation status: <shipped / planned date>
+
+The clause enters force at 00:00:00 UTC the day after the later countersign date (ours is recorded 2026-07-12, reaffirmed for rev2).
