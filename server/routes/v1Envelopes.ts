@@ -4,7 +4,15 @@ import { storage } from "../storage";
 import { db } from "../db";
 import { createApiEnvelopeRequestSchema } from "@shared/schema";
 import { uploadFile, deleteFile, downloadFile } from "../fileStorage";
-import { getPageCount } from "../services/PdfService";
+import {
+  getPageCount,
+  getPageSize,
+  resolveAnchorPlacements,
+  ANCHOR_DEFAULT_BOX,
+  ANCHOR_MAX_MATCHES_PER_ANCHOR,
+  ANCHOR_MAX_MATCHES_PER_ENVELOPE,
+  type AnchorMatch,
+} from "../services/PdfService";
 import { generateToken } from "../services/SecurityService";
 import { sendSigningInvitation, loadEmailSettings } from "../services/NotificationService";
 import { emitEvent } from "../services/EventDispatcher";
@@ -124,6 +132,7 @@ export function buildV1EnvelopesRouter(): Router {
     let savedPdfUrl: string | null = data.pdfUrl || null;
     let totalPages = 1;
     let mintedFromFetch = false;
+    let pdfBuf: Buffer | null = null;
 
     if (data.pdfFetchUrl) {
       try {
@@ -132,6 +141,7 @@ export function buildV1EnvelopesRouter(): Router {
         const fileName = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.pdf`;
         savedPdfUrl = await uploadFile(fileName, buf);
         mintedFromFetch = true;
+        pdfBuf = buf;
       } catch (err: any) {
         const status = err.httpStatus || (err.name === "TimeoutError" ? 400 : 503);
         const code = status === 413 ? "pdf_too_large" : status === 503 ? "vault_transient" : "pdf_fetch_failed";
@@ -151,11 +161,139 @@ export function buildV1EnvelopesRouter(): Router {
       const fileName = `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.pdf`;
       savedPdfUrl = await uploadFile(fileName, buf);
       mintedFromFetch = true;
+      pdfBuf = buf;
     }
 
     const signerList = (data.signers && data.signers.length > 0)
       ? data.signers
       : [{ email: data.signerEmail!, fullName: data.signerName || data.signerEmail! }];
+
+    // v1.5 anchor-based placement: resolve anchors against the PDF text layer
+    // BEFORE the transaction so a resolution failure can degrade gracefully
+    // (warning + appended-page fallback) without touching the DB.
+    type SignerInput = (typeof signerList)[number] & {
+      anchor?: string;
+      anchorOffset?: { x: number; y: number };
+      size?: { width: number; height: number };
+    };
+    const signerInputs = signerList as SignerInput[];
+    const anchoredInputs = signerInputs.filter(s => typeof s.anchor === "string" && s.anchor.length > 0);
+    const warnings: Array<{ code: string; signerEmail: string; anchor: string; message: string }> = [];
+    let anchorMatches: Map<string, AnchorMatch[]> | null = null;
+
+    if (anchoredInputs.length > 0) {
+      if (!pdfBuf) {
+        for (const s of anchoredInputs) {
+          warnings.push({
+            code: "anchor_source_unsupported",
+            signerEmail: s.email,
+            anchor: s.anchor!,
+            message: "Anchors require pdfBase64 or pdfFetchUrl; falling back to appended signature page",
+          });
+        }
+      } else {
+        try {
+          anchorMatches = await resolveAnchorPlacements(pdfBuf, anchoredInputs.map(s => s.anchor!));
+        } catch (err: any) {
+          for (const s of anchoredInputs) {
+            warnings.push({
+              code: "anchor_resolution_failed",
+              signerEmail: s.email,
+              anchor: s.anchor!,
+              message: `Text-layer extraction failed (${err?.message || err}); falling back to appended signature page`,
+            });
+          }
+        }
+      }
+    }
+
+    // Project each resolved anchor occurrence into a normalized annotation
+    // (same top-left-origin fractional convention PdfService stamps with).
+    type PendingAnnotation = {
+      signerIndex: number;
+      pageNumber: number;
+      xPos: number;
+      yPos: number;
+      width: number;
+      height: number;
+    };
+    const pendingAnnotations: PendingAnnotation[] = [];
+    let totalAnchorPlacements = 0;
+
+    if (anchorMatches) {
+      for (let i = 0; i < signerInputs.length; i++) {
+        const s = signerInputs[i];
+        if (!s.anchor) continue;
+        const matches = anchorMatches.get(s.anchor) || [];
+        if (matches.length === 0) {
+          warnings.push({
+            code: "anchor_not_found",
+            signerEmail: s.email,
+            anchor: s.anchor,
+            message: "Anchor string not found in PDF text layer; falling back to appended signature page",
+          });
+          continue;
+        }
+        if (matches.length >= ANCHOR_MAX_MATCHES_PER_ANCHOR) {
+          warnings.push({
+            code: "anchor_matches_truncated",
+            signerEmail: s.email,
+            anchor: s.anchor,
+            message: `Per-anchor cap of ${ANCHOR_MAX_MATCHES_PER_ANCHOR} occurrences reached; extra occurrences ignored`,
+          });
+        }
+        const w = s.size?.width ?? ANCHOR_DEFAULT_BOX.width;
+        const h = s.size?.height ?? ANCHOR_DEFAULT_BOX.height;
+        const dx = s.anchorOffset?.x ?? 0;
+        const dy = s.anchorOffset?.y ?? 0;
+        for (const m of matches) {
+          if (totalAnchorPlacements >= ANCHOR_MAX_MATCHES_PER_ENVELOPE) {
+            warnings.push({
+              code: "anchor_matches_truncated",
+              signerEmail: s.email,
+              anchor: s.anchor,
+              message: `Envelope-wide cap of ${ANCHOR_MAX_MATCHES_PER_ENVELOPE} anchored placements reached; extra occurrences ignored`,
+            });
+            break;
+          }
+          const bx = m.x + dx;
+          const by = m.y + dy;
+          pendingAnnotations.push({
+            signerIndex: i,
+            pageNumber: m.pageNumber,
+            xPos: bx / m.pageWidth,
+            yPos: 1 - (by + h) / m.pageHeight,
+            width: w / m.pageWidth,
+            height: h / m.pageHeight,
+          });
+          totalAnchorPlacements++;
+        }
+      }
+    }
+
+    const anchoredSignerIndexes = new Set(pendingAnnotations.map(p => p.signerIndex));
+    const useAnchoredPlacement = anchoredSignerIndexes.size > 0;
+
+    // Mixed envelopes: signers without a resolved anchor get a synthetic
+    // bottom-centred box on the last page so their output matches today's
+    // fixed-bottom behaviour even though the envelope runs in admin_placed mode.
+    if (useAnchoredPlacement && pdfBuf) {
+      const MM_TO_PT = 2.83465;
+      const { width: pw, height: ph } = await getPageSize(pdfBuf, totalPages);
+      const w = ANCHOR_DEFAULT_BOX.width;
+      const h = ANCHOR_DEFAULT_BOX.height;
+      for (let i = 0; i < signerInputs.length; i++) {
+        if (anchoredSignerIndexes.has(i)) continue;
+        pendingAnnotations.push({
+          signerIndex: i,
+          pageNumber: totalPages,
+          xPos: (pw - w) / 2 / pw,
+          yPos: 1 - (10 * MM_TO_PT + h) / ph,
+          width: w / pw,
+          height: h / ph,
+        });
+      }
+    }
 
     // v1.4 §3.5.1.1(a): empty/whitespace-after-trim subject falls back to the
     // default; otherwise the caller's string is used verbatim (framed by the
@@ -180,10 +318,12 @@ export function buildV1EnvelopesRouter(): Router {
           expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
           origin: req.apiKeyAuth!.tenant,
           message: senderMessage,
+          signaturePlacementMode: useAnchoredPlacement ? "admin_placed" : "fixed_bottom_centre",
         } as any, tx);
 
         const signers: Array<{ id: number; accessToken: string; email: string }> = [];
-        for (const s of signerList) {
+        for (let i = 0; i < signerInputs.length; i++) {
+          const s = signerInputs[i];
           const token = generateToken();
           const created = await storage.createSigner({
             envelopeId: env.id,
@@ -192,6 +332,21 @@ export function buildV1EnvelopesRouter(): Router {
             accessToken: token,
           }, tx);
           signers.push({ id: created.id, accessToken: token, email: s.email });
+
+          for (const p of pendingAnnotations.filter(pa => pa.signerIndex === i)) {
+            await storage.createAnnotation({
+              envelopeId: env.id,
+              signerId: created.id,
+              pageNumber: p.pageNumber,
+              xPos: p.xPos,
+              yPos: p.yPos,
+              width: p.width,
+              height: p.height,
+              type: "signature",
+              value: null,
+              placed: true,
+            }, tx);
+          }
         }
 
         await storage.createAuditEvent({
@@ -204,6 +359,8 @@ export function buildV1EnvelopesRouter(): Router {
             signerCount: signerList.length,
             pdfSource: data.pdfFetchUrl ? "pdfFetchUrl" : data.pdfBase64 ? "pdfBase64" : "pdfUrl",
             externalRef: data.externalRef || null,
+            anchoredPlacements: totalAnchorPlacements,
+            anchorWarnings: warnings.length > 0 ? warnings : undefined,
           }),
         }, tx);
 
@@ -239,6 +396,8 @@ export function buildV1EnvelopesRouter(): Router {
         subjectApplied: callerSubject.length > 0,
         bodyApplied: senderMessage !== null,
       },
+      // v1.5 additive: anchor resolution warnings (omitted when clean).
+      ...(warnings.length > 0 ? { warnings } : {}),
     });
   }));
 

@@ -806,7 +806,9 @@ export async function registerRoutes(
     }
 
     const allEnvelopeAnnotations = await storage.getAnnotationsByEnvelope(envelope.id);
-    const placedSignature = allEnvelopeAnnotations.find(
+    // Multi-occurrence anchors (v1.5) can create several placed signature
+    // boxes per signer — set the value on every one, not just the first.
+    const placedSignatures = allEnvelopeAnnotations.filter(
       a => a.placed && a.type === "signature" && a.signerId === signer.id
     );
     const placedDateFields = allEnvelopeAnnotations.filter(
@@ -829,8 +831,10 @@ export async function registerRoutes(
         await storage.updateAnnotation(dateField.id, { value: signDateStr });
       }
 
-      if (placedSignature) {
-        await storage.updateAnnotation(placedSignature.id, { value: signer.fullName });
+      if (placedSignatures.length > 0) {
+        for (const sig of placedSignatures) {
+          await storage.updateAnnotation(sig.id, { value: signer.fullName });
+        }
       } else {
         await storage.createAnnotation({
           envelopeId: envelope.id,

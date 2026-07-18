@@ -987,3 +987,77 @@ Both countersigns dated 2026-07-12; the clause is **in force from 00:00:00 UTC
 2026-07-13**. Architrak confirmed receipt and recorded the countersign in its
 §7.2 on 2026-07-12 (its copy is titled v1.2 — same clause, different lineage
 tag; the cross-copy anchor remains §3.5.1.1 + 2026-07-12).
+
+## §10 v1.5 amendment — Anchor-based signature placement on /create (proposed 2026-07-18)
+
+Bilateral Archidoc↔Archisign amendment, proposed by Archidoc 2026-07-18.
+Cross-copy authoritative identifiers: clause anchor **§3.5.1.2** + proposal date
+**2026-07-18**. Tagged **v1.5** in Archisign's lineage. Additive and
+backwards-compatible: all existing /create payloads behave unchanged.
+
+### §10.1 Clause §3.5.1.2 (rev1, verbatim)
+
+**(a) Request shape.** Each entry of `signers[]` on `POST /api/v1/envelopes/create`
+MAY additionally carry:
+
+```json
+{
+  "email": "…", "fullName": "…",
+  "anchor": "{{SIGN_CLIENT}}",
+  "anchorOffset": { "x": 0, "y": 0 },
+  "size": { "width": 260, "height": 96 }
+}
+```
+
+- `anchor` — 1–64 characters, matched as an exact, case-sensitive substring of
+  the PDF text layer (invisible/white/zero-opacity text is matched normally).
+- `anchorOffset` — optional, PDF points, each component in [-10000, 10000].
+- `size` — optional, PDF points, each dimension in (0, 2000]. Default
+  **260 × 96 pt** (the same box the appended-page/fixed-bottom stamp uses).
+
+**(b) Coordinate conventions.** Units are PDF points (1/72 inch). Origin is the
+**bottom-left corner of the page, y increases upward** (native PDF geometry).
+The signature box's bottom-left corner is placed at
+`(anchor.x + anchorOffset.x, anchor.y + anchorOffset.y)` where `anchor.x/y` is
+the start-of-match position on the matched text run's baseline. Boxes are
+clamped to a 10 pt page margin.
+
+**(c) Matching semantics.** **All occurrences** of an anchor are honoured (one
+signature box per occurrence — supports per-page signing), capped at
+**20 occurrences per anchor** and **100 anchored placements per envelope**;
+occurrences beyond a cap are ignored and reported via clause (d) warnings.
+Anchors split across multiple text runs on the same baseline are still matched.
+
+**(d) Fallback + warnings.** Anchor resolution never fails the envelope. When a
+signer's anchor cannot be honoured, that signer falls back to current behaviour
+and the 201 response gains an additive `warnings` array (omitted when clean):
+
+```json
+"warnings": [
+  { "code": "anchor_not_found", "signerEmail": "…", "anchor": "{{…}}", "message": "…" }
+]
+```
+
+Codes: `anchor_not_found` (string absent from the text layer),
+`anchor_source_unsupported` (envelope created from `pdfUrl` — anchors require
+`pdfBase64` or `pdfFetchUrl`), `anchor_resolution_failed` (text-layer
+extraction error), `anchor_matches_truncated` (a clause (c) cap was hit).
+Receivers MUST tolerate the field's absence and unknown codes.
+
+**(e) Output.** Anchored signatures are stamped at the anchored positions in
+the final signed PDF; the existing audit/certificate evidence pages are
+appended unchanged. In a mixed envelope (some signers anchored, some not),
+non-anchored signers receive the standard bottom-centred box on the last
+document page, matching pre-v1.5 output.
+
+**(f) No other changes.** Webhook events, HMAC signing (v1+v2), `externalRef`,
+rate-limit families, and all other /create semantics are unchanged. Scanned/
+image-only PDFs have no text layer: anchors will not match and clause (d)
+applies (no OCR is performed).
+
+### §10.2 Countersign table (§7.2-style)
+
+| Party | Countersigned | Date (UTC) | Notes |
+|---|---|---|---|
+| Archidoc | pending | — | proposer (message of 2026-07-18); to countersign on acceptance of this shape |
+| Archisign | yes | 2026-07-18 | implemented + live in this copy as of 2026-07-18; lineage tag v1.5 |

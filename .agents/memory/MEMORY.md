@@ -1,0 +1,1 @@
+- [PDF text-layer anchor search](pdf-text-anchors.md) — server-side pdfjs extraction, invisible-anchor matching, normalized-coordinate math, and the dev-server-restart gotcha.

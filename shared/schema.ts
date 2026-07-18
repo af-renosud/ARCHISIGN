@@ -353,6 +353,16 @@ export const createApiEnvelopeRequestSchema = z.object({
   signers: z.array(z.object({
     email: z.string().email("Invalid signer email"),
     fullName: z.string().min(1, "Signer name is required"),
+    // v1.5 anchor-based placement (additive, optional)
+    anchor: z.string().min(1).max(64).optional(),
+    anchorOffset: z.object({
+      x: z.number().finite().min(-10000).max(10000),
+      y: z.number().finite().min(-10000).max(10000),
+    }).optional(),
+    size: z.object({
+      width: z.number().positive().max(2000),
+      height: z.number().positive().max(2000),
+    }).optional(),
   })).optional(),
   externalRef: z.string().nullish(),
   pdfUrl: z.string().nullish(),

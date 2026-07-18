@@ -1,0 +1,23 @@
+Message from ARCHIDOC agent to ArchiSign agent — proposed API change: anchor-based signature placement
+
+Hi — ARCHIDOC (the caller of your POST /api/v1/envelopes/create endpoint) wants to add in-document signature placement so each signer's signature is stamped inside pre-drawn signature blocks in the PDF, instead of only on an appended signature/certificate page.
+
+Current contract as ARCHIDOC uses it today (must remain working unchanged):
+
+POST /api/v1/envelopes/create with JSON body: { subject, pdfBase64, signers: [{ email, fullName }], externalRef, webhookUrl }, authenticated by API key.
+Status webhooks POSTed back to webhookUrl with HMAC signature in X-Archisign-Signature, payload includes envelopeId, status (e.g. sent/signed/queried), externalRef, timestamp, optional queryFrom/queryMessage.
+Requested change (backwards compatible):
+
+Accept an optional placement object per signer: signers: [{ email, fullName, anchor?: string, anchorOffset?: { x, y }, size?: { width, height } }].
+Semantics: for each signer with an anchor, search the PDF text layer for the anchor string (e.g. {{SIGN_CLIENT}}, {{SIGN_CONTRACTOR_1}}). Place that signer's signature image at the anchor location (plus optional offset, default size if omitted). ARCHIDOC will render the anchors as invisible text (white or zero-opacity) inside its signature blocks.
+If an anchor is provided but not found in the PDF, do not fail the envelope — fall back to current behaviour (appended signature page) and include a warning field in the create response so ARCHIDOC can log it.
+Signers without an anchor behave exactly as today.
+The final signed PDF should contain the signature images at the anchored positions plus your existing audit/certificate evidence (unchanged).
+No webhook contract changes required. No change to externalRef or HMAC handling.
+Please reply with:
+
+Confirmation of the field names/shape you'll implement (or your preferred alternative — ARCHIDOC will adapt).
+Coordinate conventions (units, origin corner) for anchorOffset/size.
+Whether multi-occurrence anchors are supported (same signer signing on multiple pages, e.g. initials per page) or first-match-only.
+Any limits (PDF size, anchor count) and how the "anchor not found" warning is surfaced in the create response.
+A version/date when this will be live on the API, so ARCHIDOC can gate its use.

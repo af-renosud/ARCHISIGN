@@ -87,7 +87,134 @@ export async function getPageCount(pdfBuffer: Buffer): Promise<number> {
   return pdfDoc.getPageCount();
 }
 
+/** Size (PDF points) of a single page; pageNumber is 1-based. */
+export async function getPageSize(
+  pdfBuffer: Buffer,
+  pageNumber: number,
+): Promise<{ width: number; height: number }> {
+  const { PDFDocument } = await import("pdf-lib");
+  const pdfDoc = await PDFDocument.load(pdfBuffer);
+  const idx = Math.min(Math.max(pageNumber - 1, 0), pdfDoc.getPageCount() - 1);
+  return pdfDoc.getPage(idx).getSize();
+}
+
 export type SignaturePlacementMode = "fixed_bottom_centre" | "admin_placed";
+
+// ---------------------------------------------------------------------------
+// v1.5 anchor-based placement
+// ---------------------------------------------------------------------------
+
+/** Default anchored signature box, PDF points (matches the fixed-bottom box). */
+export const ANCHOR_DEFAULT_BOX = { width: 260, height: 96 };
+/** Hard cap on occurrences honoured per anchor string. */
+export const ANCHOR_MAX_MATCHES_PER_ANCHOR = 20;
+/** Hard cap on total anchored placements per envelope. */
+export const ANCHOR_MAX_MATCHES_PER_ENVELOPE = 100;
+
+export interface AnchorMatch {
+  /** 1-based page number. */
+  pageNumber: number;
+  /** X of the match start, PDF points, origin bottom-left of the page. */
+  x: number;
+  /** Baseline Y of the matched text run, PDF points, origin bottom-left. */
+  y: number;
+  pageWidth: number;
+  pageHeight: number;
+}
+
+/**
+ * Search the PDF text layer for each anchor string and return every
+ * occurrence (up to ANCHOR_MAX_MATCHES_PER_ANCHOR each), in page order.
+ *
+ * Matching is done per text line: items sharing a baseline are concatenated
+ * (in x order) so anchors split across multiple text runs are still found.
+ * The returned x is interpolated proportionally inside the run containing
+ * the first character of the match.
+ */
+export async function resolveAnchorPlacements(
+  pdfBuffer: Buffer,
+  anchors: string[],
+): Promise<Map<string, AnchorMatch[]>> {
+  const results = new Map<string, AnchorMatch[]>();
+  const wanted = Array.from(new Set(anchors.filter(a => a && a.length > 0)));
+  for (const a of wanted) results.set(a, []);
+  if (wanted.length === 0) return results;
+
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const doc = await pdfjs.getDocument({
+    data: new Uint8Array(pdfBuffer),
+    isEvalSupported: false,
+    useSystemFonts: true,
+  }).promise;
+
+  try {
+    for (let pageNo = 1; pageNo <= doc.numPages; pageNo++) {
+      const page = await doc.getPage(pageNo);
+      const view = page.view; // [x0, y0, x1, y1] in PDF points
+      const pageWidth = view[2] - view[0];
+      const pageHeight = view[3] - view[1];
+      const content = await page.getTextContent();
+
+      type Run = { str: string; x: number; y: number; width: number };
+      const runs: Run[] = [];
+      for (const item of content.items as any[]) {
+        if (typeof item?.str !== "string" || item.str.length === 0) continue;
+        runs.push({
+          str: item.str,
+          x: item.transform[4],
+          y: item.transform[5],
+          width: typeof item.width === "number" ? item.width : 0,
+        });
+      }
+
+      // Group runs into lines by (rounded) baseline y, then order by x.
+      const lines = new Map<number, Run[]>();
+      for (const r of runs) {
+        const key = Math.round(r.y * 2) / 2;
+        const arr = lines.get(key);
+        if (arr) arr.push(r); else lines.set(key, [r]);
+      }
+
+      for (const lineRuns of Array.from(lines.values())) {
+        lineRuns.sort((a, b) => a.x - b.x);
+        let lineText = "";
+        const charToRun: number[] = [];
+        const charOffsetInRun: number[] = [];
+        for (let ri = 0; ri < lineRuns.length; ri++) {
+          for (let ci = 0; ci < lineRuns[ri].str.length; ci++) {
+            charToRun.push(ri);
+            charOffsetInRun.push(ci);
+          }
+          lineText += lineRuns[ri].str;
+        }
+
+        for (const anchor of wanted) {
+          const bucket = results.get(anchor)!;
+          let from = 0;
+          while (bucket.length < ANCHOR_MAX_MATCHES_PER_ANCHOR) {
+            const idx = lineText.indexOf(anchor, from);
+            if (idx === -1) break;
+            from = idx + anchor.length;
+            const run = lineRuns[charToRun[idx]];
+            const frac = run.str.length > 0 ? charOffsetInRun[idx] / run.str.length : 0;
+            bucket.push({
+              pageNumber: pageNo,
+              x: run.x + frac * run.width - view[0],
+              y: run.y - view[1],
+              pageWidth,
+              pageHeight,
+            });
+          }
+        }
+      }
+      page.cleanup();
+    }
+  } finally {
+    await doc.destroy();
+  }
+
+  return results;
+}
 
 function formatTs(d: Date | string | null | undefined): string {
   if (!d) return "—";
