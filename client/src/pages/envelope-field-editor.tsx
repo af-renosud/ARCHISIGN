@@ -338,6 +338,8 @@ export default function EnvelopeFieldEditor() {
 
   const [autoInitialIds, setAutoInitialIds] = useState<number[]>([]);
 
+  const pdfIsLocal = !!envelope?.originalPdfUrl?.startsWith("/uploads/");
+
   const autoInitialsMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/envelopes/${id}/annotations/auto-initials`, {});
@@ -368,7 +370,17 @@ export default function EnvelopeFieldEditor() {
       });
     },
     onError: (err: Error) => {
-      toast({ title: "Auto-place failed", description: err.message, variant: "destructive" });
+      let description = err.message;
+      const jsonStart = err.message.indexOf("{");
+      if (jsonStart !== -1) {
+        try {
+          const body = JSON.parse(err.message.slice(jsonStart));
+          if (body.message) description = body.message;
+        } catch {
+          // keep raw message
+        }
+      }
+      toast({ title: "Auto-place failed", description, variant: "destructive" });
     },
   });
 
@@ -1007,7 +1019,11 @@ export default function EnvelopeFieldEditor() {
               <Checkbox
                 id="auto-initials"
                 checked={autoInitialIds.length > 0}
-                disabled={autoInitialsMutation.isPending || removeAutoInitialsMutation.isPending}
+                disabled={
+                  !pdfIsLocal ||
+                  autoInitialsMutation.isPending ||
+                  removeAutoInitialsMutation.isPending
+                }
                 onCheckedChange={(checked) => {
                   if (checked) {
                     autoInitialsMutation.mutate();
@@ -1018,13 +1034,27 @@ export default function EnvelopeFieldEditor() {
                 data-testid="checkbox-auto-initials"
               />
               <div className="min-w-0">
-                <label htmlFor="auto-initials" className="text-xs font-medium cursor-pointer block">
+                <label
+                  htmlFor="auto-initials"
+                  className={`text-xs font-medium block ${pdfIsLocal ? "cursor-pointer" : "cursor-not-allowed text-muted-foreground"}`}
+                >
                   Initials in every page footer
                 </label>
-                <p className="text-[11px] text-muted-foreground/80 mt-0.5 leading-snug">
-                  Adds one initial box per signer at the bottom of each page. Boxes stay
-                  editable — drag or delete any of them afterwards.
-                </p>
+                {pdfIsLocal ? (
+                  <p className="text-[11px] text-muted-foreground/80 mt-0.5 leading-snug">
+                    Adds one initial box per signer at the bottom of each page. Boxes stay
+                    editable — drag or delete any of them afterwards.
+                  </p>
+                ) : (
+                  <p
+                    className="text-[11px] text-muted-foreground/80 mt-0.5 leading-snug"
+                    data-testid="text-auto-initials-unavailable"
+                  >
+                    Unavailable for this envelope: its PDF is hosted externally and not stored
+                    in Archisign, so footer positions cannot be computed. Place initial boxes
+                    manually instead.
+                  </p>
+                )}
               </div>
             </div>
           </div>

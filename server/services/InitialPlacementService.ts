@@ -17,11 +17,30 @@ export async function autoPlaceFooterInitials(
   envelope: Envelope & { signers: Signer[] },
 ): Promise<{ created: Annotation[]; skipped: number }> {
   if (!envelope.originalPdfUrl) {
-    throw Object.assign(new Error("Envelope has no PDF attached"), { status: 400 });
+    throw Object.assign(new Error("Envelope has no PDF attached"), {
+      status: 400,
+      code: "pdf_missing",
+    });
+  }
+  if (!envelope.originalPdfUrl.startsWith("/uploads/")) {
+    // Envelope was created via the v1 API with an external pdfUrl only; the
+    // original bytes are not stored in Object Storage, so footer geometry
+    // cannot be computed server-side.
+    throw Object.assign(
+      new Error(
+        "This envelope's PDF is hosted externally and is not stored in Archisign, so footer initials cannot be placed automatically. Place initial boxes manually instead.",
+      ),
+      { status: 422, code: "pdf_not_local" },
+    );
   }
   const downloaded = await downloadFile(envelope.originalPdfUrl);
   if (!downloaded) {
-    throw Object.assign(new Error("Original PDF could not be loaded"), { status: 404 });
+    throw Object.assign(
+      new Error(
+        "The original PDF could not be loaded from storage, so footer initials cannot be placed automatically.",
+      ),
+      { status: 404, code: "pdf_not_retrievable" },
+    );
   }
 
   const pageSizes = await getAllPageSizes(Buffer.from(downloaded.data));
