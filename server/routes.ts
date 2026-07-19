@@ -21,6 +21,7 @@ import { buildV1ContactsRouter } from "./routes/v1Contacts";
 import { buildContactsRouter } from "./routes/contacts";
 import { buildResendHandler } from "./routes/resend";
 import { ContactService } from "./services/ContactService";
+import { autoPlaceFooterInitials } from "./services/InitialPlacementService";
 import { emitEvent, uuidv7, type IdentityVerification } from "./services/EventDispatcher";
 
 const upload = multer({
@@ -346,6 +347,22 @@ export async function registerRoutes(
       width: width ?? null, height: height ?? null, type, value: null, placed: true,
     });
     res.json(annotation);
+  }));
+
+  app.post("/api/envelopes/:id/annotations/auto-initials", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    if (envelope.status !== "draft") return res.status(400).json({ message: "Can only place fields on draft envelopes" });
+    const { created, skipped } = await autoPlaceFooterInitials(envelope);
+    await storage.createAuditEvent({
+      envelopeId: id,
+      eventType: "Footer initials auto-placed",
+      actorEmail: null,
+      ipAddress: req.ip || null,
+      metadata: JSON.stringify({ created: created.length, skipped }),
+    });
+    res.json({ created, skipped });
   }));
 
   app.put("/api/envelopes/:id/annotations/:annotationId", validateId, asyncHandler(async (req, res) => {

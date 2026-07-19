@@ -1061,3 +1061,50 @@ applies (no OCR is performed).
 |---|---|---|---|
 | Archidoc | pending | — | proposer (message of 2026-07-18); to countersign on acceptance of this shape |
 | Archisign | yes | 2026-07-18 | implemented + live in this copy as of 2026-07-18; lineage tag v1.5 |
+
+## §11 v1.6 amendment — Auto-placed footer initials on /create (proposed 2026-07-19)
+
+Additive Archisign amendment, tagged **v1.6** in Archisign's lineage. Clause
+anchor **§3.5.1.3**. Backwards-compatible: all existing /create payloads
+behave unchanged.
+
+### §11.1 Clause §3.5.1.3 (rev1, verbatim)
+
+**(a) Request shape.** `POST /api/v1/envelopes/create` MAY additionally carry
+a top-level boolean:
+
+```json
+{ "autoPlaceInitials": true }
+```
+
+Default `false`/absent — no behaviour change.
+
+**(b) Semantics.** When `true` and the envelope is created from `pdfBase64` or
+`pdfFetchUrl`, Archisign generates **one initial box per signer in the footer
+of every page**. Boxes are laid side-by-side from the bottom-left corner
+(60 × 28 pt boxes, 12 pt page margin, 8 pt gap), wrapping upward when a row
+exceeds the page width. On the **last page** the row is lifted above the fixed
+bottom-centre signature zone so the two never overlap. Signers complete these
+boxes during the guided signing flow; completed initials are stamped into the
+final signed PDF at the same coordinates.
+
+**(c) Fallback + warnings.** The flag never fails the envelope. When the
+envelope is created from `pdfUrl` (no PDF bytes available to Archisign at
+create time), no initial boxes are placed and the 201 response's additive
+`warnings` array gains one entry per signer with code
+`initials_source_unsupported` (the `anchor` field is absent on these entries).
+Receivers MUST tolerate the field's absence and unknown codes.
+
+**(d) Interaction with §3.5.1.2 anchors.** Independent and combinable: anchors
+place *signature* boxes, this clause places *initial* boxes. Neither changes
+the other's semantics, caps, or warnings.
+
+**(e) No other changes.** Webhook events, HMAC signing (v1+v2), rate-limit
+families, and all other /create semantics are unchanged.
+
+### §11.2 Countersign table (§7.2-style)
+
+| Party | Countersigned | Date (UTC) | Notes |
+|---|---|---|---|
+| Archidoc | pending | — | additive; to countersign on adoption |
+| Archisign | yes | 2026-07-19 | implemented + live in this copy as of 2026-07-19; lineage tag v1.6 |

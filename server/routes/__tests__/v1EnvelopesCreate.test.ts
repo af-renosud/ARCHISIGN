@@ -15,11 +15,13 @@ let server: ReturnType<express.Application["listen"]>;
 const PATCHED_STORAGE_KEYS = [
   "createEnvelope",
   "createSigner",
+  "createAnnotation",
   "createAuditEvent",
 ] as const;
 
 const originals: Record<string, any> = {};
 let createdEnvelopes: any[] = [];
+let createdAnnotations: any[] = [];
 
 function installFakeStorage() {
   let envId = 0;
@@ -40,6 +42,10 @@ function installFakeStorage() {
     async createSigner(input: any) {
       signerId += 1;
       return { id: signerId, ...input };
+    },
+    async createAnnotation(input: any) {
+      createdAnnotations.push(input);
+      return { id: createdAnnotations.length, ...input };
     },
     async createAuditEvent(ev: any) { return ev; },
   };
@@ -84,6 +90,7 @@ after(async () => {
 
 beforeEach(() => {
   createdEnvelopes = [];
+  createdAnnotations = [];
 });
 
 async function create(body: any) {
@@ -188,4 +195,63 @@ test("v1.4 cap: 2001 astral code points -> rejected", async () => {
   const r = await create({ ...baseRequest, body: "\u{1F600}".repeat(2001) });
   assert.equal(r.status, 400);
   assert.equal(r.body.error, "body_too_long");
+});
+
+// --- v1.6 §3.5.1.3: autoPlaceInitials ---
+
+test("v1.6 initials: pdfUrl source -> per-signer initials_source_unsupported warning, no boxes", async () => {
+  const r = await create({
+    ...baseRequest,
+    signers: [
+      { email: "a@example.com", fullName: "A" },
+      { email: "b@example.com", fullName: "B" },
+    ],
+    signerEmail: undefined,
+    signerName: undefined,
+    autoPlaceInitials: true,
+  });
+  assert.equal(r.status, 201);
+  const warns = (r.body.warnings || []).filter((w: any) => w.code === "initials_source_unsupported");
+  assert.equal(warns.length, 2);
+  assert.deepEqual(warns.map((w: any) => w.signerEmail).sort(), ["a@example.com", "b@example.com"]);
+  assert.equal(createdAnnotations.length, 0);
+});
+
+test("v1.6 initials: flag absent -> no warnings, no annotations", async () => {
+  const r = await create({ ...baseRequest });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.warnings, undefined);
+  assert.equal(createdAnnotations.length, 0);
+});
+
+test("v1.6 initials: pdfBase64 source -> one initial box per signer per page", async () => {
+  const { PDFDocument } = await import("pdf-lib");
+  const doc = await PDFDocument.create();
+  doc.addPage([595.28, 841.89]);
+  doc.addPage([595.28, 841.89]);
+  doc.addPage([595.28, 841.89]);
+  const pdfBase64 = Buffer.from(await doc.save()).toString("base64");
+
+  const r = await create({
+    subject: "Initials test",
+    pdfBase64,
+    signers: [
+      { email: "a@example.com", fullName: "A" },
+      { email: "b@example.com", fullName: "B" },
+    ],
+    autoPlaceInitials: true,
+  });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.warnings, undefined);
+  const initials = createdAnnotations.filter((a) => a.type === "initial");
+  assert.equal(initials.length, 6);
+  for (const a of initials) {
+    assert.equal(a.placed, true);
+    assert.ok(a.pageNumber >= 1 && a.pageNumber <= 3);
+    assert.ok(a.xPos >= 0 && a.xPos <= 1 && a.yPos >= 0 && a.yPos <= 1);
+  }
+  // Last-page boxes sit higher (smaller bottom-left distance from top => yPos smaller).
+  const lastPage = initials.filter((a) => a.pageNumber === 3);
+  const firstPage = initials.filter((a) => a.pageNumber === 1);
+  assert.ok(lastPage[0].yPos < firstPage[0].yPos);
 });

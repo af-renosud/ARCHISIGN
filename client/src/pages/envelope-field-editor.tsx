@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -334,6 +335,62 @@ export default function EnvelopeFieldEditor() {
       }
     }
   };
+
+  const [autoInitialIds, setAutoInitialIds] = useState<number[]>([]);
+
+  const autoInitialsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/envelopes/${id}/annotations/auto-initials`, {});
+      return (await res.json()) as { created: Annotation[]; skipped: number };
+    },
+    onSuccess: ({ created, skipped }) => {
+      if (created.length > 0) {
+        pushHistory(fields);
+        setFields((prev) => [
+          ...prev,
+          ...created.map((a) => ({
+            id: a.id,
+            type: a.type as FieldType,
+            signerId: a.signerId,
+            pageNumber: a.pageNumber,
+            xPos: a.xPos,
+            yPos: a.yPos,
+            width: a.width ?? FIELD_DEFAULTS.initial.width,
+            height: a.height ?? FIELD_DEFAULTS.initial.height,
+          })),
+        ]);
+      }
+      setAutoInitialIds(created.map((a) => a.id));
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id, "annotations"] });
+      toast({
+        title: "Initials placed",
+        description: `${created.length} initial box${created.length === 1 ? "" : "es"} added to page footers${skipped > 0 ? ` (${skipped} page${skipped === 1 ? "" : "s"} already had one)` : ""}. Drag any box to adjust it.`,
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Auto-place failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const removeAutoInitialsMutation = useMutation({
+    mutationFn: async (ids: number[]) => {
+      for (const annId of ids) {
+        await apiRequest("DELETE", `/api/envelopes/${id}/annotations/${annId}`);
+      }
+      return ids;
+    },
+    onSuccess: (ids) => {
+      pushHistory(fields);
+      const removed = new Set(ids);
+      setFields((prev) => prev.filter((f) => !f.id || !removed.has(f.id)));
+      setAutoInitialIds([]);
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id, "annotations"] });
+      toast({ title: "Initials removed", description: "Auto-placed footer initials were removed." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Remove failed", description: err.message, variant: "destructive" });
+    },
+  });
 
   const saveMutation = useMutation({
     mutationFn: persistFields,
@@ -942,6 +999,33 @@ export default function EnvelopeFieldEditor() {
                   </Button>
                 );
               })}
+            </div>
+          </div>
+
+          <div className="border-t pt-4">
+            <div className="flex items-start gap-2">
+              <Checkbox
+                id="auto-initials"
+                checked={autoInitialIds.length > 0}
+                disabled={autoInitialsMutation.isPending || removeAutoInitialsMutation.isPending}
+                onCheckedChange={(checked) => {
+                  if (checked) {
+                    autoInitialsMutation.mutate();
+                  } else if (autoInitialIds.length > 0) {
+                    removeAutoInitialsMutation.mutate(autoInitialIds);
+                  }
+                }}
+                data-testid="checkbox-auto-initials"
+              />
+              <div className="min-w-0">
+                <label htmlFor="auto-initials" className="text-xs font-medium cursor-pointer block">
+                  Initials in every page footer
+                </label>
+                <p className="text-[11px] text-muted-foreground/80 mt-0.5 leading-snug">
+                  Adds one initial box per signer at the bottom of each page. Boxes stay
+                  editable — drag or delete any of them afterwards.
+                </p>
+              </div>
             </div>
           </div>
 

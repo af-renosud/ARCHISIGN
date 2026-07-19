@@ -7,6 +7,8 @@ import { uploadFile, deleteFile, downloadFile } from "../fileStorage";
 import {
   getPageCount,
   getPageSize,
+  getAllPageSizes,
+  computeFooterInitialPlacements,
   resolveAnchorPlacements,
   ANCHOR_DEFAULT_BOX,
   ANCHOR_MAX_MATCHES_PER_ANCHOR,
@@ -178,7 +180,7 @@ export function buildV1EnvelopesRouter(): Router {
     };
     const signerInputs = signerList as SignerInput[];
     const anchoredInputs = signerInputs.filter(s => typeof s.anchor === "string" && s.anchor.length > 0);
-    const warnings: Array<{ code: string; signerEmail: string; anchor: string; message: string }> = [];
+    const warnings: Array<{ code: string; signerEmail: string; anchor?: string; message: string }> = [];
     let anchorMatches: Map<string, AnchorMatch[]> | null = null;
 
     if (anchoredInputs.length > 0) {
@@ -295,6 +297,33 @@ export function buildV1EnvelopesRouter(): Router {
       }
     }
 
+    // v1.6 additive: auto-place one footer initial box per signer on every
+    // page (same geometry the admin-UI checkbox uses). Requires a PDF buffer;
+    // pdfUrl-only envelopes degrade with a warning and no initial boxes.
+    type PendingInitial = {
+      signerIndex: number;
+      pageNumber: number;
+      xPos: number;
+      yPos: number;
+      width: number;
+      height: number;
+    };
+    let pendingInitials: PendingInitial[] = [];
+    if (data.autoPlaceInitials) {
+      if (!pdfBuf) {
+        for (const s of signerInputs) {
+          warnings.push({
+            code: "initials_source_unsupported",
+            signerEmail: s.email,
+            message: "autoPlaceInitials requires pdfBase64 or pdfFetchUrl; no initial boxes were placed",
+          });
+        }
+      } else {
+        const pageSizes = await getAllPageSizes(pdfBuf);
+        pendingInitials = computeFooterInitialPlacements(pageSizes, signerInputs.length);
+      }
+    }
+
     // v1.4 §3.5.1.1(a): empty/whitespace-after-trim subject falls back to the
     // default; otherwise the caller's string is used verbatim (framed by the
     // firm-name prefix at send time — the contiguous-substring guarantee).
@@ -347,6 +376,21 @@ export function buildV1EnvelopesRouter(): Router {
               placed: true,
             }, tx);
           }
+
+          for (const p of pendingInitials.filter(pi => pi.signerIndex === i)) {
+            await storage.createAnnotation({
+              envelopeId: env.id,
+              signerId: created.id,
+              pageNumber: p.pageNumber,
+              xPos: p.xPos,
+              yPos: p.yPos,
+              width: p.width,
+              height: p.height,
+              type: "initial",
+              value: null,
+              placed: true,
+            }, tx);
+          }
         }
 
         await storage.createAuditEvent({
@@ -360,6 +404,7 @@ export function buildV1EnvelopesRouter(): Router {
             pdfSource: data.pdfFetchUrl ? "pdfFetchUrl" : data.pdfBase64 ? "pdfBase64" : "pdfUrl",
             externalRef: data.externalRef || null,
             anchoredPlacements: totalAnchorPlacements,
+            autoPlacedInitials: pendingInitials.length > 0 ? pendingInitials.length : undefined,
             anchorWarnings: warnings.length > 0 ? warnings : undefined,
           }),
         }, tx);

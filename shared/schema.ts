@@ -374,6 +374,8 @@ export const createApiEnvelopeRequestSchema = z.object({
   identityVerification: z.object({
     method: z.literal("otp_email"),
   }).nullish(),
+  // v1.6 additive: auto-generate one footer initial box per signer on every page.
+  autoPlaceInitials: z.boolean().optional(),
   fields: z.array(z.object({
     signerEmail: z.string().email().optional(),
     signerIndex: z.number().int().nonnegative().optional(),

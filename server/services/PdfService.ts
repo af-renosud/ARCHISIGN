@@ -100,6 +100,88 @@ export async function getPageSize(
 
 export type SignaturePlacementMode = "fixed_bottom_centre" | "admin_placed";
 
+/** Size (PDF points) of every page, in page order. */
+export async function getAllPageSizes(
+  pdfBuffer: Buffer,
+): Promise<Array<{ width: number; height: number }>> {
+  const { PDFDocument } = await import("pdf-lib");
+  const pdfDoc = await PDFDocument.load(pdfBuffer);
+  return pdfDoc.getPages().map((p) => p.getSize());
+}
+
+// ---------------------------------------------------------------------------
+// Footer auto-placed initials
+// ---------------------------------------------------------------------------
+
+const MM_TO_PT = 2.83465;
+
+/** Default footer initial box, PDF points. */
+export const FOOTER_INITIAL_BOX = { width: 60, height: 28 };
+/** Margin from the left/bottom page edges, PDF points. */
+export const FOOTER_INITIAL_MARGIN = 12;
+/** Horizontal/vertical gap between adjacent boxes, PDF points. */
+export const FOOTER_INITIAL_GAP = 8;
+/**
+ * On the last page the fixed bottom-centre signature zone (10 mm padding +
+ * 96 pt box, per stampSignedPdf) must stay clear, so the initials row is
+ * lifted above it.
+ */
+export const FOOTER_INITIAL_LAST_PAGE_BASE_Y =
+  10 * MM_TO_PT + 96 + FOOTER_INITIAL_GAP;
+
+export interface FooterInitialPlacement {
+  /** 0-based index into the envelope's signer list. */
+  signerIndex: number;
+  /** 1-based page number. */
+  pageNumber: number;
+  /** Normalized top-left-origin fractions — the annotation convention. */
+  xPos: number;
+  yPos: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Pure geometry: one initial box per signer in the footer of every page,
+ * side-by-side from the bottom-left corner, wrapping upward if the row
+ * exceeds the page width. On the last page the row sits above the fixed
+ * bottom-centre signature zone so the two never overlap.
+ */
+export function computeFooterInitialPlacements(
+  pageSizes: Array<{ width: number; height: number }>,
+  signerCount: number,
+): FooterInitialPlacement[] {
+  const placements: FooterInitialPlacement[] = [];
+  if (signerCount <= 0 || pageSizes.length === 0) return placements;
+  const { width: w, height: h } = FOOTER_INITIAL_BOX;
+
+  for (let p = 0; p < pageSizes.length; p++) {
+    const { width: pw, height: ph } = pageSizes[p];
+    const isLastPage = p === pageSizes.length - 1;
+    const baseY = isLastPage ? FOOTER_INITIAL_LAST_PAGE_BASE_Y : FOOTER_INITIAL_MARGIN;
+
+    let x = FOOTER_INITIAL_MARGIN;
+    let y = baseY;
+    for (let s = 0; s < signerCount; s++) {
+      if (x + w > pw - FOOTER_INITIAL_MARGIN && x > FOOTER_INITIAL_MARGIN) {
+        // Wrap to a new row above the current one.
+        x = FOOTER_INITIAL_MARGIN;
+        y += h + FOOTER_INITIAL_GAP;
+      }
+      placements.push({
+        signerIndex: s,
+        pageNumber: p + 1,
+        xPos: x / pw,
+        yPos: Math.max(0, 1 - (y + h) / ph),
+        width: w / pw,
+        height: h / ph,
+      });
+      x += w + FOOTER_INITIAL_GAP;
+    }
+  }
+  return placements;
+}
+
 // ---------------------------------------------------------------------------
 // v1.5 anchor-based placement
 // ---------------------------------------------------------------------------
