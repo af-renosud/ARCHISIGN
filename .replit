@@ -47,4 +47,4 @@ integrations = ["javascript_database:1.0.0", "google-mail:1.0.0", "javascript_lo
 
 [postMerge]
 path = "scripts/post-merge.sh"
-timeoutMs = 20000
+timeoutMs = 120000
