@@ -40,6 +40,7 @@ import {
   AlertTriangle,
   Sparkles,
   Unlock,
+  SendHorizonal,
 } from "lucide-react";
 import type { Envelope, Signer, Annotation } from "@shared/schema";
 
@@ -137,6 +138,7 @@ export default function EnvelopeFieldEditor() {
   const [savePromptOpen, setSavePromptOpen] = useState<{
     missingSignature: string[];
     pagesMissingInitial: { signer: string; pages: number[] }[];
+    intent: "save" | "send";
   } | null>(null);
   const [expandedSigners, setExpandedSigners] = useState<Set<number>>(new Set());
   const [pageAspects, setPageAspects] = useState<Map<number, number>>(new Map());
@@ -413,6 +415,51 @@ export default function EnvelopeFieldEditor() {
     },
     onError: (err: Error) => {
       toast({ title: "Save failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // Save-then-send: persists fields exactly like Save Fields, then sends the
+  // envelope. If sending fails, fields remain saved and the envelope stays draft.
+  const saveAndSendMutation = useMutation({
+    mutationFn: async () => {
+      await persistFields();
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id, "annotations"] });
+      try {
+        await apiRequest("POST", `/api/envelopes/${id}/send`);
+      } catch (err: any) {
+        throw new Error(`SEND_FAILED:${err?.message ?? "Failed to send envelope"}`);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes"] });
+      toast({
+        title: "Envelope sent",
+        description: "Fields saved and signing invitations emailed to all signers.",
+      });
+      navigate(`/envelopes/${id}`);
+    },
+    onError: (err: Error) => {
+      if (err.message.startsWith("SEND_FAILED:")) {
+        setLoaded(false);
+        let reason = err.message.slice("SEND_FAILED:".length);
+        const jsonStart = reason.indexOf("{");
+        if (jsonStart !== -1) {
+          try {
+            const body = JSON.parse(reason.slice(jsonStart));
+            if (body.message) reason = body.message;
+          } catch {
+            // keep raw message
+          }
+        }
+        toast({
+          title: "Send failed",
+          description: `Fields were saved, but sending failed: ${reason} The envelope remains a draft.`,
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "Save failed", description: err.message, variant: "destructive" });
+      }
     },
   });
 
@@ -785,10 +832,12 @@ export default function EnvelopeFieldEditor() {
     if (page !== currentPage) scrollToPage(page);
   };
 
-  const handleSaveClick = () => {
+  const handleSaveClick = (intent: "save" | "send" = "save") => {
     setRedoStack([]);
+    const run = () =>
+      intent === "send" ? saveAndSendMutation.mutate() : saveMutation.mutate();
     if (!envelope) {
-      saveMutation.mutate();
+      run();
       return;
     }
     const missingSignature =
@@ -809,10 +858,10 @@ export default function EnvelopeFieldEditor() {
       if (pages.length > 0) pagesMissingInitial.push({ signer: s.fullName, pages });
     }
     if (missingSignature.length === 0 && pagesMissingInitial.length === 0) {
-      saveMutation.mutate();
+      run();
       return;
     }
-    setSavePromptOpen({ missingSignature, pagesMissingInitial });
+    setSavePromptOpen({ missingSignature, pagesMissingInitial, intent });
   };
 
   const toggleSignerExpanded = (signerId: number) => {
@@ -871,13 +920,24 @@ export default function EnvelopeFieldEditor() {
             {editorMode === "guided" ? "Guided" : "Free"} mode
           </Badge>
           <Button
-            onClick={handleSaveClick}
-            disabled={saveMutation.isPending}
+            variant="outline"
+            onClick={() => handleSaveClick("save")}
+            disabled={saveMutation.isPending || saveAndSendMutation.isPending}
             data-testid="button-save-fields"
           >
             <Save className="h-4 w-4 mr-2" />
             {saveMutation.isPending ? "Saving..." : "Save Fields"}
           </Button>
+          {envelope.status === "draft" && (
+            <Button
+              onClick={() => handleSaveClick("send")}
+              disabled={saveMutation.isPending || saveAndSendMutation.isPending}
+              data-testid="button-send-envelope"
+            >
+              <SendHorizonal className="h-4 w-4 mr-2" />
+              {saveAndSendMutation.isPending ? "Sending..." : "Send"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1568,12 +1628,14 @@ export default function EnvelopeFieldEditor() {
             </Button>
             <Button
               onClick={() => {
+                const intent = savePromptOpen?.intent ?? "save";
                 setSavePromptOpen(null);
-                saveMutation.mutate();
+                if (intent === "send") saveAndSendMutation.mutate();
+                else saveMutation.mutate();
               }}
               data-testid="button-save-anyway"
             >
-              Save anyway
+              {savePromptOpen?.intent === "send" ? "Send anyway" : "Save anyway"}
             </Button>
           </DialogFooter>
         </DialogContent>
