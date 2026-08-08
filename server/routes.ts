@@ -22,6 +22,7 @@ import { buildContactsRouter } from "./routes/contacts";
 import { buildResendHandler } from "./routes/resend";
 import { ContactService } from "./services/ContactService";
 import { autoPlaceFooterInitials } from "./services/InitialPlacementService";
+import { buildContinueHandler, buildLineageHandler } from "./routes/continuation";
 import { emitEvent, uuidv7, type IdentityVerification } from "./services/EventDispatcher";
 
 const upload = multer({
@@ -103,6 +104,8 @@ async function buildCertificateContext(envelopeId: number): Promise<EnvelopeCert
     })),
     envelopeCreatedAt: fullEnvelope.createdAt,
     envelopeCompletedAt: completionTs ? new Date(completionTs) : null,
+    parentEnvelopeId: fullEnvelope.parentEnvelopeId,
+    parentDocumentHash: fullEnvelope.parentDocumentHash,
   };
 }
 
@@ -215,6 +218,13 @@ export async function registerRoutes(
     const updated = await storage.updateEnvelope(id, parsed.data);
     res.json(updated);
   }));
+
+  // "Send for further signature" (continuation) routes — handlers live in
+  // ./routes/continuation.ts, logic in services/ContinuationService.
+  app.post("/api/envelopes/:id/continue", validateId, buildContinueHandler({
+    bumpContactsLastUsed: (emails) => ContactService.bumpLastUsed(emails),
+  }));
+  app.get("/api/envelopes/:id/lineage", validateId, buildLineageHandler());
 
   app.post("/api/envelopes", upload.single("pdf"), asyncHandler(async (req, res) => {
     const envelopeParsed = createEnvelopeRequestSchema.safeParse(req.body);

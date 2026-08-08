@@ -63,6 +63,9 @@ export interface EnvelopeCertificateContext {
   auditEvents: CertificateAuditEvent[];
   envelopeCreatedAt: Date | string;
   envelopeCompletedAt?: Date | string | null;
+  /** Continuation lineage: set when this envelope was created from a signed parent. */
+  parentEnvelopeId?: number | null;
+  parentDocumentHash?: string | null;
 }
 
 interface Milestone {
@@ -99,6 +102,41 @@ export async function getPageSize(
 }
 
 export type SignaturePlacementMode = "fixed_bottom_centre" | "admin_placed";
+
+/**
+ * Strip a previously-appended Archisign certificate from a signed PDF.
+ *
+ * Used when a signed document is sent on for further signature: the
+ * continuation envelope's working document must not carry the parent's
+ * certificate pages, otherwise admins could place fields on them and the
+ * child's own re-stamp would silently drop those pages (stampSignedPdf strips
+ * marker-tagged cert pages for idempotency). The parent's full evidence packet
+ * remains untouched at the parent's own signedPdfUrl.
+ *
+ * Returns the document bytes without the trailing certificate pages (and with
+ * the idempotency marker cleared), plus the resulting page count. When the
+ * input carries no certificate marker it is returned unchanged.
+ */
+export async function stripCertificatePages(
+  pdfBuffer: Buffer,
+): Promise<{ pdfBytes: Uint8Array; pageCount: number; removedPages: number }> {
+  const { PDFDocument } = await import("pdf-lib");
+  const pdfDoc = await PDFDocument.load(pdfBuffer);
+  const keywords = (() => {
+    try { return pdfDoc.getKeywords() || ""; } catch { return ""; }
+  })();
+  const markerMatch = String(keywords).match(/archisign-cert-v1:(\d+)/);
+  if (!markerMatch) {
+    return { pdfBytes: new Uint8Array(pdfBuffer), pageCount: pdfDoc.getPageCount(), removedPages: 0 };
+  }
+  const certPages = Math.max(0, Math.min(pdfDoc.getPageCount() - 1, Number(markerMatch[1])));
+  for (let i = 0; i < certPages; i++) {
+    pdfDoc.removePage(pdfDoc.getPageCount() - 1);
+  }
+  try { pdfDoc.setKeywords([]); } catch { /* best-effort */ }
+  const pdfBytes = await pdfDoc.save();
+  return { pdfBytes, pageCount: pdfDoc.getPageCount(), removedPages: certPages };
+}
 
 /** Size (PDF points) of every page, in page order. */
 export async function getAllPageSizes(
@@ -761,6 +799,18 @@ async function renderCertificatePages(
     page.drawText(v1, { x: MARGIN_X + 90, y, size: SMALL, font, color: rgb(0.1, 0.1, 0.1) });
     page.drawText(l2, { x: colX2, y, size: SMALL, font: fontBold, color: rgb(0.1, 0.1, 0.1) });
     page.drawText(v2, { x: colX2 + 90, y, size: SMALL, font, color: rgb(0.1, 0.1, 0.1) });
+    y -= LINE;
+  }
+
+  // Continuation lineage — bind this certificate to the parent evidence chain.
+  if (ctx.parentEnvelopeId) {
+    ensureSpace(LINE * 2 + 6);
+    drawText(`Continuation of Envelope ${ctx.parentEnvelopeId}`, { size: SMALL, bold: true, color: [0.5, 0.2, 0] });
+    y -= LINE;
+    drawText(
+      `Parent signed-document SHA-256: ${ctx.parentDocumentHash || "—"}`,
+      { size: 8, color: [0.35, 0.35, 0.35] },
+    );
     y -= LINE;
   }
 

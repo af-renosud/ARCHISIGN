@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, real, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, real, pgEnum, uniqueIndex, index, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -40,10 +40,20 @@ export const envelopes = pgTable("envelopes", {
   retentionDetectedAt: timestamp("retention_detected_at"),
   signaturePlacementMode: signaturePlacementModeEnum("signature_placement_mode").notNull().default("fixed_bottom_centre"),
   documentHash: text("document_hash"),
+  // Continuation lineage: a "send for further signature" child envelope
+  // records its signed parent here. Immutable provenance: parentDocumentHash
+  // is the parent's documentHash at continuation time; continuationSequence
+  // is 1 for the first continuation of a root document, 2 for a continuation
+  // of a continuation, etc.
+  parentEnvelopeId: integer("parent_envelope_id").references((): AnyPgColumn => envelopes.id, { onDelete: "set null" }),
+  parentDocumentHash: text("parent_document_hash"),
+  continuationSequence: integer("continuation_sequence"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   deletedAt: timestamp("deleted_at"),
-});
+}, (t) => [
+  index("envelopes_parent_envelope_id_idx").on(t.parentEnvelopeId),
+]);
 
 export const signers = pgTable("signers", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -343,6 +353,14 @@ export const createEnvelopeRequestSchema = z.object({
 export const createSignerRequestSchema = z.object({
   email: z.string().email("Invalid signer email"),
   fullName: z.string().min(1, "Signer name is required"),
+});
+
+// "Send for further signature": create a linked continuation envelope from a
+// signed parent. Signers here are the ADDITIONAL people who must now sign.
+export const continueEnvelopeRequestSchema = z.object({
+  signers: z.array(createSignerRequestSchema).min(1, "At least one signer is required"),
+  subject: z.string().min(1).max(500).optional(),
+  message: z.string().max(5000).nullish(),
 });
 
 export const createApiEnvelopeRequestSchema = z.object({

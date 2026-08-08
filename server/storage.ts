@@ -57,6 +57,9 @@ export interface IStorage {
   updateWishlistItem(id: number, data: Partial<WishlistItem>): Promise<WishlistItem | undefined>;
   deleteWishlistItem(id: number): Promise<void>;
 
+  /** Continuation lineage: all non-deleted envelopes whose parentEnvelopeId is this envelope. */
+  getEnvelopeContinuations(envelopeId: number): Promise<Envelope[]>;
+
   getDeletedEnvelopes(): Promise<Envelope[]>;
   softDeleteEnvelope(id: number): Promise<Envelope | undefined>;
   restoreEnvelope(id: number): Promise<Envelope | undefined>;
@@ -283,6 +286,12 @@ export class DatabaseStorage implements IStorage {
 
   async deleteWishlistItem(id: number): Promise<void> {
     await db.delete(wishlistItems).where(eq(wishlistItems.id, id));
+  }
+
+  async getEnvelopeContinuations(envelopeId: number): Promise<Envelope[]> {
+    return db.select().from(envelopes)
+      .where(and(eq(envelopes.parentEnvelopeId, envelopeId), isNull(envelopes.deletedAt)))
+      .orderBy(envelopes.id);
   }
 
   async getDeletedEnvelopes(): Promise<Envelope[]> {

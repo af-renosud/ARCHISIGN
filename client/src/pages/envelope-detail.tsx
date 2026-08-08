@@ -14,8 +14,9 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Send, Copy, ExternalLink, FileText, Eye, Clock,
   AlertTriangle, CheckCircle2, MessageSquare, Shield, Users, Trash2, RefreshCw, PenTool,
-  KeyRound, EyeOff, Award, Fingerprint, Download
+  KeyRound, EyeOff, Award, Fingerprint, Download, SendHorizonal, Link2, Plus, X
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import type { Envelope, Signer, CommunicationLog, AuditEvent, Contact } from "@shared/schema";
 import { buildSharedEmailMap, isSharedInbox } from "@/components/ContactCombobox";
 import { Users as UsersIcon } from "lucide-react";
@@ -83,6 +84,10 @@ export default function EnvelopeDetail() {
   const [deleteReason, setDeleteReason] = useState("");
   const [resendDialogOpen, setResendDialogOpen] = useState(false);
   const [resendMessage, setResendMessage] = useState("");
+  const [continueDialogOpen, setContinueDialogOpen] = useState(false);
+  const [continueSigners, setContinueSigners] = useState<{ email: string; fullName: string }[]>([
+    { email: "", fullName: "" },
+  ]);
   const [revealedCreds, setRevealedCreds] = useState<Record<number, boolean>>({});
 
   const { data: envelope, isLoading } = useQuery<EnvelopeDetail>({
@@ -96,6 +101,15 @@ export default function EnvelopeDetail() {
   // pre-send picker warning. URL-only queryKey so the default queryFn (which
   // does queryKey.join("/")) hits /api/contacts cleanly.
   const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts"] });
+
+  // Continuation lineage: predecessor / successors of this envelope.
+  const { data: lineage } = useQuery<{
+    parent: { id: number; subject: string; status: string } | null;
+    continuations: { id: number; subject: string; status: string }[];
+  }>({
+    queryKey: ["/api/envelopes", id, "lineage"],
+    enabled: !!id,
+  });
   const sharedEmailMap = useMemo(() => buildSharedEmailMap(contacts), [contacts]);
 
   const sendMutation = useMutation({
@@ -133,6 +147,35 @@ export default function EnvelopeDetail() {
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const continueMutation = useMutation({
+    mutationFn: async (signers: { email: string; fullName: string }[]) => {
+      const res = await apiRequest("POST", `/api/envelopes/${id}/continue`, { signers });
+      return (await res.json()) as { id: number };
+    },
+    onSuccess: (child) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id, "lineage"] });
+      setContinueDialogOpen(false);
+      setContinueSigners([{ email: "", fullName: "" }]);
+      toast({
+        title: "Continuation created",
+        description: "A new linked envelope was created from the signed document. Place the new signer's fields, then send.",
+      });
+      navigate(`/envelopes/${child.id}/fields`);
+    },
+    onError: (err: Error) => {
+      let description = err.message;
+      const jsonStart = err.message.indexOf("{");
+      if (jsonStart !== -1) {
+        try {
+          const body = JSON.parse(err.message.slice(jsonStart));
+          if (body.message) description = body.message;
+        } catch { /* keep raw message */ }
+      }
+      toast({ title: "Could not create continuation", description, variant: "destructive" });
     },
   });
 
@@ -223,6 +266,12 @@ export default function EnvelopeDetail() {
                 </Button>
               </>
             )}
+            {envelope.status === "signed" && !envelope.origin && (
+              <Button variant="outline" onClick={() => setContinueDialogOpen(true)} data-testid="button-continue-envelope">
+                <SendHorizonal className="h-4 w-4 mr-2" />
+                Send for Further Signature
+              </Button>
+            )}
             {["sent", "viewed", "queried"].includes(envelope.status) && (
               <Button variant="outline" onClick={() => setResendDialogOpen(true)} disabled={resendMutation.isPending} data-testid="button-resend-envelope">
                 <RefreshCw className={`h-4 w-4 mr-2 ${resendMutation.isPending ? "animate-spin" : ""}`} />
@@ -239,6 +288,45 @@ export default function EnvelopeDetail() {
             </Button>
           </div>
         </div>
+
+        {(lineage?.parent || (lineage?.continuations?.length ?? 0) > 0) && (
+          <Card data-testid="card-lineage">
+            <CardContent className="p-4 space-y-2">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Link2 className="h-4 w-4 text-muted-foreground" />
+                Linked Envelopes
+              </div>
+              {lineage?.parent && (
+                <div className="flex items-center gap-2 text-sm flex-wrap">
+                  <span className="text-muted-foreground">Continuation of:</span>
+                  <Button
+                    variant="ghost"
+                    className="h-auto p-0 text-sm text-primary underline-offset-4 hover:underline"
+                    onClick={() => navigate(`/envelopes/${lineage.parent!.id}`)}
+                    data-testid="link-lineage-parent"
+                  >
+                    {lineage.parent.subject}
+                  </Button>
+                  <Badge variant="secondary" className="text-xs">{lineage.parent.status}</Badge>
+                </div>
+              )}
+              {(lineage?.continuations ?? []).map((c) => (
+                <div key={c.id} className="flex items-center gap-2 text-sm flex-wrap">
+                  <span className="text-muted-foreground">Sent for further signature:</span>
+                  <Button
+                    variant="ghost"
+                    className="h-auto p-0 text-sm text-primary underline-offset-4 hover:underline"
+                    onClick={() => navigate(`/envelopes/${c.id}`)}
+                    data-testid={`link-lineage-continuation-${c.id}`}
+                  >
+                    {c.subject}
+                  </Button>
+                  <Badge variant="secondary" className="text-xs">{c.status}</Badge>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
 
         <Tabs defaultValue="overview" className="w-full">
           <TabsList data-testid="tabs-envelope-detail">
@@ -643,6 +731,74 @@ export default function EnvelopeDetail() {
             >
               <RefreshCw className={`h-4 w-4 mr-2 ${resendMutation.isPending ? "animate-spin" : ""}`} />
               {resendMutation.isPending ? "Resending..." : "Resend Invitations"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={continueDialogOpen} onOpenChange={(open) => { setContinueDialogOpen(open); if (!open) setContinueSigners([{ email: "", fullName: "" }]); }}>
+        <DialogContent
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle>Send for Further Signature</DialogTitle>
+            <DialogDescription>
+              This creates a new, separate envelope from the signed document so additional people can sign it — no re-upload needed. This completed envelope stays unchanged, and the two envelopes will be linked.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {continueSigners.map((s, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <Input
+                  placeholder="Full name"
+                  value={s.fullName}
+                  onChange={(e) => setContinueSigners((prev) => prev.map((p, j) => j === i ? { ...p, fullName: e.target.value } : p))}
+                  data-testid={`input-continue-name-${i}`}
+                />
+                <Input
+                  type="email"
+                  placeholder="Email address"
+                  value={s.email}
+                  onChange={(e) => setContinueSigners((prev) => prev.map((p, j) => j === i ? { ...p, email: e.target.value } : p))}
+                  data-testid={`input-continue-email-${i}`}
+                />
+                {continueSigners.length > 1 && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setContinueSigners((prev) => prev.filter((_, j) => j !== i))}
+                    data-testid={`button-continue-remove-signer-${i}`}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+            ))}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setContinueSigners((prev) => [...prev, { email: "", fullName: "" }])}
+              data-testid="button-continue-add-signer"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Add another signer
+            </Button>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => { setContinueDialogOpen(false); setContinueSigners([{ email: "", fullName: "" }]); }} data-testid="button-cancel-continue">
+              Cancel
+            </Button>
+            <Button
+              onClick={() => continueMutation.mutate(continueSigners.map((s) => ({ email: s.email.trim(), fullName: s.fullName.trim() })))}
+              disabled={
+                continueMutation.isPending ||
+                continueSigners.some((s) => !s.fullName.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.email.trim()))
+              }
+              data-testid="button-confirm-continue"
+            >
+              <SendHorizonal className="h-4 w-4 mr-2" />
+              {continueMutation.isPending ? "Creating..." : "Create Continuation"}
             </Button>
           </DialogFooter>
         </DialogContent>
