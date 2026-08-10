@@ -72,9 +72,52 @@ export function buildLineageHandler(
         : Promise.resolve(undefined),
       storage.getEnvelopeContinuations(id),
     ]);
+
+    // Full chain: walk ancestors up to the root, then descendants depth-first,
+    // so the client can render the entire multi-round signing history at once.
+    // The `seen` set guards against cyclic data; the finite lineage is
+    // returned in full, never truncated.
+    const seen = new Set<number>([id]);
+    const ancestors: (typeof envelope)[] = [];
+    let cursor = envelope;
+    while (cursor.parentEnvelopeId) {
+      if (seen.has(cursor.parentEnvelopeId)) break;
+      const next = await storage.getEnvelope(cursor.parentEnvelopeId);
+      if (!next || next.deletedAt) break;
+      seen.add(next.id);
+      ancestors.unshift(next);
+      cursor = next;
+    }
+
+    type ChainEntry = ReturnType<typeof summarize> & { depth: number; isCurrent: boolean };
+    const chain: ChainEntry[] = [
+      ...ancestors.map((e, i) => ({ ...summarize(e), depth: i, isCurrent: false })),
+      { ...summarize(envelope), depth: ancestors.length, isCurrent: true },
+    ];
+    // Iterative depth-first walk (explicit stack) so arbitrarily deep chains
+    // cannot overflow the call stack. Entries are emitted when popped, and
+    // children are pushed in reverse so siblings appear in ascending order.
+    const stack: { envelope: { id: number; subject: string; status: string; createdAt: Date }; depth: number }[] = [];
+    const pushChildren = async (parentId: number, depth: number) => {
+      const kids = await storage.getEnvelopeContinuations(parentId);
+      for (let i = kids.length - 1; i >= 0; i--) {
+        const kid = kids[i];
+        if (seen.has(kid.id)) continue;
+        seen.add(kid.id);
+        stack.push({ envelope: kid, depth });
+      }
+    };
+    await pushChildren(id, ancestors.length + 1);
+    while (stack.length > 0) {
+      const { envelope: e, depth } = stack.pop()!;
+      chain.push({ ...summarize(e), depth, isCurrent: false });
+      await pushChildren(e.id, depth + 1);
+    }
+
     res.json({
       parent: parent && !parent.deletedAt ? summarize(parent) : null,
       continuations: children.map(summarize),
+      chain,
     });
   });
 }

@@ -148,6 +148,85 @@ test("GET /lineage: returns parent summary and continuations", async () => {
   assert.equal(body2.continuations[0].id, 100);
 });
 
+test("GET /lineage: chain returns full ancestry and descendants 3 levels deep", async () => {
+  // 42 (root) -> 100 -> 200 -> 300
+  envelopesById[200] = { id: 200, subject: "Grandchild", status: "signed", createdAt: new Date(), parentEnvelopeId: 100, deletedAt: null };
+  envelopesById[300] = { id: 300, subject: "Great-grandchild", status: "sent", createdAt: new Date(), parentEnvelopeId: 200, deletedAt: null };
+  continuationsByParent[42] = [envelopesById[100]];
+  continuationsByParent[100] = [envelopesById[200]];
+  continuationsByParent[200] = [envelopesById[300]];
+
+  // Query from the middle of the chain.
+  const res = await fetch(`${baseUrl}/api/envelopes/200/lineage`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(body.chain.map((e: any) => e.id), [42, 100, 200, 300]);
+  assert.deepEqual(body.chain.map((e: any) => e.depth), [0, 1, 2, 3]);
+  assert.deepEqual(body.chain.map((e: any) => e.isCurrent), [false, false, true, false]);
+  assert.equal(body.chain[0].subject, "Parent");
+  assert.equal(body.chain[3].status, "sent");
+
+  // Query from the root: same chain, root marked current.
+  const resRoot = await fetch(`${baseUrl}/api/envelopes/42/lineage`);
+  const bodyRoot = await resRoot.json();
+  assert.deepEqual(bodyRoot.chain.map((e: any) => e.id), [42, 100, 200, 300]);
+  assert.equal(bodyRoot.chain[0].isCurrent, true);
+
+  // Query from the leaf: same chain, leaf marked current.
+  const resLeaf = await fetch(`${baseUrl}/api/envelopes/300/lineage`);
+  const bodyLeaf = await resLeaf.json();
+  assert.deepEqual(bodyLeaf.chain.map((e: any) => e.id), [42, 100, 200, 300]);
+  assert.equal(bodyLeaf.chain[3].isCurrent, true);
+});
+
+test("GET /lineage: very deep chains (60+ rounds) are returned in full, from root and from leaf", async () => {
+  // Linear chain: 1000 -> 1001 -> ... -> 1060 (61 envelopes, depth 60).
+  const DEPTH = 60;
+  for (let i = 0; i <= DEPTH; i++) {
+    const eid = 1000 + i;
+    envelopesById[eid] = {
+      id: eid, subject: `Round ${i}`, status: i === DEPTH ? "sent" : "signed",
+      createdAt: new Date(), parentEnvelopeId: i === 0 ? null : eid - 1, deletedAt: null,
+    };
+    if (i > 0) continuationsByParent[eid - 1] = [envelopesById[eid]];
+  }
+  const expectedIds = Array.from({ length: DEPTH + 1 }, (_, i) => 1000 + i);
+
+  const fromLeaf = await (await fetch(`${baseUrl}/api/envelopes/${1000 + DEPTH}/lineage`)).json();
+  assert.deepEqual(fromLeaf.chain.map((e: any) => e.id), expectedIds);
+  assert.equal(fromLeaf.chain[0].id, 1000); // root visible from the deep leaf
+  assert.equal(fromLeaf.chain[DEPTH].isCurrent, true);
+
+  const fromRoot = await (await fetch(`${baseUrl}/api/envelopes/1000/lineage`)).json();
+  assert.deepEqual(fromRoot.chain.map((e: any) => e.id), expectedIds);
+  assert.equal(fromRoot.chain[DEPTH].id, 1000 + DEPTH); // deepest leaf visible from root
+  assert.equal(fromRoot.chain[0].isCurrent, true);
+
+  const fromMiddle = await (await fetch(`${baseUrl}/api/envelopes/1030/lineage`)).json();
+  assert.deepEqual(fromMiddle.chain.map((e: any) => e.id), expectedIds);
+  assert.equal(fromMiddle.chain[30].isCurrent, true);
+});
+
+test("GET /lineage: cyclic parent links terminate and return each envelope once", async () => {
+  // Corrupt data: 500 <-> 501 point at each other.
+  envelopesById[500] = { id: 500, subject: "A", status: "signed", createdAt: new Date(), parentEnvelopeId: 501, deletedAt: null };
+  envelopesById[501] = { id: 501, subject: "B", status: "signed", createdAt: new Date(), parentEnvelopeId: 500, deletedAt: null };
+  continuationsByParent[500] = [envelopesById[501]];
+  continuationsByParent[501] = [envelopesById[500]];
+
+  const body = await (await fetch(`${baseUrl}/api/envelopes/500/lineage`)).json();
+  const ids = body.chain.map((e: any) => e.id);
+  assert.deepEqual([...new Set(ids)].sort(), ids.sort());
+  assert.ok(ids.includes(500));
+});
+
+test("GET /lineage: chain has a single entry for an unlinked envelope", async () => {
+  const res = await fetch(`${baseUrl}/api/envelopes/42/lineage`);
+  const body = await res.json();
+  assert.deepEqual(body.chain.map((e: any) => e.id), [42]);
+  assert.equal(body.chain[0].isCurrent, true);
+});
+
 test("GET /lineage: soft-deleted parent is hidden; missing envelope is 404", async () => {
   envelopesById[42].deletedAt = new Date();
   const res = await fetch(`${baseUrl}/api/envelopes/100/lineage`);

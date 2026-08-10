@@ -106,6 +106,7 @@ export default function EnvelopeDetail() {
   const { data: lineage } = useQuery<{
     parent: { id: number; subject: string; status: string } | null;
     continuations: { id: number; subject: string; status: string }[];
+    chain?: { id: number; subject: string; status: string; depth: number; isCurrent: boolean }[];
   }>({
     queryKey: ["/api/envelopes", id, "lineage"],
     enabled: !!id,
@@ -289,41 +290,45 @@ export default function EnvelopeDetail() {
           </div>
         </div>
 
-        {(lineage?.parent || (lineage?.continuations?.length ?? 0) > 0) && (
+        {(lineage?.chain?.length ?? 0) > 1 && (
           <Card data-testid="card-lineage">
             <CardContent className="p-4 space-y-2">
               <div className="flex items-center gap-2 text-sm font-medium">
                 <Link2 className="h-4 w-4 text-muted-foreground" />
-                Linked Envelopes
+                Signing History
               </div>
-              {lineage?.parent && (
-                <div className="flex items-center gap-2 text-sm flex-wrap">
-                  <span className="text-muted-foreground">Continuation of:</span>
-                  <Button
-                    variant="ghost"
-                    className="h-auto p-0 text-sm text-primary underline-offset-4 hover:underline"
-                    onClick={() => navigate(`/envelopes/${lineage.parent!.id}`)}
-                    data-testid="link-lineage-parent"
+              <div className="space-y-1">
+                {lineage!.chain!.map((entry, i) => (
+                  <div
+                    key={entry.id}
+                    className="flex items-center gap-2 text-sm flex-wrap"
+                    style={{ paddingLeft: `${entry.depth * 16}px` }}
+                    data-testid={`row-lineage-chain-${entry.id}`}
                   >
-                    {lineage.parent.subject}
-                  </Button>
-                  <Badge variant="secondary" className="text-xs">{lineage.parent.status}</Badge>
-                </div>
-              )}
-              {(lineage?.continuations ?? []).map((c) => (
-                <div key={c.id} className="flex items-center gap-2 text-sm flex-wrap">
-                  <span className="text-muted-foreground">Sent for further signature:</span>
-                  <Button
-                    variant="ghost"
-                    className="h-auto p-0 text-sm text-primary underline-offset-4 hover:underline"
-                    onClick={() => navigate(`/envelopes/${c.id}`)}
-                    data-testid={`link-lineage-continuation-${c.id}`}
-                  >
-                    {c.subject}
-                  </Button>
-                  <Badge variant="secondary" className="text-xs">{c.status}</Badge>
-                </div>
-              ))}
+                    <span className="text-muted-foreground text-xs w-4 text-right">{i === 0 ? "" : "↳"}</span>
+                    {entry.isCurrent ? (
+                      <span className="font-medium" data-testid="text-lineage-current">
+                        {entry.subject}
+                      </span>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        className="h-auto p-0 text-sm text-primary underline-offset-4 hover:underline"
+                        onClick={() => navigate(`/envelopes/${entry.id}`)}
+                        data-testid={`link-lineage-chain-${entry.id}`}
+                      >
+                        {entry.subject}
+                      </Button>
+                    )}
+                    <Badge variant={entry.isCurrent ? "default" : "secondary"} className="text-xs">
+                      {entry.status}
+                    </Badge>
+                    {entry.isCurrent && (
+                      <span className="text-xs text-muted-foreground">(this envelope)</span>
+                    )}
+                  </div>
+                ))}
+              </div>
             </CardContent>
           </Card>
         )}
