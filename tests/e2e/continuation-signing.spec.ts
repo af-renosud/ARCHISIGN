@@ -298,4 +298,116 @@ test.describe("Continuation envelope signing", () => {
     const parentPdfAfter = await downloadSignedPdf(parentSigner.accessToken);
     expect(sha256(parentPdfAfter)).toBe(parentPdfHashBefore);
   });
+
+  test("grandchild continuation cites its direct parent, increments sequence, and leaves both ancestors untouched", async () => {
+    const ts = Date.now();
+
+    // ---- 1. Original: create → place fields → send → sign ----------------
+    const originalDraft = await createParentEnvelope(ts);
+    const originalSigner = originalDraft.signers[0];
+    await placeSignatureField(originalDraft.id, originalSigner.id, TOTAL_PAGES);
+    await markSent(pool, originalDraft.id);
+    await signEnvelopeAsSigner(pool, originalSigner, TOTAL_PAGES);
+
+    const originalSigned = await apiJson<EnvelopeJson>(`/api/envelopes/${originalDraft.id}`);
+    expect(originalSigned.status).toBe("signed");
+    expect(originalSigned.documentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(originalSigned.continuationSequence ?? 0).toBe(0);
+
+    // ---- 2. First continuation (child): continue → sign ------------------
+    const child = await apiJson<EnvelopeJson>(`/api/envelopes/${originalDraft.id}/continue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        signers: [
+          { email: `continuation-child-${ts}@example.test`, fullName: "Carl Continuer" },
+        ],
+      }),
+    });
+    expect(child.parentEnvelopeId).toBe(originalDraft.id);
+    expect(child.parentDocumentHash).toBe(originalSigned.documentHash);
+    expect(child.continuationSequence).toBe(1);
+    const childSigner = child.signers[0];
+
+    await placeSignatureField(child.id, childSigner.id, child.totalPages);
+    await markSent(pool, child.id);
+    await signEnvelopeAsSigner(pool, childSigner, child.totalPages);
+
+    const childSigned = await apiJson<EnvelopeJson>(`/api/envelopes/${child.id}`);
+    expect(childSigned.status).toBe("signed");
+    expect(childSigned.documentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(childSigned.documentHash).not.toBe(originalSigned.documentHash);
+
+    // Snapshot both ancestors' evidence before the grandchild is created.
+    const originalPdfBefore = await downloadSignedPdf(originalSigner.accessToken);
+    const originalPdfHashBefore = sha256(originalPdfBefore);
+    const childPdfBefore = await downloadSignedPdf(childSigner.accessToken);
+    const childPdfHashBefore = sha256(childPdfBefore);
+
+    // ---- 3. Second continuation (grandchild): continue the child ---------
+    const grandchild = await apiJson<EnvelopeJson>(`/api/envelopes/${child.id}/continue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        signers: [
+          { email: `continuation-grandchild-${ts}@example.test`, fullName: "Greta Grand" },
+        ],
+      }),
+    });
+    expect(grandchild.status).toBe("draft");
+    // Lineage: the grandchild pins its DIRECT parent (the child), not the original.
+    expect(grandchild.parentEnvelopeId).toBe(child.id);
+    expect(grandchild.parentDocumentHash).toBe(childSigned.documentHash);
+    expect(grandchild.parentDocumentHash).not.toBe(originalSigned.documentHash);
+    expect(grandchild.continuationSequence).toBe(2);
+    // The child's cert pages must be stripped from the grandchild's working doc.
+    expect(grandchild.totalPages).toBe(TOTAL_PAGES);
+    const grandchildSigner = grandchild.signers[0];
+
+    // ---- 4. Grandchild: place fields → send → sign → stamp ---------------
+    await placeSignatureField(grandchild.id, grandchildSigner.id, grandchild.totalPages);
+    await markSent(pool, grandchild.id);
+    await signEnvelopeAsSigner(pool, grandchildSigner, grandchild.totalPages);
+
+    const grandchildSigned = await apiJson<EnvelopeJson>(`/api/envelopes/${grandchild.id}`);
+    expect(grandchildSigned.status).toBe("signed");
+    expect(grandchildSigned.signedPdfUrl).toBeTruthy();
+    expect(grandchildSigned.signedPdfUrl).not.toBe(childSigned.signedPdfUrl);
+    expect(grandchildSigned.documentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(grandchildSigned.documentHash).not.toBe(childSigned.documentHash);
+    expect(grandchildSigned.documentHash).not.toBe(originalSigned.documentHash);
+    expect(grandchildSigned.continuationSequence).toBe(2);
+
+    // ---- 5. Grandchild certificate cites the child, not the original -----
+    const grandchildPdf = await downloadSignedPdf(grandchildSigner.accessToken);
+    const grandchildText = await extractAllText(grandchildPdf);
+    expect(grandchildText).toContain(`Continuation of Envelope ${child.id}`);
+    expect(grandchildText).toContain(
+      `Parent signed-document SHA-256: ${childSigned.documentHash}`,
+    );
+    expect(grandchildText).not.toContain(`Continuation of Envelope ${originalDraft.id}`);
+    expect(grandchildText).not.toContain(
+      `Parent signed-document SHA-256: ${originalSigned.documentHash}`,
+    );
+
+    const grandchildDoc = await PDFDocument.load(grandchildPdf);
+    expect(grandchildDoc.getPageCount()).toBeGreaterThan(TOTAL_PAGES);
+
+    // ---- 6. Both ancestors' evidence is untouched -------------------------
+    const originalAfter = await apiJson<EnvelopeJson>(`/api/envelopes/${originalDraft.id}`);
+    expect(originalAfter.status).toBe("signed");
+    expect(originalAfter.signedPdfUrl).toBe(originalSigned.signedPdfUrl);
+    expect(originalAfter.documentHash).toBe(originalSigned.documentHash);
+    expect(sha256(await downloadSignedPdf(originalSigner.accessToken))).toBe(
+      originalPdfHashBefore,
+    );
+
+    const childAfter = await apiJson<EnvelopeJson>(`/api/envelopes/${child.id}`);
+    expect(childAfter.status).toBe("signed");
+    expect(childAfter.signedPdfUrl).toBe(childSigned.signedPdfUrl);
+    expect(childAfter.documentHash).toBe(childSigned.documentHash);
+    expect(sha256(await downloadSignedPdf(childSigner.accessToken))).toBe(
+      childPdfHashBefore,
+    );
+  });
 });
