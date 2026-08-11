@@ -7,8 +7,68 @@ import { pool } from "./db";
 import { startSchedulers, stopSchedulers } from "./jobs/scheduler";
 import { validateV2TenantConfig } from "./services/WebhookSignature";
 
+// Cold-start timing: measured from process start (Node's own start, which
+// includes module evaluation) rather than from this line, so the logged
+// number reflects what a caller actually waits after the platform spawns us.
+const BOOT_START_MS = performance.timeOrigin;
+const sinceBoot = () => Math.round(performance.now());
+
 const app = express();
 const httpServer = createServer(app);
+
+// Instant, dependency-free health endpoint — registered before every other
+// middleware (body parsers, auth, logging) so it costs microseconds and can
+// be used to cheaply warm the service after an idle period. No DB access.
+app.get("/health", (_req, res) => {
+  res.status(200).json({ status: "ok", uptimeMs: sinceBoot() });
+});
+
+// Readiness gate: the port is bound immediately at boot (see below), before
+// routes/auth are registered. Any request that arrives during those few
+// hundred milliseconds waits here for initialization instead of 404ing.
+// The queue is bounded (count + deadline) so a slow initialization can't be
+// used to pile up unbounded sockets/bodies; overflow gets 503 + Retry-After.
+let resolveReady: () => void;
+let readyRejected: Error | null = null;
+const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
+let isReady = false;
+const MAX_PARKED_REQUESTS = 100;
+const PARK_DEADLINE_MS = 15_000;
+let parkedCount = 0;
+app.use((req, res, next) => {
+  if (isReady) return next();
+  const unavailable = () =>
+    res.headersSent ? undefined : res.status(503).set("Retry-After", "2").json({ message: "Server is starting up, retry shortly" });
+  if (readyRejected) return res.status(503).json({ message: "Server failed to initialize" });
+  if (parkedCount >= MAX_PARKED_REQUESTS) return unavailable();
+
+  parkedCount++;
+  let settled = false;
+  const settle = (fn?: () => void) => {
+    if (settled) return;
+    settled = true;
+    parkedCount--;
+    clearTimeout(deadline);
+    req.off("close", onClose);
+    fn?.();
+  };
+  const deadline = setTimeout(() => settle(unavailable), PARK_DEADLINE_MS);
+  deadline.unref();
+  // Client gave up while parked — drop the request without calling next().
+  const onClose = () => settle();
+  req.on("close", onClose);
+
+  void ready.then(() => {
+    settle(() => {
+      if (res.writableEnded || res.destroyed) return;
+      if (readyRejected) {
+        if (!res.headersSent) res.status(503).json({ message: "Server failed to initialize" });
+        return;
+      }
+      next();
+    });
+  });
+});
 
 declare module "http" {
   interface IncomingMessage {
@@ -108,10 +168,27 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Bind the port FIRST, before any route registration or optional
+  // initialization, so the platform health check and the first real request
+  // aren't stuck waiting on startup work. Requests that land before routes
+  // exist are parked by the readiness gate above.
+  const port = parseInt(process.env.PORT || "5000", 10);
+  await new Promise<void>((resolve) => {
+    httpServer.listen({ port, host: "0.0.0.0", reusePort: true }, () => {
+      log(`port ${port} open in ${sinceBoot()}ms (process start ${new Date(BOOT_START_MS).toISOString()})`, "boot");
+      resolve();
+    });
+  });
+
+  try {
   validateV2TenantConfig((msg) => log(msg, "webhook"));
 
   await registerRoutes(httpServer, app);
 
+  // Seeding stays a readiness prerequisite: it creates the uploads/backups
+  // directories and default settings that routes depend on. It is idempotent
+  // and cheap (a few queries) — the expensive network work (OIDC discovery,
+  // googleapis) is what got moved out of the boot path, not this.
   try {
     await seedDatabase();
   } catch (err) {
@@ -141,18 +218,24 @@ app.use((req, res, next) => {
     await setupVite(httpServer, app);
   }
 
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-      startSchedulers();
-    },
-  );
+  } catch (err: any) {
+    // Initialization failed after the port opened: release parked requests
+    // with an explicit 503 instead of letting them hang forever.
+    readyRejected = err instanceof Error ? err : new Error(String(err));
+    resolveReady!();
+    console.error("Startup initialization failed:", err);
+    process.exitCode = 1;
+    throw err;
+  }
+
+  // Routes and static serving are in place — release any parked requests.
+  isReady = true;
+  resolveReady!();
+  log(`ready to serve requests in ${sinceBoot()}ms`, "boot");
+
+  // Periodic jobs are not needed to serve requests (and internally delay
+  // their first run by 30s), so they start after the gate opens.
+  startSchedulers();
 
   let shuttingDown = false;
   async function gracefulShutdown(signal: string) {

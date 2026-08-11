@@ -267,7 +267,7 @@ export function buildGoogleVerify(
 
 export interface GoogleCallbackHandlerOpts {
   passportInstance: passport.Authenticator;
-  resolveStrategyName: (req: Request) => string;
+  resolveStrategyName: (req: Request) => string | Promise<string>;
   recordRejection: (
     req: Request,
     reason: AuthFailureReason,
@@ -283,8 +283,15 @@ export interface GoogleCallbackHandlerOpts {
 export function buildGoogleCallbackHandler(
   opts: GoogleCallbackHandlerOpts,
 ): RequestHandler {
-  return (req, res, next) => {
-    const name = opts.resolveStrategyName(req);
+  return async (req, res, next) => {
+    let name: string;
+    try {
+      name = await opts.resolveStrategyName(req);
+    } catch (err: any) {
+      void opts.recordRejection(req, "oauth_error", null);
+      console.warn(`[AUTH] Failed to resolve Google strategy: ${err?.message || err}`);
+      return res.redirect("/login?error=auth_failed");
+    }
     opts.passportInstance.authenticate(
       name,
       (
@@ -327,7 +334,6 @@ export async function setupAuth(app: Express): Promise<void> {
   app.use(passport.initialize());
   app.use(passport.session());
 
-  const config = await getGoogleConfig();
   const domain = allowedDomain();
 
   const verify = buildGoogleVerify(domain);
@@ -336,33 +342,53 @@ export async function setupAuth(app: Express): Promise<void> {
   // Per-hostname strategy registration so a single OAuth client serves both
   // the Replit dev domain and the production .replit.app domain, provided
   // both redirect URIs are listed in Google Cloud Console.
-  const registered = new Set<string>();
-  const ensureStrategy = (hostname: string): string => {
+  //
+  // Cold-start note: Google OIDC discovery is a network round-trip, so it is
+  // deliberately NOT awaited at boot. It runs lazily on the first /api/login
+  // or /api/auth/google/callback request (memoized for 1h thereafter), which
+  // keeps the port-bind path free of external network dependencies.
+  // Single-flight per hostname: concurrent first logins share one in-flight
+  // registration promise, so a strategy is never registered twice; a failed
+  // attempt is cleared so the next request retries discovery.
+  const registrations = new Map<string, Promise<string>>();
+  const ensureStrategy = (hostname: string): Promise<string> => {
     const name = `${STRATEGY_PREFIX}:${hostname}`;
-    if (!registered.has(name)) {
-      passport.use(
-        name,
-        new GoogleHostedDomainStrategy(
-          {
-            name,
-            config,
-            scope: "openid email profile",
-            callbackURL: callbackUrl(hostname),
-          },
-          verify,
-          domain,
-        ),
-      );
-      registered.add(name);
+    let inflight = registrations.get(name);
+    if (!inflight) {
+      inflight = (async () => {
+        const config = await getGoogleConfig();
+        passport.use(
+          name,
+          new GoogleHostedDomainStrategy(
+            {
+              name,
+              config,
+              scope: "openid email profile",
+              callbackURL: callbackUrl(hostname),
+            },
+            verify,
+            domain,
+          ),
+        );
+        return name;
+      })();
+      inflight.catch(() => registrations.delete(name));
+      registrations.set(name, inflight);
     }
-    return name;
+    return inflight;
   };
 
   passport.serializeUser((user: Express.User, cb) => cb(null, user));
   passport.deserializeUser((user: Express.User, cb) => cb(null, user));
 
-  app.get("/api/login", (req, res, next) => {
-    const name = ensureStrategy(req.hostname);
+  app.get("/api/login", async (req, res, next) => {
+    let name: string;
+    try {
+      name = await ensureStrategy(req.hostname);
+    } catch (err: any) {
+      console.warn(`[AUTH] Failed to initialise Google strategy: ${err?.message || err}`);
+      return res.redirect("/login?error=auth_failed");
+    }
     passport.authenticate(name, {
       scope: ["openid", "email", "profile"],
       prompt: "select_account",

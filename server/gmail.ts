@@ -1,4 +1,15 @@
-import { google } from 'googleapis';
+// Cold-start note: `googleapis` is one of the heaviest modules in the
+// dependency tree (hundreds of ms of synchronous module evaluation). It is
+// only needed when an email is actually sent or the Gmail profile is read,
+// so it is lazy-loaded on first use instead of at boot.
+type GoogleApis = typeof import('googleapis')['google'];
+let googlePromise: Promise<GoogleApis> | null = null;
+function getGoogle(): Promise<GoogleApis> {
+  if (!googlePromise) {
+    googlePromise = import('googleapis').then((m) => m.google);
+  }
+  return googlePromise;
+}
 
 let connectionSettings: any;
 
@@ -37,7 +48,7 @@ async function getAccessToken() {
 }
 
 export async function getUncachableGmailClient() {
-  const accessToken = await getAccessToken();
+  const [google, accessToken] = await Promise.all([getGoogle(), getAccessToken()]);
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
   return google.gmail({ version: 'v1', auth: oauth2Client });
