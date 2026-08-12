@@ -121,48 +121,79 @@ function validateUrlStatically(rawUrl: string, label: string): URL {
  * fails the connection if any is found. This is the TOCTOU-safe DNS validation
  * path: the same DNS call used for connection is the one that is validated.
  */
-function makeAgentWithSafeLookup(
-  protocol: "http:" | "https:",
-  label: string,
-): http.Agent | https.Agent {
+type Resolver = { resolve4(h: string): Promise<string[]>; resolve6(h: string): Promise<string[]> };
+
+/**
+ * Builds the safe `lookup` function installed on the agent. Exported for
+ * tests; `resolver` is injectable so DNS can be stubbed.
+ *
+ * Note: `family`/`hints` in the lookup options are intentionally ignored —
+ * `safeFetch` never sets them, and this lookup always validates and returns
+ * the full A+AAAA set (or the IPv4-preferred single address in legacy shape).
+ */
+export function makeSafeLookup(label: string, resolver: Resolver = dns) {
+  // Node's connection layer calls `lookup` in two shapes:
+  //  - legacy: options without `all` → callback(err, address, family)
+  //  - `{ all: true }` (used by the autoSelectFamily path, default in
+  //    Node 20+) → callback(err, [{ address, family }, ...])
+  // Returning a bare string when `all: true` was requested makes Node's
+  // internal address validation throw "Invalid IP address: undefined",
+  // which surfaced in production as vault_transient 503s. Honor both shapes.
   function safeLookup(
     hostname: string,
-    _opts: unknown,
-    callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+    opts: unknown,
+    callback: (
+      err: NodeJS.ErrnoException | null,
+      address: string | Array<{ address: string; family: number }>,
+      family?: number,
+    ) => void,
   ): void {
+    const wantAll = typeof opts === "object" && opts !== null && (opts as { all?: boolean }).all === true;
+    const fail = (err: NodeJS.ErrnoException) =>
+      wantAll ? callback(err, []) : callback(err, "", 0);
     Promise.all([
-      dns.resolve4(hostname).catch((): string[] => []),
-      dns.resolve6(hostname).catch((): string[] => []),
+      resolver.resolve4(hostname).catch((): string[] => []),
+      resolver.resolve6(hostname).catch((): string[] => []),
     ]).then(([v4, v6]) => {
       const all: string[] = [...v4, ...v6];
       if (all.length === 0) {
-        callback(
-          Object.assign(new Error(`${label}: destination host could not be resolved`), { code: "ENOTFOUND" }),
-          "",
-          0,
-        );
+        fail(Object.assign(new Error(`${label}: destination host could not be resolved`), { code: "ENOTFOUND" }));
         return;
       }
       const privateAddr = all.find(isPrivateIp);
       if (privateAddr) {
-        callback(
+        fail(
           Object.assign(
             new Error(`${label}: destination resolves to a private/internal address`),
             { code: "ECONNREFUSED", httpStatus: 400 },
           ),
-          "",
-          0,
         );
+        return;
+      }
+      if (wantAll) {
+        // Every address in this list passed the private-range check above,
+        // so whichever one the connection layer picks is safe.
+        callback(null, [
+          ...v4.map((address) => ({ address, family: 4 })),
+          ...v6.map((address) => ({ address, family: 6 })),
+        ]);
         return;
       }
       // Prefer IPv4 for compatibility; use first valid address.
       const addr = v4.length > 0 ? v4[0] : v6[0];
       callback(null, addr, v4.length > 0 ? 4 : 6);
-    }).catch((err: Error) => callback(err as NodeJS.ErrnoException, "", 0));
+    }).catch((err: Error) => fail(err as NodeJS.ErrnoException));
   }
 
+  return safeLookup;
+}
+
+function makeAgentWithSafeLookup(
+  protocol: "http:" | "https:",
+  label: string,
+): http.Agent | https.Agent {
   const AgentClass = protocol === "https:" ? https.Agent : http.Agent;
-  return new AgentClass({ lookup: safeLookup });
+  return new AgentClass({ lookup: makeSafeLookup(label) as net.LookupFunction });
 }
 
 export interface SafeResponse {

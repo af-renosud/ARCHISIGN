@@ -1,2 +1,3 @@
 - [PDF text-layer anchor search](pdf-text-anchors.md) — server-side pdfjs extraction, invisible-anchor matching, normalized-coordinate math, and the dev-server-restart gotcha.
 - [Continuation envelopes](continuation-envelopes.md) — signed envelopes are immutable; further signatures go via a new linked draft with cert pages stripped and non-null parent hash.
+- [Custom agent DNS lookup](custom-agent-dns-lookup.md) — agent `lookup` must honor `{all:true}` (Node 20+ autoSelectFamily) or outbound fetches die with "Invalid IP address: undefined".

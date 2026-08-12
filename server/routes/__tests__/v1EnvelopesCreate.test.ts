@@ -255,3 +255,34 @@ test("v1.6 initials: pdfBase64 source -> one initial box per signer per page", a
   const firstPage = initials.filter((a) => a.pageNumber === 1);
   assert.ok(lastPage[0].yPos < firstPage[0].yPos);
 });
+
+// --- missing client IP: creation must not fail, audit stores null ---
+
+test("v1 create: undefined req.ip does not fail creation; audit ipAddress is null", async () => {
+  const auditEvents: any[] = [];
+  const prevAudit = (storage as any).createAuditEvent;
+  (storage as any).createAuditEvent = async (ev: any) => { auditEvents.push(ev); return ev; };
+  const app2 = express();
+  app2.use(express.json({ limit: "25mb" }));
+  // Simulate a runtime where no client IP is resolvable (e.g. proxy quirk).
+  app2.use((req, _res, next) => {
+    Object.defineProperty(req, "ip", { get: () => undefined });
+    next();
+  });
+  app2.use("/api/v1", buildV1EnvelopesRouter());
+  const srv = app2.listen(0);
+  const addr = srv.address() as AddressInfo;
+  try {
+    const res = await fetch(`http://127.0.0.1:${addr.port}/api/v1/envelopes/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-KEY": ARCHIDOC_KEY },
+      body: JSON.stringify(baseRequest),
+    });
+    assert.equal(res.status, 201);
+    assert.ok(auditEvents.length > 0);
+    for (const ev of auditEvents) assert.equal(ev.ipAddress, null);
+  } finally {
+    (storage as any).createAuditEvent = prevAudit;
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  }
+});
