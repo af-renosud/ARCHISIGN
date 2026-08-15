@@ -1,11 +1,11 @@
 # Archisign — E-Signature Platform
 
-Internal tool for a French architecture firm (Maître d'Œuvre) handling external sign-offs (clients, contractors, partners) on architectural plans and contracts. Tokenised + OTP signing, Gmail integration, full audit trail, ArchiDoc / Architrak v1.0 wire contract for inter-app integration.
+Internal tool for a French architecture firm (Maître d'Œuvre) handling external sign-offs (clients, contractors, partners) on architectural plans and contracts. Tokenised + OTP signing, Gmail integration, full audit trail, ArchiDoc / Architrak v1.x wire contract for inter-app integration.
 
-Companion specs:
+Companion specs (authoritative — do not restate here):
 - `ARCHISIGN_ARCHITECTURE.md` — engineering standards, service boundaries, AI-agent directives
 - `ARCHITECTURE.md` — system architecture, schema, API
-- `docs/INTER_APP_CONTRACT_v1.0.md` — frozen Inter-App Wire Contract
+- `docs/INTER_APP_CONTRACT_v1.0.md` — frozen Inter-App Wire Contract (v1.0 + revs); contract is law for `/api/v1/*`
 
 ## Stack
 - **Runtime**: Node 20, PostgreSQL 16 (Replit-hosted)
@@ -14,9 +14,9 @@ Companion specs:
 - **DB**: Drizzle ORM 0.39 over `pg` (no Neon HTTP driver — direct Postgres)
 - **PDF**: `pdf-lib` + `@pdf-lib/fontkit` (server stamp); `pdfjs-dist` 5 (client canvas render)
 - **File Storage**: Replit Object Storage (GCS-backed) via `@google-cloud/storage`; client uploads via Uppy
-- **Email**: Gmail API (`googleapis`) through Replit Google Mail connector
-- **Auth**: Google Workspace OAuth 2.0 (`openid-client` + `passport`, OIDC discovery against `accounts.google.com`) for admin; token + OTP for external signers
-- **Tests**: Playwright (`tests/e2e`) + a Node test suite for `WebhookSignature`
+- **Email**: Gmail API (`googleapis`, lazy-loaded) through Replit Google Mail connector
+- **Auth**: Google Workspace OAuth 2.0 (`openid-client` + `passport`, lazy OIDC discovery) for admin; token + OTP for external signers
+- **Tests**: Node test runner suites under `server/**/__tests__/*.test.ts` (~170 tests) + Playwright (`tests/e2e`)
 
 ## Commands
 | Command            | Purpose                                                |
@@ -26,146 +26,38 @@ Companion specs:
 | `npm run start`    | Prod server: `node dist/index.cjs`                     |
 | `npm run check`    | `tsc` typecheck                                        |
 | `npm run db:push`  | `drizzle-kit push` — push schema to DB (no migrations) |
-| `./scripts/run-node-tests.sh` | Run every Node-level suite under `server/**/__tests__/*.test.ts` (WebhookSignature, ContactService, v1Contacts, adminGuard, …); also invoked automatically by `scripts/post-merge.sh` so pre-deploy fails if any suite fails |
+| `./scripts/run-node-tests.sh` | Run every Node-level suite; also invoked by `scripts/post-merge.sh` so pre-deploy fails if any suite fails |
 
-Workflow `Start application` runs `npm run dev`. Deployment target is `autoscale` (port 5000 → 80).
+Workflow `Start application` runs `npm run dev`. Deployment target is **Reserved VM** (port 5000 → 80); prod boot is optimized (~0.5s to first response — port binds first, `GET /health` is instant/no-DB, heavy deps lazy).
 
-## Project Structure
-```
-client/src/
-  pages/
-    dashboard.tsx              Admin envelope table (10s auto-refresh)
-    envelope-new.tsx           Create envelope (PDF upload + signers)
-    envelope-detail.tsx        Tabs: overview / signers / communication / audit
-    envelope-field-editor.tsx  Drag-and-drop field placement (signature/initial/date) with undo/redo
-    signer-verify.tsx          External OTP verification
-    signer-document.tsx        Pre-Start review iframe + locked single-page wizard
-    settings.tsx               Email copy, firm name
-    rollback-ledger.tsx        Version ledger
-    data-recovery.tsx          Soft-deleted envelopes + backup management
-    pre-deployment.tsx         Pre-deployment audit prompts
-    login.tsx                  Split-screen Google sign-in
-    not-found.tsx
-  components/
-    locked-page-view.tsx       pdfjs-dist canvas with on-page placeholders
-    ObjectUploader.tsx         Uppy dashboard wrapper for Object Storage uploads
-    app-sidebar.tsx, theme-toggle.tsx, ui/
-
-server/
-  index.ts                     Express bootstrap (25 MB JSON, graceful shutdown, scheduler boot, v2 allowlist validation)
-  routes.ts                    Admin + signer-token routes
-  routes/v1Envelopes.ts        v1.0 wire contract endpoints (apiKeyAuth + rateLimit on router)
-  storage.ts                   IStorage data-access layer
-  fileStorage.ts               Object Storage abstraction (PDFs + backups)
-  db.ts                        Drizzle / Postgres connection
-  gmail.ts                     Gmail API integration
-  seed.ts                      Email-settings seeder
-  static.ts, vite.ts           Prod static / dev Vite middleware
-  fonts/                       Embedded fonts (Dancing Script, etc.)
-  jobs/scheduler.ts            Hourly expirySweep + daily integrityCheck
-  middleware/
-    apiKeyAuth.ts              X-API-KEY → tenant resolution
-    rateLimit.ts               Per-(tenant, family) token bucket
-    asyncHandler.ts, validators.ts
-  services/
-    PdfService.ts              pdf-lib stamping (authoritative coordinate system)
-    SecurityService.ts         Tokens / OTP / signing-link crypto
-    NotificationService.ts     Email templates + completion notifications
-    WebhookSignature.ts        v1/v2 HMAC sign + verify; v2 tenant-allowlist parser
-    EventDispatcher.ts         7-event idempotent dispatch via webhook_deliveries
-    __tests__/WebhookSignature.test.ts
-  replit_integrations/         Generated wrappers (auth, object_storage)
-
-shared/
-  schema.ts                    Drizzle tables, enums, Zod schemas, relations
-  models/auth.ts               users + sessions (Google OAuth)
-
-scripts/
-  post-merge.sh                Post-merge reconciliation hook
-  reconcile-envelope-22.ts     One-off data fix (kept for reference)
-
-tests/e2e/                     Playwright specs (config: playwright.config.ts)
-docs/INTER_APP_CONTRACT_v1.0.md
-```
+## Non-obvious layout pointers
+- `server/routes.ts` — admin + signer-token routes; keep under ~1,000 lines (split new route families into `server/routes/*.ts` with injectable `build*Handler` factories, e.g. `resend.ts`, `continuation.ts`)
+- `server/routes/v1*.ts` — wire-contract endpoints (apiKeyAuth + rateLimit on router)
+- `server/services/PdfService.ts` — pdf-lib stamping; **authoritative coordinate system**
+- `server/utils/ssrfGuard.ts` — `safeFetch`/`assertSafeUrl` for ALL outbound URL fetches (pinned DNS, redirects disabled)
+- `server/replit_integrations/` — generated wrappers (auth, object_storage); don't hand-edit
+- `shared/schema.ts` — Drizzle tables + Zod schemas (single source of truth for DB shape)
+- `scripts/post-merge.sh` — post-merge reconciliation hook
 
 ## Database
-Driver: `pg` + Drizzle. Schema push via `npm run db:push` (no migration files).
+- Driver: `pg` + Drizzle. Schema push via `npm run db:push` — **no migration files; never create a `migrations/` folder**
+- Envelopes soft-delete via `deleted_at`; audit rows may have `envelopeId = null` (system events)
+- Signed envelopes are immutable — further signatures go via continuation envelopes (new linked draft, cert pages stripped, non-null parent hash)
 
-**Enums**: `envelope_status` (incl. terminal `expired`, `void`), `annotation_type`, `webhook_delivery_state` (pending / succeeded / dead_lettered), `signature_placement_mode`, `rollback_version_status`.
-
-**Tables**:
-- `envelopes` — soft-delete via `deleted_at`; v1.0 columns: `expires_at`, `decline_reason`, `origin`, `retention_breach_at`, `retention_incident_ref`, `retention_detected_at`
-- `signers` — token + OTP auth; v1.0 identity columns: `otp_issued_at`, `otp_verified_at`, `signer_ip_address`, `signer_user_agent`, `access_token_rotated_at`, `previous_access_token_hash`
-- `annotations` — initials/signatures per page (signerId FK, x/y, w/h, type, value, placed)
-- `communication_logs` — query messages between parties
-- `audit_events` — full audit trail (envelopeId nullable for system events)
-- `webhook_deliveries` — outbound dispatch ledger (UUID `event_id` idempotency key, attempts counter, raw payload + signature audit)
-- `contacts` — address-book mirror; `source` (`local` | `archidoc`), `archidocUserId` (unique), `archidocSourceUpdatedAt` (stale arbitration), `category`, `lastUsedAt` (Recent group), `archivedAt`
-- `settings` — k/v config (email copy, firm name, …)
-- `rollback_versions`, `backups`
-- `users`, `sessions` — Google OAuth + connect-pg-simple
-
-## Inter-App Wire Contract v1.0 (frozen 2026-04-25)
-Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md`. AS1 → AS5 fully landed:
-- Schema foundation (enums, columns, ledger, IStorage methods)
-- API-key middleware (ARCHIDOC + ARCHITRAK), per-(key, family) rate limit (60 RPM / 30 burst / 5000 day), v1 + v2 HMAC signing
-- `EventDispatcher` with idempotent ledger; 7 canonical events; v1+v2 dual-emit gated by `ARCHISIGN_WEBHOOK_V2_TENANTS` (default-on, opt-out via `ARCHISIGN_WEBHOOK_V2_DISABLED_TENANTS`)
-- v1 endpoints: `pdfFetchUrl` ingest, `/send` Idempotency-Key, `/signed-pdf-url` re-mint with §3.8 410 retention_breach, `/signed-pdf-fetch` HMAC URL (15-min TTL)
-- Schedulers: hourly `expirySweep` (atomic → `expired` + `envelope.expired`); daily `integrityCheck` (signed-PDF probe → `retention_breach_at` + `envelope.retention_breach`)
-
-### v1.0 endpoints
-- `POST /api/v1/envelopes/create` — accepts `pdfBase64`, `pdfUrl`, or `pdfFetchUrl` (60 s budget, 25 MiB cap); `signers[]`, optional `expiresAt`, `metadata`, `fields[]`, `identityVerification.method`; returns §3.5.1 shape with `signers[].accessUrl` + `otpDestination`. Bumps `contacts.last_used_at` for matched signer emails.
-- `POST /api/v1/envelopes/:id/send` — idempotent on `{sent, viewed, queried}` (200); rejects `{signed, declined, expired, void}` with 409
-- `GET /api/v1/envelopes/:id/signed-pdf-url` — mints 15-min HMAC URL; 410 + §3.8 `retention_breach` body when breached
-- `GET /api/v1/envelopes/:envelopeId/signed-pdf-fetch?exp=&sig=` — streams PDF when HMAC matches
-- Rate-limit body matches §3.6.1 (`error`, `retryAfter`, `limit`, `currentUsage`, `ceiling`); `X-RateLimit-Remaining` set on 200s
-
-### v1.3 Contacts Channel endpoints (archidoc tenant only)
-- `PUT  /api/v1/contacts/archidoc/:archidocUserId` — idempotent upsert; older `sourceUpdatedAt` → `200 {applied:false,reason:"stale"}`
-- `DELETE /api/v1/contacts/archidoc/:archidocUserId` — always-200 archive; unknown id → `{archived:true,alreadyArchived:true}`
-- `POST /api/v1/contacts/archidoc/bulk` — partial success per row, hard cap **500** (over-cap → `413 payload_too_large`), 5 MiB body limit; emits one `contact.bulk_imported` audit event per call
-- New rate-limit family `"contacts"` (60 RPM / 30 burst / 5 000 day, independent counters)
-- Audit events `contact.synced`, `contact.archived`, `contact.bulk_imported` carry `envelopeId = null`
-- Non-archidoc tenants get `403 tenant_forbidden` on every `/api/v1/contacts/archidoc/*` call
-
-### v1.4 §3.5.1.1 rev2 (2026-07-12) — email rendering
-Caller `subject` guaranteed verbatim as contiguous substring of invitation Subject (`[firm] prefix` framing permitted); `body` elected RENDERED; additive `emailRendering {subjectApplied, bodyApplied}` echo on /create 201; `body` > 2 000 code points → `400 body_too_long`. Full text: contract doc §9.
+## Inter-App Wire Contract
+Authoritative spec: `docs/INTER_APP_CONTRACT_v1.0.md` (includes v1.3 contacts channel, v1.4 email-rendering rev). Do not change `/api/v1/*` request/response shapes without a contract rev.
+- API keys: `apiKeyAuth` resolves `X-API-KEY` against CSV in `ARCHIDOC_API_KEY` / `ARCHITRAK_API_KEY` → `req.apiKeyAuth = {tenant, keyHash}`
+- Rate limits are per-(tenant, family) token buckets; contacts endpoints are archidoc-tenant-only
+- All outbound webhooks go through `EventDispatcher.emitEvent` (idempotent ledger, v1+v2 dual-emit gated by `ARCHISIGN_WEBHOOK_V2_TENANTS`)
+- Schedulers (`server/jobs/scheduler.ts`): hourly `expirySweep`, daily `integrityCheck`; disable with `ARCHISIGN_DISABLE_SCHEDULERS=1` in tests/CI
 
 ## Authentication & Authorization
-- **Admin**: Direct Google Workspace OAuth 2.0 (OIDC discovery against `https://accounts.google.com`) via `server/services/GoogleAuthService.ts`. `/api/login` redirects to Google with `hd=<allowed_domain>` + `prompt=select_account`; `/api/auth/google/callback` is the registered redirect URI; the verify callback re-checks the signed `hd` ID-token claim server-side (the URL `hd` param is never trusted on its own), confirms `email_verified`, and confirms the email-suffix matches the configured domain. Personal Gmail accounts and other Workspaces are rejected. All `/api/*` protected EXCEPT `/api/sign/:token/*`, `/api/v1/*`, and the OAuth handshake (`/api/login`, `/api/logout`, `/api/auth/google/callback`). Failures redirect to `/login?error=auth_failed`.
-- **Single-org domain rule**: admin guard requires the session email to end in `@<ARCHISIGN_ALLOWED_EMAIL_DOMAIN>` (default `renosud.com`). Denial → session destroyed + `403 {code, message, allowedDomain}` (`code` = `domain_not_allowed` or `email_not_in_allowlist`) + `audit_events` row with `reason` metadata. `E2E_AUTH_BYPASS=1` (dev/test only) skips the domain check.
-- **Optional allowlist**: `ADMIN_EMAILS` (CSV) — applied as a *further* narrowing filter on top of the domain rule
-- **Sessions**: connect-pg-simple, 7-day TTL, `SESSION_SECRET` required
-- **API keys**: `apiKeyAuth` resolves `X-API-KEY` against CSV in `ARCHIDOC_API_KEY` / `ARCHITRAK_API_KEY`; attaches `req.apiKeyAuth = {tenant, keyHash}`
-- **Audit**: unauthorised attempts logged to `audit_events`
-
-## Object Storage
-- All PDFs and backups live in Replit Object Storage (GCS), persistent across deploys
-- `fileStorage.ts`: `uploadFile`, `downloadFile`, `streamFileToResponse`, `fileExists`, `deleteFile`, `uploadBackup`, `downloadBackup`, `deleteBackupFile`
-- Upload flow: Multer temp file → buffer → upload → temp delete in `finally`
-- Serving: `/uploads/:filename` streams directly (no full-buffering)
-- Filename validation rejects `..` / `/` segments
-- Layout: `<bucket>/<prefix>/uploads/` for PDFs, `<bucket>/<prefix>/backups/` for backups
-- Orphan cleanup: failed DB transaction after PDF save deletes the saved file
-
-## Security & Integrity
-- Path-traversal hardening on all filename inputs
-- OTP stored as SHA-256 hash; verification timing-safe
-- ACID transactions for envelope/signer creation; atomic double-sign prevention via conditional UPDATE
-- Zod validation on all inbound payloads (admin + v1)
-- HMAC SHA-256 webhook signing: v1 `x-archisign-signature`; v2 `${ts}.${rawBody}` per §3.9, dual-emitted to allowlisted tenants
-- Length-guarded `timingSafeEqual` on every HMAC verify
-- Webhook delivery: 5 attempts, exponential backoff `[1s, 3s, 10s, 30s]`, 10 s per-attempt timeout; non-retryable 4xx (except 429) → `dead_lettered`
-- Graceful shutdown drains in-flight requests
-- Email-failure-safe send flow (DB state + audit recorded before email dispatch)
-- Log sanitisation: tokens, OTPs, API keys redacted
-
-## Guided Signing Flow
-- **Pre-Start**: native browser PDF viewer for free-form review
-- **After Start**: per-page wizard locks each page to a single anchored `pdfjs-dist` canvas — no toolbar, sidebar, zoom, or scroll
-- Admin-placed initial/signature fields render as orange-dashed placeholders → placed markers (Dancing Script for signatures, glyph text for initials) at the same coordinates `PdfService.stampSignedPdf` uses
-- Fixed-bottom signature mode projects exact PDF-point geometry (260 pt × ~96 pt, centred, 10 mm bottom padding) into rendered CSS pixels so on-screen preview matches the stamped output
-- `/api/sign/:token/document` payload exposes `signaturePlacementMode` so the wizard chooses the right final-step UI
+- **Admin**: Google Workspace OAuth 2.0 via `server/services/GoogleAuthService.ts`; OIDC discovery is lazy (first `/api/login`), memoized 1h
+- The `hd` claim is re-checked server-side from the signed ID token — never trust the URL param; `email_verified` required
+- Domain rule: session email must end in `@<ARCHISIGN_ALLOWED_EMAIL_DOMAIN>` (default `renosud.com`); `ADMIN_EMAILS` (CSV) further narrows; denial destroys session + audits
+- All `/api/*` protected EXCEPT `/api/sign/:token/*`, `/api/v1/*`, and the OAuth handshake routes
+- `E2E_AUTH_BYPASS=1` (dev/test only) skips the domain check
+- Sessions: connect-pg-simple, 7-day TTL, `SESSION_SECRET` required
 
 ## Environment Variables & Secrets
 | Variable                                | Type   | Required    | Description                                                                 |
@@ -185,18 +77,22 @@ Caller `subject` guaranteed verbatim as contiguous substring of invitation Subje
 | DEFAULT_OBJECT_STORAGE_BUCKET_ID        | secret | Auto        | Object Storage bucket ID                                                    |
 | PRIVATE_OBJECT_DIR                      | secret | Auto        | Object Storage private directory path                                       |
 | PUBLIC_OBJECT_SEARCH_PATHS              | secret | Auto        | Object Storage public search paths                                          |
-| GOOGLE_OAUTH_CLIENT_ID                  | secret | Yes         | Google Workspace OAuth 2.0 web client ID (Renosud Google Cloud Console) |
+| GOOGLE_OAUTH_CLIENT_ID                  | secret | Yes         | Google Workspace OAuth 2.0 web client ID (Renosud Google Cloud Console)     |
 | GOOGLE_OAUTH_CLIENT_SECRET              | secret | Yes         | Google Workspace OAuth 2.0 web client secret; pairs with the client ID above |
 | REPLIT_CONNECTORS_HOSTNAME, REPL_IDENTITY, WEB_REPL_RENEWAL | env | Auto | Replit connector plumbing (Gmail, Object Storage) |
 
 ## AI-Agent Gotchas
 - **Don't edit `package.json`** — use the package manager tool instead.
 - **Don't touch `vite.config.ts`, `server/vite.ts`, or `drizzle.config.ts`** unless absolutely necessary; they are wired for the Replit single-port setup.
-- **Schema changes ship via `npm run db:push`** — there are no migration files; do not invent a `migrations/` folder.
+- **Schema changes ship via `npm run db:push`** — no migration files; do not invent a `migrations/` folder.
 - **`PdfService.stampSignedPdf` is the authoritative coordinate system.** Any client-side preview (e.g. `LockedPageView`) must project from the same PDF-point geometry — never re-derive from CSS pixels.
 - **All outbound webhooks must go through `EventDispatcher.emitEvent`** — never call HTTP directly; the ledger and v2 dual-emit depend on it.
+- **All outbound URL fetches (user-supplied URLs) must go through `server/utils/ssrfGuard.ts`** — never raw `fetch`.
 - **`/api/v1/*` is API-key auth only** — never wrap it in the admin OAuth middleware.
-- **Object Storage filename inputs**: validate `..` / `/` rejection on any new endpoint that accepts a filename.
+- **No PDF/crypto/email logic in route handlers** — services only; routes use `asyncHandler` + `validateId`; DB via `IStorage` (direct `db` only for transactions).
+- **Object Storage filename inputs**: validate `..` / `/` rejection on any new endpoint that accepts a filename; layout `<prefix>/uploads/` + `<prefix>/backups/`.
+- **Keep boot fast**: port binds before route setup; no awaited network calls (OIDC discovery, googleapis) on the boot path; `GET /health` must stay instant and DB-free.
+- Length-guarded `timingSafeEqual` on every HMAC/OTP compare; tokens/OTPs/API keys redacted in logs.
 - This is **Archisign**. The companion projects are **ArchiDoc** (document ingest) and **Architrak** (project tracker). Requests about meeting agendas, attendees, plan changes, image-paste editors, etc. belong to those — not here.
 
 ## User Preferences
