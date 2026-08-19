@@ -9,6 +9,11 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"]],
   use: {
+    // On NixOS the downloaded Playwright browsers miss shared libs; point at
+    // the system chromium instead (E2E_CHROMIUM_PATH=$(which chromium)).
+    launchOptions: process.env.E2E_CHROMIUM_PATH
+      ? { executablePath: process.env.E2E_CHROMIUM_PATH }
+      : {},
     baseURL: process.env.E2E_BASE_URL || "http://localhost:5000",
     headless: true,
     actionTimeout: 15_000,

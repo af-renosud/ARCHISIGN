@@ -1,6 +1,6 @@
 import { LayoutDashboard, Plus, Settings, Mail, Shield, History, Database, ChevronRight, LogOut, Users, Lightbulb } from "lucide-react";
 import archisignLogo from "@assets/Generated_Image_February_13__2026_-_7_21AM-removebg-preview_1770963731125.png";
-import { useLocation, Link } from "wouter";
+import { useLocation, useSearch, Link } from "wouter";
 import {
   Sidebar,
   SidebarContent,
@@ -64,11 +64,11 @@ export function AppSidebar() {
         <SidebarGroup>
           <SidebarGroupContent>
             <div className="space-y-1 px-2">
-              <StatusRow label="Draft" count={envelopes?.filter(e => e.status === "draft").length || 0} />
-              <StatusRow label="Sent" count={envelopes?.filter(e => e.status === "sent").length || 0} />
-              <StatusRow label="Viewed" count={envelopes?.filter(e => e.status === "viewed").length || 0} />
-              <StatusRow label="Queried" count={queriedCount} highlight />
-              <StatusRow label="Signed" count={envelopes?.filter(e => e.status === "signed").length || 0} />
+              <StatusRow label="Draft" status="draft" count={envelopes?.filter(e => e.status === "draft").length || 0} />
+              <StatusRow label="Sent" status="sent" count={envelopes?.filter(e => e.status === "sent").length || 0} />
+              <StatusRow label="Viewed" status="viewed" count={envelopes?.filter(e => e.status === "viewed").length || 0} />
+              <StatusRow label="Queried" status="queried" count={queriedCount} highlight />
+              <StatusRow label="Signed" status="signed" count={envelopes?.filter(e => e.status === "signed").length || 0} />
             </div>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -197,10 +197,19 @@ function UserInfo() {
   );
 }
 
-function StatusRow({ label, count, highlight }: { label: string; count: number; highlight?: boolean }) {
+function StatusRow({ label, status, count, highlight }: { label: string; status: string; count: number; highlight?: boolean }) {
+  const [location, navigate] = useLocation();
+  const search = useSearch();
+  const active = location === "/" && new URLSearchParams(search).get("status") === status;
   return (
-    <div className="flex items-center justify-between gap-2 py-1 text-sm">
-      <span className="text-muted-foreground">{label}</span>
+    <button
+      type="button"
+      onClick={() => navigate(`/?status=${status}`)}
+      aria-pressed={active}
+      className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1 text-sm text-left hover-elevate ${active ? "bg-sidebar-accent font-medium" : ""}`}
+      data-testid={`button-status-${status}`}
+    >
+      <span className={active ? "text-sidebar-accent-foreground" : "text-muted-foreground"}>{label}</span>
       <Badge
         variant={highlight && count > 0 ? "destructive" : "secondary"}
         className="text-xs"
@@ -208,6 +217,6 @@ function StatusRow({ label, count, highlight }: { label: string; count: number; 
       >
         {count}
       </Badge>
-    </div>
+    </button>
   );
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -54,32 +54,52 @@ function loadStoredStatuses(): StatusKey[] {
 
 export default function Dashboard() {
   const [, navigate] = useLocation();
+  const search = useSearch();
+  // Sidebar status rows link to `/?status=<key>`; a valid param pre-filters
+  // the dashboard to exactly that status (shareable/bookmarkable).
+  const rawStatusParam = new URLSearchParams(search).get("status");
+  const statusParam: StatusKey | null =
+    rawStatusParam && (ALL_STATUSES as readonly string[]).includes(rawStatusParam)
+      ? (rawStatusParam as StatusKey)
+      : null;
   const [projectSearch, setProjectSearch] = useState("");
   const [partnerSearch, setPartnerSearch] = useState("");
   const [generalSearch, setGeneralSearch] = useState("");
-  const [selectedStatuses, setSelectedStatuses] = useState<StatusKey[]>(loadStoredStatuses);
+  // The user's own (persisted) selection. A ?status= link never touches this;
+  // it only overrides the *displayed* filter via `selectedStatuses` below, so
+  // Back/Forward or removing the param returns to the stored selection intact.
+  const [storedStatuses, setStoredStatuses] = useState<StatusKey[]>(loadStoredStatuses);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      window.localStorage.setItem(STATUS_FILTER_STORAGE_KEY, JSON.stringify(selectedStatuses));
+      window.localStorage.setItem(STATUS_FILTER_STORAGE_KEY, JSON.stringify(storedStatuses));
     } catch {
       // Quota / private-mode / disabled-storage failures are non-fatal — the
       // filter still works in-memory; persistence simply degrades gracefully.
     }
-  }, [selectedStatuses]);
+  }, [storedStatuses]);
+
+  // What the dashboard actually displays — derived synchronously, so the URL
+  // and the visible filter can never disagree, even transiently.
+  const selectedStatuses: StatusKey[] = statusParam ? [statusParam] : storedStatuses;
+
+  // Any filter change made from the dashboard UI takes over from the URL
+  // param: clear it and persist the new selection as the user's own.
+  function setStatusesFromUi(next: StatusKey[]) {
+    if (statusParam) navigate("/", { replace: true });
+    setStoredStatuses(next);
+  }
 
   const selectedSet = new Set<StatusKey>(selectedStatuses);
   const allSelected = selectedStatuses.length === ALL_STATUSES.length;
   const noneSelected = selectedStatuses.length === 0;
 
   function toggleStatus(status: StatusKey, checked: boolean) {
-    setSelectedStatuses((prev) => {
-      const set = new Set(prev);
-      if (checked) set.add(status);
-      else set.delete(status);
-      return ALL_STATUSES.filter((s) => set.has(s));
-    });
+    const set = new Set(selectedStatuses);
+    if (checked) set.add(status);
+    else set.delete(status);
+    setStatusesFromUi(ALL_STATUSES.filter((s) => set.has(s)));
   }
 
   const { data: envelopes, isLoading } = useQuery<(Envelope & { signers: Signer[] })[]>({
@@ -122,7 +142,7 @@ export default function Dashboard() {
   };
 
   function applyStatusPreset(preset: StatusKey[]) {
-    setSelectedStatuses(ALL_STATUSES.filter((s) => preset.includes(s)));
+    setStatusesFromUi(ALL_STATUSES.filter((s) => preset.includes(s)));
     setProjectSearch("");
     setPartnerSearch("");
     setGeneralSearch("");
@@ -247,7 +267,7 @@ export default function Dashboard() {
                         size="sm"
                         variant="ghost"
                         className="h-7 px-2 text-xs"
-                        onClick={() => setSelectedStatuses([...ALL_STATUSES])}
+                        onClick={() => setStatusesFromUi([...ALL_STATUSES])}
                         data-testid="button-status-filter-all"
                       >
                         All
@@ -256,7 +276,7 @@ export default function Dashboard() {
                         size="sm"
                         variant="ghost"
                         className="h-7 px-2 text-xs"
-                        onClick={() => setSelectedStatuses([])}
+                        onClick={() => setStatusesFromUi([])}
                         data-testid="button-status-filter-none"
                       >
                         None
@@ -265,7 +285,7 @@ export default function Dashboard() {
                         size="sm"
                         variant="ghost"
                         className="h-7 px-2 text-xs"
-                        onClick={() => setSelectedStatuses([...DEFAULT_STATUSES])}
+                        onClick={() => setStatusesFromUi([...DEFAULT_STATUSES])}
                         data-testid="button-status-filter-default"
                       >
                         Default

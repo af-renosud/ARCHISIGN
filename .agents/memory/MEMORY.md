@@ -1,3 +1,4 @@
 - [PDF text-layer anchor search](pdf-text-anchors.md) — server-side pdfjs extraction, invisible-anchor matching, normalized-coordinate math, and the dev-server-restart gotcha.
 - [Continuation envelopes](continuation-envelopes.md) — signed envelopes are immutable; further signatures go via a new linked draft with cert pages stripped and non-null parent hash.
+- [Playwright e2e on NixOS](e2e-playwright-on-nixos.md) — use system chromium via E2E_CHROMIUM_PATH; run e2e server and playwright in the same shell command or the server dies mid-run.
 - [Custom agent DNS lookup](custom-agent-dns-lookup.md) — agent `lookup` must honor `{all:true}` (Node 20+ autoSelectFamily) or outbound fetches die with "Invalid IP address: undefined".
