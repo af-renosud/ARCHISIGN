@@ -412,7 +412,13 @@ export const createApiEnvelopeRequestSchema = z.object({
   { message: "PDF source required: provide 'pdfFetchUrl', 'pdfUrl', or 'pdfBase64'", path: ["pdfFetchUrl"] }
 );
 
-export const sendEnvelopeRequestSchema = z.object({}).passthrough();
+export const sendEnvelopeRequestSchema = z.object({
+  // Optional for backwards compatibility with existing clients. When the
+  // property is present, blank/whitespace explicitly clears a prior message.
+  message: z.string().trim().max(5000, "Message must be 5,000 characters or fewer").nullable().optional(),
+});
+
+export type SendEnvelopeRequest = z.infer<typeof sendEnvelopeRequestSchema>;
 
 export type Envelope = typeof envelopes.$inferSelect;
 export type InsertEnvelope = z.infer<typeof insertEnvelopeSchema>;

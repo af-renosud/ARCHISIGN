@@ -76,6 +76,18 @@ test("admin send: draft with no originalPdfUrl -> 409 pdf_missing", () =>
     assert.equal((await res.json()).code, "pdf_missing");
   }));
 
+test("admin send: contextual message over 5,000 characters -> 400 before delivery", async () => {
+  const res = await fetch(`${baseUrl}/api/envelopes/424242/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: "x".repeat(5001) }),
+  });
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.equal(body.message, "Invalid send data");
+  assert.match(body.errors?.message?.[0] ?? "", /5,000 characters or fewer/);
+});
+
 test("admin reply: envelope with no originalPdfUrl -> 409 pdf_missing", () =>
   withPdflessEnvelope(async () => {
     const res = await fetch(`${baseUrl}/api/envelopes/424242/reply`, {

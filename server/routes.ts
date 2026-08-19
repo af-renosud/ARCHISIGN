@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
-import { insertRollbackVersionSchema, insertBackupSchema, createEnvelopeRequestSchema, createSignerRequestSchema, createApiEnvelopeRequestSchema, wishlistCreateRequestSchema, wishlistUpdateRequestSchema } from "@shared/schema";
+import { insertRollbackVersionSchema, insertBackupSchema, createEnvelopeRequestSchema, createSignerRequestSchema, createApiEnvelopeRequestSchema, sendEnvelopeRequestSchema, wishlistCreateRequestSchema, wishlistUpdateRequestSchema } from "@shared/schema";
 import { z } from "zod";
 import multer from "multer";
 import path from "path";
@@ -12,7 +12,8 @@ import fsPromises from "fs/promises";
 import { uploadFile, downloadFile, streamFileToResponse, fileExists, deleteFile, uploadBackup, downloadBackup, deleteBackupFile } from "./fileStorage";
 import { getPageCount, stampSignedPdf, renderCertificatePdf, type EnvelopeCertificateContext } from "./services/PdfService";
 import { generateToken, generateOtp, hashOtp, verifyOtp, buildSigningLink, generateAuthenticationId } from "./services/SecurityService";
-import { sendSigningInvitation, sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
+import { sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
+import { InitialEnvelopeSendError, sendEnvelopeForSigning } from "./services/EnvelopeSendService";
 import { asyncHandler } from "./middleware/asyncHandler";
 import { validateId } from "./middleware/validators";
 import { buildAdminGuard } from "./middleware/adminGuard";
@@ -408,77 +409,28 @@ export async function registerRoutes(
   }));
 
   app.post("/api/envelopes/:id/send", asyncHandler(async (req, res) => {
-    const id = parseInt(req.params.id);
-    const envelope = await storage.getEnvelope(id);
-    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
-    if (envelope.status !== "draft") return res.status(400).json({ message: "Envelope already sent" });
-    // Defense in depth: legacy rows created before the PDF requirement.
-    if (!envelope.originalPdfUrl) {
-      return res.status(409).json({ code: "pdf_missing", message: "Envelope has no PDF document and cannot be sent" });
+    const sendParsed = sendEnvelopeRequestSchema.safeParse(req.body ?? {});
+    if (!sendParsed.success) {
+      return res.status(400).json({
+        message: "Invalid send data",
+        errors: sendParsed.error.flatten().fieldErrors,
+      });
     }
 
-    const firmEmail = await getGmailProfile();
-    const emailCfg = await loadEmailSettings();
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
-
-    const emailResults: { email: string; success: boolean; error?: string }[] = [];
-
-    for (const signer of envelope.signers) {
-      try {
-        const result = await sendSigningInvitation(signer, envelope, baseUrl, emailCfg);
-        emailResults.push({ email: signer.email, success: true });
-
-        if (result.threadId && !envelope.gmailThreadId) {
-          await storage.updateEnvelope(id, { gmailThreadId: result.threadId });
-        }
-      } catch (err: any) {
-        console.error(`Failed to send email to ${signer.email}:`, err);
-        emailResults.push({ email: signer.email, success: false, error: err.message });
-      }
-    }
-
-    const allFailed = emailResults.every(r => !r.success);
-    if (allFailed) {
-      await storage.createAuditEvent({
-        envelopeId: id,
-        eventType: "Envelope send failed - all emails failed",
-        actorEmail: firmEmail || null,
+    try {
+      const updated = await sendEnvelopeForSigning({
+        envelopeId: parseInt(req.params.id),
+        request: sendParsed.data,
+        baseUrl: `${req.protocol}://${req.get("host")}`,
         ipAddress: req.ip || null,
-        metadata: JSON.stringify(emailResults),
       });
-      return res.status(502).json({
-        message: "Failed to send emails to all signers. Envelope remains in draft.",
-        failures: emailResults,
-      });
-    }
-
-    await storage.updateEnvelope(id, { status: "sent" });
-    await storage.createAuditEvent({
-      envelopeId: id,
-      eventType: "Envelope sent for signing",
-      actorEmail: firmEmail || null,
-      ipAddress: req.ip || null,
-      metadata: emailResults.some(r => !r.success) ? JSON.stringify(emailResults) : null,
-    });
-
-    if (envelope.webhookUrl) {
-      try {
-        await emitEvent({
-          webhookUrl: envelope.webhookUrl,
-          envelope: { id, externalRef: envelope.externalRef, origin: envelope.origin },
-          eventData: {
-            event: "envelope.sent",
-            signers: envelope.signers.map((s) => ({ email: s.email, name: s.fullName })),
-          },
-          tenantKey: envelope.origin || undefined,
-        });
-      } catch (err: any) {
-        console.error(`[envelope.sent] emit failure for envelope ${id}: ${err?.message || err}`);
+      res.json(updated);
+    } catch (err) {
+      if (err instanceof InitialEnvelopeSendError) {
+        return res.status(err.status).json(err.toResponseBody());
       }
+      throw err;
     }
-
-    const updated = await storage.getEnvelope(id);
-    res.json(updated);
   }));
 
   app.post("/api/envelopes/:id/resend", buildResendHandler());

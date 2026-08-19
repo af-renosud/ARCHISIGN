@@ -90,13 +90,24 @@ export interface IStorage {
   resetDeliveryForRetry(id: number): Promise<WebhookDelivery | undefined>;
 
   /**
-   * Atomically transition an envelope from `draft` to `sent`.
+   * Atomically transition an envelope from `draft` to `sent`, optionally
+   * applying the initial invitation message in the same write.
    * Returns the updated envelope row when this caller wins the transition,
    * or null when the envelope was not in `draft` (already sent / terminal /
    * concurrent caller won). Allows /send first-send semantics to be race-tight
    * even under concurrent requests.
    */
-  atomicClaimEnvelopeSend(envelopeId: number, now: Date): Promise<Envelope | null>;
+  atomicClaimEnvelopeSend(
+    envelopeId: number,
+    now: Date,
+    updates?: Pick<Envelope, "message">,
+  ): Promise<Envelope | null>;
+  /**
+   * Restore a failed send claim only if nobody has modified the claimed row
+   * since `claimedAt`. This keeps all-email-failed retries possible without
+   * overwriting a newer concurrent transition.
+   */
+  atomicReleaseEnvelopeSend(envelopeId: number, claimedAt: Date): Promise<Envelope | null>;
   markEnvelopeExpiredAtomic(now: Date): Promise<Envelope[]>;
   markEnvelopeRetentionBreach(envelopeId: number, incidentRef: string, detectedAt: Date): Promise<Envelope | undefined>;
   getEnvelopesForIntegrityCheck(limit: number, offset: number): Promise<Envelope[]>;
@@ -424,12 +435,30 @@ export class DatabaseStorage implements IStorage {
     return updated;
   }
 
-  async atomicClaimEnvelopeSend(envelopeId: number, now: Date): Promise<Envelope | null> {
+  async atomicClaimEnvelopeSend(
+    envelopeId: number,
+    now: Date,
+    updates?: Pick<Envelope, "message">,
+  ): Promise<Envelope | null> {
     const [updated] = await db.update(envelopes)
-      .set({ status: "sent", updatedAt: now })
+      .set({ status: "sent", updatedAt: now, ...(updates ?? {}) })
       .where(and(
         eq(envelopes.id, envelopeId),
         eq(envelopes.status, "draft"),
+        isNull(envelopes.deletedAt),
+      ))
+      .returning();
+    return updated ?? null;
+  }
+
+  async atomicReleaseEnvelopeSend(envelopeId: number, claimedAt: Date): Promise<Envelope | null> {
+    const now = new Date();
+    const [updated] = await db.update(envelopes)
+      .set({ status: "draft", updatedAt: now })
+      .where(and(
+        eq(envelopes.id, envelopeId),
+        eq(envelopes.status, "sent"),
+        eq(envelopes.updatedAt, claimedAt),
         isNull(envelopes.deletedAt),
       ))
       .returning();

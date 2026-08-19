@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -140,6 +142,8 @@ export default function EnvelopeFieldEditor() {
     pagesMissingInitial: { signer: string; pages: number[] }[];
     intent: "save" | "send";
   } | null>(null);
+  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [sendMessage, setSendMessage] = useState("");
   const [expandedSigners, setExpandedSigners] = useState<Set<number>>(new Set());
   const [pageAspects, setPageAspects] = useState<Map<number, number>>(new Map());
 
@@ -421,11 +425,11 @@ export default function EnvelopeFieldEditor() {
   // Save-then-send: persists fields exactly like Save Fields, then sends the
   // envelope. If sending fails, fields remain saved and the envelope stays draft.
   const saveAndSendMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (message: string) => {
       await persistFields();
       queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id, "annotations"] });
       try {
-        await apiRequest("POST", `/api/envelopes/${id}/send`);
+        await apiRequest("POST", `/api/envelopes/${id}/send`, { message });
       } catch (err: any) {
         throw new Error(`SEND_FAILED:${err?.message ?? "Failed to send envelope"}`);
       }
@@ -433,6 +437,8 @@ export default function EnvelopeFieldEditor() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
       queryClient.invalidateQueries({ queryKey: ["/api/envelopes"] });
+      setSendDialogOpen(false);
+      setSendMessage("");
       toast({
         title: "Envelope sent",
         description: "Fields saved and signing invitations emailed to all signers.",
@@ -834,8 +840,14 @@ export default function EnvelopeFieldEditor() {
 
   const handleSaveClick = (intent: "save" | "send" = "save") => {
     setRedoStack([]);
-    const run = () =>
-      intent === "send" ? saveAndSendMutation.mutate() : saveMutation.mutate();
+    const run = () => {
+      if (intent === "send") {
+        setSendMessage(envelope?.message ?? "");
+        setSendDialogOpen(true);
+      } else {
+        saveMutation.mutate();
+      }
+    };
     if (!envelope) {
       run();
       return;
@@ -1630,12 +1642,74 @@ export default function EnvelopeFieldEditor() {
               onClick={() => {
                 const intent = savePromptOpen?.intent ?? "save";
                 setSavePromptOpen(null);
-                if (intent === "send") saveAndSendMutation.mutate();
-                else saveMutation.mutate();
+                if (intent === "send") {
+                  setSendMessage(envelope?.message ?? "");
+                  setSendDialogOpen(true);
+                } else {
+                  saveMutation.mutate();
+                }
               }}
               data-testid="button-save-anyway"
             >
               {savePromptOpen?.intent === "send" ? "Send anyway" : "Save anyway"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={sendDialogOpen}
+        onOpenChange={(open) => {
+          if (saveAndSendMutation.isPending) return;
+          setSendDialogOpen(open);
+          if (!open) setSendMessage("");
+        }}
+      >
+        <DialogContent
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+          data-testid="dialog-send-envelope"
+        >
+          <DialogHeader>
+            <DialogTitle>Send for Signing</DialogTitle>
+            <DialogDescription>
+              Your field placements will be saved, then signing invitations will be emailed to all signers. Add an optional contextual message for the invitation email.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="field-editor-send-message">Optional message</Label>
+            <Textarea
+              id="field-editor-send-message"
+              placeholder="e.g. Please review and sign these plans by Friday."
+              value={sendMessage}
+              onChange={(e) => setSendMessage(e.target.value)}
+              maxLength={5000}
+              className="min-h-[120px]"
+              data-testid="input-send-message"
+            />
+            <p className="text-xs text-muted-foreground text-right">
+              {sendMessage.length.toLocaleString()} / 5,000
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setSendDialogOpen(false);
+                setSendMessage("");
+              }}
+              disabled={saveAndSendMutation.isPending}
+              data-testid="button-cancel-send"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => saveAndSendMutation.mutate(sendMessage)}
+              disabled={saveAndSendMutation.isPending}
+              data-testid="button-confirm-send"
+            >
+              <SendHorizonal className="h-4 w-4 mr-2" />
+              {saveAndSendMutation.isPending ? "Sending..." : "Save & Send Invitations"}
             </Button>
           </DialogFooter>
         </DialogContent>

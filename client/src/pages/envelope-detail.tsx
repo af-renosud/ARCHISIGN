@@ -80,6 +80,8 @@ export default function EnvelopeDetail() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const [replyMessage, setReplyMessage] = useState("");
+  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [sendMessage, setSendMessage] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
   const [resendDialogOpen, setResendDialogOpen] = useState(false);
@@ -114,10 +116,13 @@ export default function EnvelopeDetail() {
   const sharedEmailMap = useMemo(() => buildSharedEmailMap(contacts), [contacts]);
 
   const sendMutation = useMutation({
-    mutationFn: () => apiRequest("POST", `/api/envelopes/${id}/send`),
+    mutationFn: (message: string) =>
+      apiRequest("POST", `/api/envelopes/${id}/send`, { message }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
       queryClient.invalidateQueries({ queryKey: ["/api/envelopes"] });
+      setSendDialogOpen(false);
+      setSendMessage("");
       toast({ title: "Envelope sent", description: "Signing invitations have been emailed to all signers." });
     },
     onError: (err: Error) => {
@@ -261,7 +266,14 @@ export default function EnvelopeDetail() {
                   <PenTool className="h-4 w-4 mr-2" />
                   Place Fields
                 </Button>
-                <Button onClick={() => sendMutation.mutate()} disabled={sendMutation.isPending} data-testid="button-send-envelope">
+                <Button
+                  onClick={() => {
+                    setSendMessage(envelope.message ?? "");
+                    setSendDialogOpen(true);
+                  }}
+                  disabled={sendMutation.isPending}
+                  data-testid="button-send-envelope"
+                >
                   <Send className="h-4 w-4 mr-2" />
                   {sendMutation.isPending ? "Sending..." : "Send for Signing"}
                 </Button>
@@ -663,6 +675,64 @@ export default function EnvelopeDetail() {
           </TabsContent>
         </Tabs>
       </div>
+
+      <Dialog
+        open={sendDialogOpen}
+        onOpenChange={(open) => {
+          if (sendMutation.isPending) return;
+          setSendDialogOpen(open);
+          if (!open) setSendMessage("");
+        }}
+      >
+        <DialogContent
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+          data-testid="dialog-send-envelope"
+        >
+          <DialogHeader>
+            <DialogTitle>Send for Signing</DialogTitle>
+            <DialogDescription>
+              Signing invitations will be emailed to all signers. Add an optional contextual message that will appear in the invitation email.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="send-message">Optional message</Label>
+            <Textarea
+              id="send-message"
+              placeholder="e.g. Please review and sign these plans by Friday."
+              value={sendMessage}
+              onChange={(e) => setSendMessage(e.target.value)}
+              maxLength={5000}
+              className="min-h-[120px]"
+              data-testid="input-send-message"
+            />
+            <p className="text-xs text-muted-foreground text-right">
+              {sendMessage.length.toLocaleString()} / 5,000
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setSendDialogOpen(false);
+                setSendMessage("");
+              }}
+              disabled={sendMutation.isPending}
+              data-testid="button-cancel-send"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => sendMutation.mutate(sendMessage)}
+              disabled={sendMutation.isPending}
+              data-testid="button-confirm-send"
+            >
+              <Send className="h-4 w-4 mr-2" />
+              {sendMutation.isPending ? "Sending..." : "Send Invitations"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={deleteDialogOpen} onOpenChange={(open) => { setDeleteDialogOpen(open); if (!open) setDeleteReason(""); }}>
         <DialogContent
