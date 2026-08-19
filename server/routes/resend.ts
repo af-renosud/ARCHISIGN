@@ -41,6 +41,11 @@ export function buildResendHandler(
       return res.status(400).json({ message: `Cannot resend envelope with status "${envelope.status}".` });
     }
 
+    // Legacy PDF-less rows must not receive fresh signing invitations.
+    if (!envelope.originalPdfUrl) {
+      return res.status(409).json({ code: "pdf_missing", message: "Envelope has no PDF document and cannot be sent" });
+    }
+
     const resendBodySchema = z.object({
       message: z.string().max(5000).optional().nullable(),
     });

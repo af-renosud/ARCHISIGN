@@ -26,6 +26,7 @@ function makeEnvelope(overrides: Record<string, any> = {}) {
     id: 7,
     status: "sent",
     subject: "Plan A",
+    originalPdfUrl: "uploads/plan-a.pdf",
     message: "ORIGINAL_PERSISTED_MESSAGE",
     signers: [
       { id: 1, email: "a@example.com", fullName: "Signer A", signedAt: null },
@@ -183,6 +184,14 @@ test("all-emails-failed path still records messageIncluded and 502s", async () =
   const meta = JSON.parse(ev.metadata);
   assert.equal(meta.messageIncluded, true);
   assert.ok(!ev.metadata.includes("urgent"), "failure metadata must not contain message text");
+});
+
+test("legacy PDF-less envelope is rejected with 409 pdf_missing, no emails or audit", async () => {
+  getEnvelopeReturns = makeEnvelope({ originalPdfUrl: null });
+  const r = await resend(7, { message: "x" });
+  assert.equal(r.status, 409);
+  assert.equal(r.body.code, "pdf_missing");
+  assert.equal(auditEvents.length, 0);
 });
 
 test("non-resendable status is rejected with 400", async () => {

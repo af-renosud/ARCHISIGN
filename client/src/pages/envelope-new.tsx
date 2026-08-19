@@ -45,6 +45,7 @@ export default function EnvelopeNew() {
   const [primarySigner, setPrimarySigner] = useState<ContactPick | null>(null);
   const [additionalSigners, setAdditionalSigners] = useState<Array<ContactPick>>([]);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
 
   const { data: settings } = useQuery<Setting[]>({ queryKey: ["/api/settings"] });
   // v1.3.2: load full active contact list to detect shared inboxes.
@@ -151,7 +152,16 @@ export default function EnvelopeNew() {
         </div>
 
         <Form {...form}>
-          <form onSubmit={form.handleSubmit((v) => createMutation.mutate(v))} className="space-y-6">
+          <form
+            onSubmit={form.handleSubmit((v) => {
+              if (!pdfFile) {
+                setPdfError("A PDF document is required — an envelope without one cannot be signed.");
+                return;
+              }
+              createMutation.mutate(v);
+            })}
+            className="space-y-6"
+          >
             <Card>
               <CardContent className="p-6 space-y-4">
                 <h3 className="font-medium">Document Details</h3>
@@ -284,10 +294,16 @@ export default function EnvelopeNew() {
                           className="hidden"
                           onChange={(e) => {
                             const file = e.target.files?.[0];
-                            if (file) setPdfFile(file);
+                            if (file) {
+                              setPdfFile(file);
+                              setPdfError(null);
+                            }
                           }}
                         />
                       </label>
+                    )}
+                    {pdfError && !pdfFile && (
+                      <p className="text-sm font-medium text-destructive mt-2" data-testid="text-pdf-error">{pdfError}</p>
                     )}
                   </div>
                 </div>

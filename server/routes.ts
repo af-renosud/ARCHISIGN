@@ -227,6 +227,13 @@ export async function registerRoutes(
   app.get("/api/envelopes/:id/lineage", validateId, buildLineageHandler());
 
   app.post("/api/envelopes", upload.single("pdf"), asyncHandler(async (req, res) => {
+    // A PDF is mandatory: there is no post-creation attach mechanism, so a
+    // PDF-less envelope can never be signed (mirrors the v1 API's
+    // require-a-PDF-source refinement). Checked first — before any DB work.
+    if (!req.file) {
+      return res.status(400).json({ message: "A PDF document is required", errors: { pdf: ["A PDF document is required"] } });
+    }
+
     const envelopeParsed = createEnvelopeRequestSchema.safeParse(req.body);
     if (!envelopeParsed.success) {
       return res.status(400).json({ message: "Invalid envelope data", errors: envelopeParsed.error.flatten().fieldErrors });
@@ -405,6 +412,10 @@ export async function registerRoutes(
     const envelope = await storage.getEnvelope(id);
     if (!envelope) return res.status(404).json({ message: "Envelope not found" });
     if (envelope.status !== "draft") return res.status(400).json({ message: "Envelope already sent" });
+    // Defense in depth: legacy rows created before the PDF requirement.
+    if (!envelope.originalPdfUrl) {
+      return res.status(409).json({ code: "pdf_missing", message: "Envelope has no PDF document and cannot be sent" });
+    }
 
     const firmEmail = await getGmailProfile();
     const emailCfg = await loadEmailSettings();
@@ -479,6 +490,10 @@ export async function registerRoutes(
 
     const envelope = await storage.getEnvelope(id);
     if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    // Legacy PDF-less rows must not re-enter the signing flow via reply either.
+    if (!envelope.originalPdfUrl) {
+      return res.status(409).json({ code: "pdf_missing", message: "Envelope has no PDF document and cannot be sent" });
+    }
 
     const firmEmail = await getGmailProfile();
 
