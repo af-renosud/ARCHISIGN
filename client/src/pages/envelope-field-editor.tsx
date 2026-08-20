@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -46,7 +47,7 @@ import {
 } from "lucide-react";
 import type { Envelope, Signer, Annotation } from "@shared/schema";
 
-type FieldType = "signature" | "initial" | "date";
+type FieldType = "signature" | "initial" | "date" | "text";
 type SignaturePlacementMode = "fixed_bottom_centre" | "admin_placed";
 type EditorMode = "guided" | "free";
 
@@ -59,6 +60,7 @@ interface PlacedField {
   yPos: number;
   width: number;
   height: number;
+  value?: string;
   isNew?: boolean;
 }
 
@@ -66,18 +68,21 @@ const FIELD_DEFAULTS: Record<FieldType, { width: number; height: number; label: 
   signature: { width: 0.25, height: 0.08, label: "Signature" },
   initial: { width: 0.08, height: 0.04, label: "Initial" },
   date: { width: 0.15, height: 0.03, label: "Date" },
+  text: { width: 0.3, height: 0.04, label: "Fixed Text" },
 };
 
 const FIELD_COLORS: Record<FieldType, string> = {
   signature: "border-red-500 bg-red-50 dark:bg-red-950/30",
   initial: "border-blue-500 bg-blue-50 dark:bg-blue-950/30",
   date: "border-green-500 bg-green-50 dark:bg-green-950/30",
+  text: "border-purple-500 bg-purple-50 dark:bg-purple-950/30",
 };
 
 const FIELD_DOT_COLORS: Record<FieldType, string> = {
   signature: "bg-red-500",
   initial: "bg-blue-500",
   date: "bg-green-500",
+  text: "bg-purple-500",
 };
 
 const FIELD_BUTTON_COLORS: Record<FieldType, string> = {
@@ -87,12 +92,15 @@ const FIELD_BUTTON_COLORS: Record<FieldType, string> = {
     "border-2 border-blue-500 bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:hover:bg-blue-950/60 dark:text-blue-200 dark:border-blue-400",
   date:
     "border-2 border-green-500 bg-green-50 hover:bg-green-100 text-green-700 dark:bg-green-950/40 dark:hover:bg-green-950/60 dark:text-green-200 dark:border-green-400",
+  text:
+    "border-2 border-purple-500 bg-purple-50 hover:bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:hover:bg-purple-950/60 dark:text-purple-200 dark:border-purple-400",
 };
 
 const FIELD_ICONS: Record<FieldType, typeof PenTool> = {
   signature: PenTool,
   initial: Type,
   date: Calendar,
+  text: Type,
 };
 
 const CLICK_THRESHOLD_PX = 4;
@@ -235,6 +243,7 @@ export default function EnvelopeFieldEditor() {
           yPos: a.yPos,
           width: a.width ?? FIELD_DEFAULTS[a.type as FieldType].width,
           height: a.height ?? FIELD_DEFAULTS[a.type as FieldType].height,
+          value: a.type === "text" ? (a.value ?? "") : undefined,
         }));
       setFields(placedOnes);
       setLoaded(true);
@@ -327,6 +336,7 @@ export default function EnvelopeFieldEditor() {
           width: field.width,
           height: field.height,
           pageNumber: field.pageNumber,
+          ...(field.type === "text" ? { value: field.value } : {}),
         });
       } else {
         await apiRequest("POST", `/api/envelopes/${id}/annotations`, {
@@ -337,6 +347,7 @@ export default function EnvelopeFieldEditor() {
           width: field.width,
           height: field.height,
           type: field.type,
+          ...(field.type === "text" ? { value: field.value } : {}),
         });
       }
     }
@@ -497,7 +508,7 @@ export default function EnvelopeFieldEditor() {
   const pageSummary = useCallback(
     (page: number) => {
       const onPage = fieldsOnPage(page);
-      const counts: Record<FieldType, number> = { signature: 0, initial: 0, date: 0 };
+      const counts: Record<FieldType, number> = { signature: 0, initial: 0, date: 0, text: 0 };
       for (const f of onPage) counts[f.type] += 1;
 
       let completeForSelected = false;
@@ -643,6 +654,7 @@ export default function EnvelopeFieldEditor() {
             yPos: 0.3 + Math.random() * 0.2,
             width: defaults.width,
             height: defaults.height,
+            value: type === "text" ? "Type fixed text here" : undefined,
             isNew: true,
           },
         ];
@@ -1066,7 +1078,7 @@ export default function EnvelopeFieldEditor() {
               Add Field
             </label>
             <div className="flex flex-col gap-2">
-              {(["signature", "initial", "date"] as FieldType[]).map((type) => {
+              {(["signature", "initial", "date", "text"] as FieldType[]).map((type) => {
                 const Icon = FIELD_ICONS[type];
                 return (
                   <Button
@@ -1159,7 +1171,9 @@ export default function EnvelopeFieldEditor() {
                     >
                       <div className="flex items-center gap-1.5 min-w-0">
                         <Icon className="h-3 w-3 flex-shrink-0" />
-                        <span className="truncate">{signerName(f.signerId)}</span>
+                        <span className="truncate">
+                          {f.type === "text" ? (f.value || "Fixed text") : signerName(f.signerId)}
+                        </span>
                       </div>
                       <Button
                         variant="ghost"
@@ -1182,6 +1196,27 @@ export default function EnvelopeFieldEditor() {
               <p className="text-[10px] text-muted-foreground/70 mt-1.5 italic">
                 Press Delete or Backspace to remove the selected field.
               </p>
+            )}
+            {selectedFieldIndex !== null && fields[selectedFieldIndex]?.type === "text" && (
+              <div className="mt-3 space-y-1.5">
+                <Label htmlFor="fixed-text-value" className="text-xs">Fixed text</Label>
+                <Input
+                  id="fixed-text-value"
+                  value={fields[selectedFieldIndex].value ?? ""}
+                  maxLength={500}
+                  onChange={(event) => {
+                    const value = event.target.value.replace(/[\r\n]/g, " ");
+                    setFields((current) => current.map((field, index) =>
+                      index === selectedFieldIndex ? { ...field, value } : field
+                    ));
+                  }}
+                  placeholder="Enter text shown on the document"
+                  data-testid="input-fixed-text-value"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Visible to every signer and locked after sending.
+                </p>
+              </div>
             )}
           </div>
 
@@ -1493,7 +1528,9 @@ export default function EnvelopeFieldEditor() {
                             >
                               <GripVertical className="h-3 w-3 opacity-40" />
                               <Icon className="h-3 w-3" />
-                              <span className="truncate max-w-[60px]">{signerName(f.signerId)}</span>
+                              <span className="truncate max-w-[160px]">
+                                {f.type === "text" ? (f.value || "Fixed text") : signerName(f.signerId)}
+                              </span>
                               {isSelected && !locked &&
                                 RESIZE_HANDLES.map((rh) => (
                                   <div

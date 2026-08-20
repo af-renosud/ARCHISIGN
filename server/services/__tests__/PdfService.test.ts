@@ -166,6 +166,47 @@ test("stampSignedPdf embeds a long Satisfy signature name without dropping text"
   );
 });
 
+test("stampSignedPdf renders creator-defined fixed text without brackets", async () => {
+  const input = await makeBlankPdf(1);
+  const fixedText = "Sign in the marked location";
+  const { signedPdfBytes } = await stampSignedPdf(
+    input,
+    [
+      {
+        signer: {
+          id: 601,
+          fullName: "Fixed Text Owner",
+          signedAt: new Date("2026-08-20T10:30:00Z"),
+        },
+        annotations: [{
+          pageNumber: 1,
+          xPos: 0.12,
+          yPos: 0.25,
+          width: 0.3,
+          height: 0.04,
+          type: "text",
+          value: fixedText,
+        }],
+      },
+      {
+        signer: {
+          id: 602,
+          fullName: "Second Signer",
+          signedAt: new Date("2026-08-20T10:31:00Z"),
+        },
+        annotations: [],
+      },
+    ],
+    601,
+    "admin_placed",
+  );
+
+  const text = await extractAllText(signedPdfBytes);
+  assert.ok(text.includes(fixedText));
+  assert.equal(text.split(fixedText).length - 1, 1, "global fixed text is stamped exactly once");
+  assert.ok(!text.includes(`[${fixedText}]`), "fixed text is stamped as document content, not a placeholder");
+});
+
 test("stampSignedPdf appends a certificate page that contains envelope ID, signer email, and completion timestamp", async () => {
   const input = await makeBlankPdf(2);
   const baselinePages = await getPageCount(input);

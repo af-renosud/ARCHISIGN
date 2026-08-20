@@ -333,6 +333,11 @@ export async function registerRoutes(
     res.json(allAnnotations);
   }));
 
+  const fixedTextValueSchema = z.string()
+    .trim()
+    .min(1, "Fixed text is required")
+    .max(500, "Fixed text cannot exceed 500 characters")
+    .refine((value) => !/[\r\n]/.test(value), "Fixed text must be a single line");
   const annotationCreateSchema = z.object({
     signerId: z.number().int().positive(),
     pageNumber: z.number().int().positive(),
@@ -340,7 +345,15 @@ export async function registerRoutes(
     yPos: z.number().min(0).max(1),
     width: z.number().min(0.01).max(1).optional(),
     height: z.number().min(0.01).max(1).optional(),
-    type: z.enum(["initial", "signature", "date"]),
+    type: z.enum(["initial", "signature", "date", "text"]),
+    value: fixedTextValueSchema.optional(),
+  }).superRefine((data, ctx) => {
+    if (data.type === "text" && data.value === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["value"], message: "Fixed text is required" });
+    }
+    if (data.type !== "text" && data.value !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["value"], message: "Only fixed text fields may have a setup value" });
+    }
   });
   const annotationUpdateSchema = z.object({
     xPos: z.number().min(0).max(1).optional(),
@@ -348,7 +361,24 @@ export async function registerRoutes(
     width: z.number().min(0.01).max(1).optional().nullable(),
     height: z.number().min(0.01).max(1).optional().nullable(),
     pageNumber: z.number().int().positive().optional(),
+    value: fixedTextValueSchema.optional(),
   });
+  const annotationDefaultDimensions = {
+    initial: { width: 0.08, height: 0.04 },
+    signature: { width: 0.25, height: 0.08 },
+    date: { width: 0.15, height: 0.03 },
+    text: { width: 0.3, height: 0.04 },
+  } as const;
+  const annotationFitsPage = (
+    type: keyof typeof annotationDefaultDimensions,
+    xPos: number,
+    yPos: number,
+    width: number | null | undefined,
+    height: number | null | undefined,
+  ) => {
+    const defaults = annotationDefaultDimensions[type];
+    return xPos + (width ?? defaults.width) <= 1 && yPos + (height ?? defaults.height) <= 1;
+  };
 
   app.post("/api/envelopes/:id/annotations", validateId, asyncHandler(async (req, res) => {
     const id = (req as any).validatedId;
@@ -357,12 +387,17 @@ export async function registerRoutes(
     if (envelope.status !== "draft") return res.status(400).json({ message: "Can only place fields on draft envelopes" });
     const parsed = annotationCreateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid annotation data", errors: parsed.error.flatten().fieldErrors });
-    const { signerId, pageNumber, xPos, yPos, width, height, type } = parsed.data;
+    const { signerId, pageNumber, xPos, yPos, width, height, type, value } = parsed.data;
     if (!envelope.signers.some(s => s.id === signerId)) return res.status(400).json({ message: "Signer does not belong to this envelope" });
     if (pageNumber > envelope.totalPages) return res.status(400).json({ message: "Page number exceeds document pages" });
+    if (!annotationFitsPage(type, xPos, yPos, width, height)) {
+      return res.status(400).json({ message: "Annotation must fit entirely within the document page" });
+    }
     const annotation = await storage.createAnnotation({
       envelopeId: id, signerId, pageNumber, xPos, yPos,
-      width: width ?? null, height: height ?? null, type, value: null, placed: true,
+      width: width ?? null, height: height ?? null, type,
+      value: type === "text" ? value! : null,
+      placed: true,
     });
     res.json(annotation);
   }));
@@ -392,8 +427,26 @@ export async function registerRoutes(
     if (envelope.status !== "draft") return res.status(400).json({ message: "Can only edit fields on draft envelopes" });
     const parsed = annotationUpdateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid update data", errors: parsed.error.flatten().fieldErrors });
+    const existing = (await storage.getAnnotationsByEnvelope(envelopeId))
+      .find((annotation) => annotation.id === annotationId);
+    if (!existing) return res.status(404).json({ message: "Annotation not found" });
+    if (parsed.data.value !== undefined && existing.type !== "text") {
+      return res.status(400).json({ message: "Only fixed text fields may have a setup value" });
+    }
+    const nextPageNumber = parsed.data.pageNumber ?? existing.pageNumber;
+    if (nextPageNumber > envelope.totalPages) {
+      return res.status(400).json({ message: "Page number exceeds document pages" });
+    }
+    if (!annotationFitsPage(
+      existing.type,
+      parsed.data.xPos ?? existing.xPos,
+      parsed.data.yPos ?? existing.yPos,
+      parsed.data.width === undefined ? existing.width : parsed.data.width,
+      parsed.data.height === undefined ? existing.height : parsed.data.height,
+    )) {
+      return res.status(400).json({ message: "Annotation must fit entirely within the document page" });
+    }
     const updated = await storage.updateAnnotation(annotationId, parsed.data);
-    if (!updated) return res.status(404).json({ message: "Annotation not found" });
     res.json(updated);
   }));
 
@@ -404,6 +457,9 @@ export async function registerRoutes(
     const envelope = await storage.getEnvelope(envelopeId);
     if (!envelope) return res.status(404).json({ message: "Envelope not found" });
     if (envelope.status !== "draft") return res.status(400).json({ message: "Can only remove fields on draft envelopes" });
+    const existing = (await storage.getAnnotationsByEnvelope(envelopeId))
+      .find((annotation) => annotation.id === annotationId);
+    if (!existing) return res.status(404).json({ message: "Annotation not found" });
     await storage.deleteAnnotation(annotationId);
     res.json({ success: true });
   }));
@@ -609,12 +665,16 @@ export async function registerRoutes(
     const envelope = await storage.getEnvelope(signer.envelopeId);
     if (!envelope) return res.status(404).json({ message: "Envelope not found" });
 
-    const existingAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, signer.id);
-    const initialedPages = existingAnnotations
+    const signerAnnotations = await storage.getAnnotationsByEnvelopeAndSigner(envelope.id, signer.id);
+    const fixedTextAnnotations = (await storage.getAnnotationsByEnvelope(envelope.id))
+      .filter((annotation) => annotation.type === "text");
+    const initialedPages = signerAnnotations
       .filter(a => a.type === "initial" && a.value !== null)
       .map(a => a.pageNumber);
 
-    const placedFields = existingAnnotations
+    const placedFields = Array.from(
+      new Map([...signerAnnotations, ...fixedTextAnnotations].map((annotation) => [annotation.id, annotation])).values(),
+    )
       .filter(a => a.placed)
       .map(a => ({
         id: a.id,
@@ -624,6 +684,7 @@ export async function registerRoutes(
         yPos: a.yPos,
         width: a.width,
         height: a.height,
+        value: a.type === "text" ? a.value : null,
       }));
 
     res.json({
@@ -671,6 +732,37 @@ export async function registerRoutes(
     if (!streamed && !res.headersSent) {
       return res.status(404).json({ message: "File not found" });
     }
+  }));
+
+  app.get("/api/sign/:token/review-pdf", asyncHandler(async (req, res) => {
+    const signer = await storage.getSignerByToken(req.params.token);
+    if (!signer) return res.status(404).json({ message: "Invalid link" });
+    if (!signer.otpVerified) return res.status(403).json({ message: "Not verified" });
+
+    const envelope = await storage.getEnvelope(signer.envelopeId);
+    if (!envelope?.originalPdfUrl) return res.status(404).json({ message: "Document not found" });
+    const downloaded = await downloadFile(envelope.originalPdfUrl);
+    if (!downloaded) return res.status(404).json({ message: "Document not found" });
+
+    const fixedTextAnnotations = (await storage.getAnnotationsByEnvelope(envelope.id))
+      .filter((annotation) => annotation.placed && annotation.type === "text");
+    let previewBytes = downloaded.data;
+    if (fixedTextAnnotations.length > 0) {
+      const stamped = await stampSignedPdf(
+        downloaded.data,
+        [{
+          signer: { id: signer.id, fullName: signer.fullName, signedAt: null },
+          annotations: fixedTextAnnotations,
+        }],
+        envelope.id,
+        envelope.signaturePlacementMode ?? "fixed_bottom_centre",
+      );
+      previewBytes = Buffer.from(stamped.signedPdfBytes);
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(previewBytes);
   }));
 
   app.post("/api/sign/:token/initial", asyncHandler(async (req, res) => {

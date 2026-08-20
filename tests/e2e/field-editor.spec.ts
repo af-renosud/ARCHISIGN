@@ -13,6 +13,7 @@ if (process.env.E2E_AUTH_BYPASS !== "1") {
 }
 
 const TOTAL_PAGES = 3;
+const SIGNER_NAME = "Frida Editor";
 
 interface CreatedSigner {
   id: number;
@@ -49,7 +50,7 @@ async function createEnvelope(): Promise<{
       externalRef: `field-editor-${ts}`,
       pdfBase64: Buffer.from(bytes).toString("base64"),
       signers: [
-        { email: `field-editor-${ts}@example.test`, fullName: "Frida Editor" },
+        { email: `field-editor-${ts}@example.test`, fullName: SIGNER_NAME },
       ],
     }),
   });
@@ -59,7 +60,10 @@ async function createEnvelope(): Promise<{
     );
   }
   const json = (await res.json()) as CreateEnvelopeResponse;
-  return { envelopeId: json.envelopeId, signer: json.signers[0] };
+  return {
+    envelopeId: json.envelopeId,
+    signer: { ...json.signers[0], fullName: SIGNER_NAME },
+  };
 }
 
 async function gotoFieldEditor(page: Page, envelopeId: number) {
@@ -104,18 +108,25 @@ test.describe("Guided field-placement editor", () => {
       "true",
     );
 
-    // ---- Add a signature + initial on page 1 ----
+    // ---- Add signer fields and creator-only fixed text on page 1 ----
     await expect(page.getByTestId("text-page-indicator")).toHaveText(
       `Page 1 of ${TOTAL_PAGES}`,
     );
     await page.getByTestId("button-add-signature").click();
     await page.getByTestId("button-add-initial").click();
+    await page.getByTestId("button-add-text").click();
+    await page.getByTestId("input-fixed-text-value").fill("Sign in the marked location");
+    await expect(page.getByTestId("field-overlay-selected-2")).toContainText(
+      "Sign in the marked location",
+    );
 
-    // Two sidebar rows for page 1 should appear (indices 0 and 1).
+    // Three sidebar rows for page 1 should appear (indices 0, 1 and 2).
     const sigRow = page.getByTestId("sidebar-field-row-0");
     const initRow = page.getByTestId("sidebar-field-row-1");
+    const textRow = page.getByTestId("sidebar-field-row-2");
     await expect(sigRow).toBeVisible();
     await expect(initRow).toBeVisible();
+    await expect(textRow).toContainText("Sign in the marked location");
 
     // ---- Click sidebar row → matching canvas rectangle gets selected ring --
     // Prior to the click, the field is rendered with the per-type test-id.
@@ -159,6 +170,10 @@ test.describe("Guided field-placement editor", () => {
     await expect(page.getByTestId("preview-locked-signature")).toHaveCount(0);
 
     // ---- Remove the signature field → save → save-warning dialog ----
+    await page.getByTestId("button-page-rail-1").click();
+    await expect(page.getByTestId("text-page-indicator")).toHaveText(
+      `Page 1 of ${TOTAL_PAGES}`,
+    );
     // The signature field is index 0; removing it shifts the initial to 0,
     // so the remove button we want is `button-remove-field-0` (signature).
     await page.getByTestId("button-remove-field-0").click();
@@ -192,5 +207,42 @@ test.describe("Guided field-placement editor", () => {
     // Frontier prompt should be gone (it only renders in guided mode while
     // there are still locked pages).
     await expect(page.getByTestId("guided-next-prompt")).toHaveCount(0);
+
+    // Save the draft, then verify the fixed text value was persisted.
+    await page.getByTestId("button-save-fields").click();
+    await expect(page.getByTestId("dialog-save-warning")).toBeVisible();
+    await page.getByTestId("button-save-anyway").click();
+    await expect.poll(async () => {
+      const response = await fetch(`${BASE_URL}/api/envelopes/${envelopeId}/annotations`);
+      if (!response.ok) return null;
+      const annotations = await response.json() as Array<{ type: string; value: string | null }>;
+      return annotations.find((annotation) => annotation.type === "text")?.value ?? null;
+    }).toBe("Sign in the marked location");
+
+    const invalidPlacement = await fetch(`${BASE_URL}/api/envelopes/${envelopeId}/annotations`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        signerId: signer.id,
+        pageNumber: 1,
+        xPos: 0.9,
+        yPos: 0.2,
+        width: 0.3,
+        height: 0.04,
+        type: "text",
+        value: "This would overflow",
+      }),
+    });
+    expect(invalidPlacement.status).toBe(400);
+
+    const storedResponse = await fetch(`${BASE_URL}/api/envelopes/${envelopeId}/annotations`);
+    const stored = await storedResponse.json() as Array<{ id: number; type: string }>;
+    const fixedTextId = stored.find((annotation) => annotation.type === "text")!.id;
+    const invalidPage = await fetch(`${BASE_URL}/api/envelopes/${envelopeId}/annotations/${fixedTextId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pageNumber: TOTAL_PAGES + 1 }),
+    });
+    expect(invalidPage.status).toBe(400);
   });
 });

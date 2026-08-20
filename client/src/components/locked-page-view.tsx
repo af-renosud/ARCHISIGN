@@ -4,12 +4,13 @@ import { FittedSignatureText } from "@/components/fitted-signature-text";
 
 interface PlacedField {
   id: number;
-  type: "initial" | "signature" | "date";
+  type: "initial" | "signature" | "date" | "text";
   pageNumber: number;
   xPos: number;
   yPos: number;
   width: number | null;
   height: number | null;
+  value?: string | null;
 }
 
 interface LockedPageViewProps {
@@ -128,6 +129,7 @@ export function LockedPageView({
 
   const initialField = fields.find(f => f.type === "initial");
   const signatureField = fields.find(f => f.type === "signature");
+  const fixedTextFields = fields.filter(f => f.type === "text" && f.value);
   const initials = signerInitialsOf(signerFullName);
 
   return (
@@ -192,6 +194,14 @@ export function LockedPageView({
           />
         )}
 
+        {renderedSize && fixedTextFields.map((field) => (
+          <ReadOnlyTextOverlay
+            key={field.id}
+            field={field}
+            renderedSize={renderedSize}
+          />
+        ))}
+
         {renderedSize && showFixedBottomSignaturePlaceholder && (
           <FixedBottomSignatureOverlay
             renderedSize={renderedSize}
@@ -202,6 +212,35 @@ export function LockedPageView({
           />
         )}
       </div>
+    </div>
+  );
+}
+
+function ReadOnlyTextOverlay({
+  field,
+  renderedSize,
+}: {
+  field: PlacedField;
+  renderedSize: { w: number; h: number };
+}) {
+  const left = field.xPos * renderedSize.w;
+  const top = field.yPos * renderedSize.h;
+  const width = (field.width ?? 0.3) * renderedSize.w;
+  const height = (field.height ?? 0.04) * renderedSize.h;
+  const text = field.value ?? "";
+  const fittedSize = Math.max(
+    0.5,
+    Math.min(12, height * 0.7, (width - 8) / Math.max(1, text.length * 0.55)),
+  );
+
+  return (
+    <div
+      className="absolute pointer-events-none flex items-center overflow-hidden px-1 whitespace-nowrap text-slate-800"
+      style={{ left, top, width, height, fontSize: fittedSize }}
+      data-testid={`field-fixed-text-${field.id}`}
+      title={text}
+    >
+      {text}
     </div>
   );
 }

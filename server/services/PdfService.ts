@@ -15,7 +15,7 @@ interface AnnotationData {
   yPos: number;
   width?: number | null;
   height?: number | null;
-  type: "initial" | "signature" | "date";
+  type: "initial" | "signature" | "date" | "text";
   value: string | null;
 }
 
@@ -554,6 +554,29 @@ export async function stampSignedPdf(
           size: metaLabelSize,
           font: fontBold,
           color: signatureColor,
+        });
+      } else if (ann.type === "text") {
+        const text = ann.value?.trim().replace(/\s+/g, " ");
+        if (!text) continue;
+
+        const boxWidthPt = (ann.width ?? 0.3) * width;
+        const boxHeightPt = (ann.height ?? 0.04) * height;
+        const boxLeftPt = ann.xPos * width;
+        const boxBottomPt = (1 - ann.yPos) * height - boxHeightPt;
+        const horizontalPadding = 4;
+        const widthAtOnePoint = Math.max(0.001, font.widthOfTextAtSize(text, 1));
+        const fontSize = Math.max(
+          Number.MIN_VALUE,
+          Math.min(12, boxHeightPt * 0.7, (boxWidthPt - horizontalPadding * 2) / widthAtOnePoint),
+        );
+        const textHeight = font.heightAtSize(fontSize);
+
+        page.drawText(text, {
+          x: boxLeftPt + horizontalPadding,
+          y: boxBottomPt + Math.max(0, (boxHeightPt - textHeight) / 2),
+          size: fontSize,
+          font,
+          color: rgb(0.12, 0.16, 0.23),
         });
       } else if (ann.type === "initial" || ann.type === "date") {
         const text =

@@ -10,7 +10,7 @@ export const envelopeStatusEnum = pgEnum("envelope_status", [
 ]);
 
 export const annotationTypeEnum = pgEnum("annotation_type", [
-  "initial", "signature", "date"
+  "initial", "signature", "date", "text"
 ]);
 
 export const webhookDeliveryStateEnum = pgEnum("webhook_delivery_state", [

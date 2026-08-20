@@ -18,12 +18,13 @@ import { LockedPageView } from "@/components/locked-page-view";
 
 interface PlacedField {
   id: number;
-  type: "initial" | "signature" | "date";
+  type: "initial" | "signature" | "date" | "text";
   pageNumber: number;
   xPos: number;
   yPos: number;
   width: number | null;
   height: number | null;
+  value: string | null;
 }
 
 type DocumentInfo = {
@@ -372,7 +373,7 @@ export default function SignerDocument() {
               <CardContent className="p-0">
                 {docInfo.envelope.originalPdfUrl ? (
                   <iframe
-                    src={docInfo.envelope.originalPdfUrl}
+                    src={`/api/sign/${token}/review-pdf`}
                     className="w-full border-0 rounded-md"
                     style={{ height: "75vh", minHeight: "600px" }}
                     title="Document review"
@@ -523,7 +524,7 @@ export default function SignerDocument() {
                         pdfUrl={docInfo.envelope.originalPdfUrl}
                         pageNumber={totalPages}
                         fields={placedFields.filter(
-                          f => f.pageNumber === totalPages && f.type === "signature",
+                          f => f.pageNumber === totalPages && (f.type === "signature" || f.type === "text"),
                         )}
                         signerFullName={docInfo.signer.fullName}
                         initialPlaced={false}

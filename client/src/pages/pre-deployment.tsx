@@ -12,7 +12,7 @@ Run a full database audit on the Archisign e-signature platform before deploymen
 ### 1. Schema Sync Verification
 - Compare the Drizzle ORM schema in \`shared/schema.ts\` and \`shared/models/auth.ts\` against the live PostgreSQL database
 - Verify all 10 tables exist: \`envelopes\`, \`signers\`, \`annotations\`, \`communication_logs\`, \`audit_events\`, \`settings\`, \`rollback_versions\`, \`backups\`, \`users\`, \`sessions\`
-- Verify all 3 enum types exist: \`envelope_status\` (draft, sent, viewed, queried, signed, declined), \`annotation_type\` (initial, signature, date), \`rollback_version_status\` (active, superseded)
+- Verify all 3 enum types exist: \`envelope_status\` (draft, sent, viewed, queried, signed, declined), \`annotation_type\` (initial, signature, date, text), \`rollback_version_status\` (active, superseded)
 - Confirm every column matches its Drizzle definition (type, default, nullability):
   - \`envelopes\`: id (identity PK), external_ref (text nullable), subject (text NOT NULL), message (text nullable), status (envelope_status default 'draft'), original_pdf_url (text nullable), signed_pdf_url (text nullable), total_pages (int default 1), webhook_url (text nullable), gmail_thread_id (text nullable), created_at (timestamp defaultNow), updated_at (timestamp defaultNow), deleted_at (timestamp nullable)
   - \`signers\`: id (identity PK), envelope_id (int NOT NULL FK), email (text NOT NULL), full_name (text NOT NULL), access_token (text NOT NULL UNIQUE), otp_code (text nullable), otp_expires_at (timestamp nullable), otp_verified (boolean default false), last_viewed_at (timestamp nullable), signed_at (timestamp nullable)
