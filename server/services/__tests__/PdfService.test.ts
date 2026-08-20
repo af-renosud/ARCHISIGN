@@ -1,7 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PDFDocument } from "pdf-lib";
-import { stampSignedPdf, getPageCount, type EnvelopeCertificateContext } from "../PdfService";
+import { decodePDFRawStream, PDFArray, PDFDocument, PDFRawStream } from "pdf-lib";
+import {
+  fitSignatureFontSize,
+  getPageCount,
+  MAX_SIGNATURE_FONT_SIZE,
+  SIGNATURE_BLOCK_HEX,
+  stampSignedPdf,
+  type EnvelopeCertificateContext,
+} from "../PdfService";
 
 async function makeBlankPdf(pages = 2): Promise<Buffer> {
   const doc = await PDFDocument.create();
@@ -32,6 +39,19 @@ async function extractAllText(buf: Uint8Array | Buffer): Promise<string> {
     out.push(content.items.map((it: any) => it.str || "").join(" "));
   }
   return out.join("\n--PAGE--\n");
+}
+
+async function extractPageContent(buf: Uint8Array | Buffer, pageIndex: number): Promise<string> {
+  const pdf = await PDFDocument.load(buf);
+  const contents = pdf.getPage(pageIndex).node.Contents();
+  if (!contents) return "";
+  const streams = contents instanceof PDFArray
+    ? contents.asArray().map((entry) => pdf.context.lookup(entry))
+    : [contents];
+  return streams
+    .filter((stream): stream is PDFRawStream => stream instanceof PDFRawStream)
+    .map((stream) => Buffer.from(decodePDFRawStream(stream).decode()).toString("latin1"))
+    .join("\n");
 }
 
 function makeContext(envelopeId: number): EnvelopeCertificateContext {
@@ -73,6 +93,78 @@ function makeContext(envelopeId: number): EnvelopeCertificateContext {
     ],
   };
 }
+
+test("signature names are capped at 18 pt and reduced to fit their available width", () => {
+  const proportionalFont = {
+    widthOfTextAtSize(text: string, size: number) {
+      return text.length * size * 0.55;
+    },
+  };
+
+  assert.equal(
+    fitSignatureFontSize(proportionalFont, "Ada Lovelace", 200),
+    MAX_SIGNATURE_FONT_SIZE,
+  );
+
+  const longName = "Alexandria Catherine Montgomery-Worthington";
+  const fitted = fitSignatureFontSize(proportionalFont, longName, 180);
+  assert.ok(fitted < MAX_SIGNATURE_FONT_SIZE);
+  assert.ok(
+    proportionalFont.widthOfTextAtSize(longName, fitted) <= 180,
+    "fitted name stays within the signature line",
+  );
+  assert.equal(SIGNATURE_BLOCK_HEX, "#0F2C59");
+
+  const extremeName = "Alexandria ".repeat(1_000);
+  const extremeSize = fitSignatureFontSize(proportionalFont, extremeName, 180);
+  assert.ok(extremeSize > 0);
+  assert.ok(
+    proportionalFont.widthOfTextAtSize(extremeName, extremeSize) <= 180,
+    "even an extreme name is reduced enough to avoid crossing the signature line",
+  );
+});
+
+test("stampSignedPdf embeds a long Satisfy signature name without dropping text", async () => {
+  const input = await makeBlankPdf(1);
+  const fullName = "Alexandria Catherine Montgomery-Worthington";
+  const { signedPdfBytes } = await stampSignedPdf(
+    input,
+    [{
+      signer: {
+        id: 501,
+        fullName,
+        signedAt: new Date("2026-08-20T10:30:00Z"),
+      },
+      annotations: [{
+        pageNumber: 1,
+        xPos: 0.1,
+        yPos: 0.2,
+        width: 0.36,
+        height: null,
+        type: "signature",
+        value: fullName,
+      }],
+    }],
+    501,
+    "admin_placed",
+  );
+
+  const text = await extractAllText(signedPdfBytes);
+  assert.ok(text.includes(fullName), "full long signer name remains embedded in the PDF");
+  assert.ok(text.includes("DIGITAL ENVELOPE"), "signature certification text remains present");
+
+  const content = await extractPageContent(signedPdfBytes, 0);
+  const satisfySizeMatch = content.match(/\/Satisfy-Regular-\d+\s+([\d.]+)\s+Tf/);
+  assert.ok(satisfySizeMatch, "Satisfy is the embedded signature font");
+  const renderedSize = Number(satisfySizeMatch[1]);
+  assert.ok(renderedSize < MAX_SIGNATURE_FONT_SIZE, "long signer name is reduced below 18 pt");
+  assert.ok(renderedSize > 1, "fitted signer name remains legible");
+  assert.match(
+    content,
+    /0\.0588235294\d*\s+0\.1725490196\d*\s+0\.3490196078\d*\s+RG/,
+    "signature block border uses #0F2C59",
+  );
+});
 
 test("stampSignedPdf appends a certificate page that contains envelope ID, signer email, and completion timestamp", async () => {
   const input = await makeBlankPdf(2);

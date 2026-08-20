@@ -77,11 +77,53 @@ interface Milestone {
 const CERT_MARKER_PREFIX = "archisign-cert-v1:";
 
 let cachedScriptFont: Buffer | null = null;
+let cachedSignatureFont: Buffer | null = null;
+
+export const MAX_SIGNATURE_FONT_SIZE = 18;
+export const SIGNATURE_BLOCK_HEX = "#0F2C59";
+
+interface TextWidthFont {
+  widthOfTextAtSize(text: string, size: number): number;
+}
+
+export function fitSignatureFontSize(
+  font: TextWidthFont,
+  text: string,
+  availableWidth: number,
+  maxSize = MAX_SIGNATURE_FONT_SIZE,
+): number {
+  if (!text || availableWidth <= 0 || maxSize <= 0) return maxSize;
+  const widthAtMax = font.widthOfTextAtSize(text, maxSize);
+  if (!Number.isFinite(widthAtMax) || widthAtMax <= availableWidth) return maxSize;
+  const fittedSize = maxSize * (availableWidth / widthAtMax);
+  return Number.isFinite(fittedSize) && fittedSize > 0 ? fittedSize : Number.MIN_VALUE;
+}
 
 function loadScriptFont(): Buffer {
   if (cachedScriptFont) return cachedScriptFont;
-  cachedScriptFont = readFileSync(join(process.cwd(), "server/fonts/DancingScript.ttf"));
+  cachedScriptFont = readFirstAvailableFont("DancingScript.ttf");
   return cachedScriptFont;
+}
+
+function loadSignatureFont(): Buffer {
+  if (cachedSignatureFont) return cachedSignatureFont;
+  cachedSignatureFont = readFirstAvailableFont("Satisfy-Regular.ttf");
+  return cachedSignatureFont;
+}
+
+function readFirstAvailableFont(fileName: string): Buffer {
+  const candidates = [
+    join(process.cwd(), "dist", "fonts", fileName),
+    join(process.cwd(), "server", "fonts", fileName),
+  ];
+  for (const fontPath of candidates) {
+    try {
+      return readFileSync(fontPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  throw new Error(`Required PDF font not found in: ${candidates.join(", ")}`);
 }
 
 export async function getPageCount(pdfBuffer: Buffer): Promise<number> {
@@ -378,6 +420,8 @@ export async function stampSignedPdf(
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
+  const signatureFont = await pdfDoc.embedFont(loadSignatureFont());
+
   let scriptFont;
   try {
     const scriptFontBytes = loadScriptFont();
@@ -405,16 +449,27 @@ export async function stampSignedPdf(
         const authId = generateAuthenticationId(signer.id, envelopeId, signer.signedAt);
 
         const boxWidth = ann.width ? ann.width * width : 260;
-        const sigNameSize = scriptFont ? Math.min(28, boxWidth * 0.1) : 9;
-        const scriptLineHeight = sigNameSize + 4;
+        const padding = 8;
+        const chosenSignatureFont = signatureFont;
+        const sigNameSize = fitSignatureFontSize(
+          chosenSignatureFont,
+          signer.fullName,
+          boxWidth - (padding * 2),
+        );
+        const signatureAreaHeight = MAX_SIGNATURE_FONT_SIZE + 4;
+        const signatureSectionGap = 4;
         const metaLineHeight = 12;
         const metaLabelSize = 7;
         const titleSize = 8;
-        const padding = 8;
         const boxHeight = ann.height
           ? ann.height * height
-          : scriptLineHeight + padding + (metaLineHeight * 4) + padding;
+          : signatureAreaHeight
+            + signatureSectionGap
+            + titleSize
+            + (metaLineHeight * 3)
+            + (padding * 2);
         const margin = 10;
+        const signatureColor = rgb(15 / 255, 44 / 255, 89 / 255);
 
         let boxX: number;
         let boxY: number;
@@ -435,7 +490,7 @@ export async function stampSignedPdf(
           y: boxY,
           width: boxWidth,
           height: boxHeight,
-          borderColor: rgb(0.8, 0, 0),
+          borderColor: signatureColor,
           borderWidth: 1.5,
           color: rgb(1, 1, 1),
           opacity: 0.10,
@@ -443,43 +498,35 @@ export async function stampSignedPdf(
         });
 
         const textX = boxX + padding;
-        let textY = boxY + boxHeight - padding - sigNameSize;
+        const signatureAreaTop = boxY + boxHeight - padding;
+        const signatureVerticalInset = (MAX_SIGNATURE_FONT_SIZE - sigNameSize) / 2;
+        let textY = signatureAreaTop - sigNameSize - signatureVerticalInset;
 
-        if (scriptFont) {
-          page.drawText(signer.fullName, {
-            x: textX,
-            y: textY,
-            size: sigNameSize,
-            font: scriptFont,
-            color: rgb(0.05, 0.05, 0.3),
-          });
-        } else {
-          page.drawText(signer.fullName, {
-            x: textX,
-            y: textY,
-            size: 12,
-            font: fontBold,
-            color: rgb(0.05, 0.05, 0.3),
-          });
-        }
-
-        textY -= scriptLineHeight;
-
-        page.drawLine({
-          start: { x: textX, y: textY + 4 },
-          end: { x: boxX + boxWidth - padding, y: textY + 4 },
-          thickness: 0.5,
-          color: rgb(0.6, 0.6, 0.6),
+        page.drawText(signer.fullName, {
+          x: textX,
+          y: textY,
+          size: sigNameSize,
+          font: chosenSignatureFont,
+          color: signatureColor,
         });
 
-        textY -= 4;
+        const signatureLineY = signatureAreaTop - signatureAreaHeight;
+
+        page.drawLine({
+          start: { x: textX, y: signatureLineY },
+          end: { x: boxX + boxWidth - padding, y: signatureLineY },
+          thickness: 0.5,
+          color: signatureColor,
+        });
+
+        textY = signatureLineY - signatureSectionGap - titleSize;
 
         page.drawText("DIGITAL ENVELOPE", {
           x: textX,
           y: textY,
           size: titleSize,
           font: fontBold,
-          color: rgb(0, 0, 0.7),
+          color: signatureColor,
         });
         textY -= metaLineHeight;
 
@@ -488,7 +535,7 @@ export async function stampSignedPdf(
           y: textY,
           size: metaLabelSize,
           font: fontBold,
-          color: rgb(0, 0, 0.7),
+          color: signatureColor,
         });
         textY -= metaLineHeight;
 
@@ -497,7 +544,7 @@ export async function stampSignedPdf(
           y: textY,
           size: metaLabelSize,
           font: fontBold,
-          color: rgb(0, 0, 0.7),
+          color: signatureColor,
         });
         textY -= metaLineHeight;
 
@@ -506,7 +553,7 @@ export async function stampSignedPdf(
           y: textY,
           size: metaLabelSize,
           font: fontBold,
-          color: rgb(0, 0, 0.7),
+          color: signatureColor,
         });
       } else if (ann.type === "initial" || ann.type === "date") {
         const text =

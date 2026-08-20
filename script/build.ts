@@ -1,6 +1,6 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
-import { rm, readFile } from "fs/promises";
+import { copyFile, mkdir, readFile, rm } from "fs/promises";
 
 // server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times
@@ -59,6 +59,13 @@ async function buildAll() {
     external: externals,
     logLevel: "info",
   });
+
+  await mkdir("dist/fonts", { recursive: true });
+  await Promise.all([
+    copyFile("server/fonts/Satisfy-Regular.ttf", "dist/fonts/Satisfy-Regular.ttf"),
+    copyFile("server/fonts/DancingScript.ttf", "dist/fonts/DancingScript.ttf"),
+    copyFile("server/fonts/LICENSE-Satisfy.txt", "dist/fonts/LICENSE-Satisfy.txt"),
+  ]);
 }
 
 buildAll().catch((err) => {

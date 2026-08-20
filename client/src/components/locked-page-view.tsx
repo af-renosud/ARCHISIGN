@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { FileText, PenTool, CheckCircle2, Loader2 } from "lucide-react";
+import { FittedSignatureText } from "@/components/fitted-signature-text";
 
 interface PlacedField {
   id: number;
@@ -236,17 +237,28 @@ function FieldOverlay({
   if (placed) {
     return (
       <div
-        className="absolute pointer-events-none flex items-center justify-center bg-blue-50/70 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-800 rounded-sm"
-        style={{ left, top, width, height }}
+        className={`absolute pointer-events-none flex items-center justify-center border rounded-sm ${
+          kind === "signature"
+            ? ""
+            : "bg-blue-50/70 dark:bg-blue-950/40 border-blue-300 dark:border-blue-800"
+        }`}
+        style={{
+          left,
+          top,
+          width,
+          height,
+          ...(kind === "signature"
+            ? { borderColor: "#0F2C59", backgroundColor: "rgba(15, 44, 89, 0.06)" }
+            : {}),
+        }}
         data-testid={`${testId}-placed`}
       >
         {kind === "signature" ? (
-          <span
-            className="text-blue-800 dark:text-blue-200 italic truncate px-1"
-            style={{ fontFamily: "'Dancing Script', cursive", fontSize: Math.max(12, height * 0.6) }}
-          >
-            {signerFullName}
-          </span>
+          <FittedSignatureText
+            text={signerFullName}
+            className="px-1 text-center"
+            maxFontSize={Math.min(18, Math.max(1, height * 0.45))}
+          />
         ) : (
           <span className="font-semibold text-blue-800 dark:text-blue-200 flex items-center gap-1 px-1">
             <CheckCircle2 className="h-3 w-3" />
@@ -289,12 +301,12 @@ function FixedBottomSignatureOverlay({
 }) {
   // Mirror PdfService.stampSignedPdf() fixed_bottom_centre geometry exactly:
   //   boxWidth = 260pt (fallback when annotation.width is unset)
-  //   boxHeight = scriptLineHeight(≈32) + padding(8) + metaLineHeight(12)*4 + padding(8) ≈ 96pt
+  //   boxHeight = signatureLineHeight(22) + padding(8) + metaLineHeight(12)*4 + padding(8) = 86pt
   //   boxX     = (pageWidth - boxWidth) / 2
   //   boxY     = 10mm padding from page bottom (≈ 28.35pt)
   // We project these PDF-point values into rendered CSS pixels via pageWidthPt/pageHeightPt.
   const BOX_WIDTH_PT = 260;
-  const BOX_HEIGHT_PT = 96;
+  const BOX_HEIGHT_PT = 86;
   const BOTTOM_PADDING_PT = 28.35;
   const pxPerPtX = renderedSize.w / renderedSize.pageWidthPt;
   const pxPerPtY = renderedSize.h / renderedSize.pageHeightPt;
@@ -306,16 +318,22 @@ function FixedBottomSignatureOverlay({
   if (placed) {
     return (
       <div
-        className="absolute pointer-events-none flex items-center justify-center bg-blue-50/70 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-800 rounded-sm"
-        style={{ left, top, width, height }}
+        className="absolute pointer-events-none flex items-center justify-center border rounded-sm"
+        style={{
+          left,
+          top,
+          width,
+          height,
+          borderColor: "#0F2C59",
+          backgroundColor: "rgba(15, 44, 89, 0.06)",
+        }}
         data-testid="field-signature-fixed-bottom-placed"
       >
-        <span
-          className="text-blue-800 dark:text-blue-200 italic truncate px-1"
-          style={{ fontFamily: "'Dancing Script', cursive", fontSize: Math.max(14, height * 0.5) }}
-        >
-          {signerFullName}
-        </span>
+        <FittedSignatureText
+          text={signerFullName}
+          className="px-1 text-center"
+          maxFontSize={Math.min(18, Math.max(1, height * 0.38))}
+        />
       </div>
     );
   }
@@ -332,12 +350,11 @@ function FixedBottomSignatureOverlay({
       <span className="text-[10px] font-bold uppercase tracking-wide">
         {pending ? "Signing…" : "Sign here"}
       </span>
-      <span
-        className="italic truncate max-w-full"
-        style={{ fontFamily: "'Dancing Script', cursive", fontSize: Math.max(12, height * 0.4) }}
-      >
-        {signerFullName}
-      </span>
+      <FittedSignatureText
+        text={signerFullName}
+        className="max-w-full px-1 text-center"
+        maxFontSize={Math.min(18, Math.max(1, height * 0.32))}
+      />
     </button>
   );
 }

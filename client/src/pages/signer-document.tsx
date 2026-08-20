@@ -13,6 +13,7 @@ import {
   FileText, Lock, ShieldCheck, Download
 } from "lucide-react";
 import type { Signer, Envelope } from "@shared/schema";
+import { FittedSignatureText } from "@/components/fitted-signature-text";
 import { LockedPageView } from "@/components/locked-page-view";
 
 interface PlacedField {
@@ -263,25 +264,23 @@ export default function SignerDocument() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background p-4">
         <div className="w-full max-w-lg space-y-6">
-          <div className="border-[3px] border-red-600 p-6 space-y-3" data-testid="digital-envelope-box">
-            <p
-              className="text-2xl italic text-blue-800 dark:text-blue-300"
-              style={{ fontFamily: "'Dancing Script', cursive" }}
+          <div className="border-[3px] border-[#0F2C59] p-6 space-y-3" data-testid="digital-envelope-box">
+            <FittedSignatureText
+              text={docInfo.signer.fullName}
+              maxFontSize={18}
               data-testid="text-script-signature"
-            >
-              {docInfo.signer.fullName}
-            </p>
-            <div className="border-t border-gray-300 pt-2 space-y-0.5">
-              <p className="text-xs font-bold text-blue-700 dark:text-blue-400 tracking-wide" data-testid="text-digital-envelope-title">
+            />
+            <div className="border-t border-[#0F2C59] pt-2 space-y-0.5 text-[#0F2C59]">
+              <p className="text-xs font-bold tracking-wide" data-testid="text-digital-envelope-title">
                 DIGITAL ENVELOPE
               </p>
-              <p className="text-xs font-semibold text-blue-700 dark:text-blue-400" data-testid="text-signed-by">
+              <p className="text-xs font-semibold" data-testid="text-signed-by">
                 SIGNED BY: {docInfo.signer.fullName.toUpperCase()}
               </p>
-              <p className="text-xs font-semibold text-blue-700 dark:text-blue-400" data-testid="text-date-signed">
+              <p className="text-xs font-semibold" data-testid="text-date-signed">
                 DATE: {formattedDate.toUpperCase()}
               </p>
-              <p className="text-xs font-semibold text-blue-700 dark:text-blue-400" data-testid="text-auth-id">
+              <p className="text-xs font-semibold" data-testid="text-auth-id">
                 AUTHENTICATION: {authId}
               </p>
             </div>
@@ -644,14 +643,13 @@ export default function SignerDocument() {
             <p className="text-sm text-muted-foreground">
               You are about to sign "{docInfo.envelope.subject}". This action is legally binding and cannot be undone.
             </p>
-            <div className="border-2 border-red-500 rounded-lg p-4 bg-white dark:bg-gray-950">
-              <p
-                className="text-2xl text-blue-800 dark:text-blue-300 italic text-center"
-                style={{ fontFamily: "'Dancing Script', cursive" }}
+            <div className="border-2 border-[#0F2C59] rounded-lg p-4 bg-white dark:bg-gray-950">
+              <FittedSignatureText
+                text={docInfo.signer.fullName}
+                maxFontSize={18}
+                className="text-center"
                 data-testid="text-confirm-signature-preview"
-              >
-                {docInfo.signer.fullName}
-              </p>
+              />
             </div>
             <div className="p-4 rounded-md bg-muted space-y-2">
               <div className="flex justify-between text-sm">

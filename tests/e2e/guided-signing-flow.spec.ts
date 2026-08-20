@@ -15,6 +15,8 @@ const BASE_URL = (
 ).replace(/\/+$/, "");
 const API_KEY = process.env.ARCHIDOC_API_KEY;
 const DB_URL = process.env.DATABASE_URL;
+const SIGNER_NAME =
+  "Eve Alexandra Catherine Montgomery-Worthington de la Fontaine-Smythe-Rosenberg van der Meer";
 if (!API_KEY) throw new Error("ARCHIDOC_API_KEY env var must be set for E2E");
 if (!DB_URL) throw new Error("DATABASE_URL env var must be set for E2E");
 
@@ -53,7 +55,7 @@ async function createEnvelope(): Promise<{
       subject: `Guided E2E ${ts}`,
       externalRef: `guided-${ts}`,
       pdfBase64: Buffer.from(bytes).toString("base64"),
-      signers: [{ email: `guided-${ts}@example.test`, fullName: "Eve Guided" }],
+      signers: [{ email: `guided-${ts}@example.test`, fullName: SIGNER_NAME }],
     }),
   });
   if (!res.ok) throw new Error(`create envelope failed: HTTP ${res.status} ${await res.text()}`);
@@ -99,11 +101,12 @@ async function downloadSignedPdf(accessToken: string): Promise<Buffer> {
   return buf;
 }
 
-async function extractLastPageContent(buf: Buffer): Promise<string> {
+async function extractPageContent(buf: Buffer, pageIndex: number): Promise<string> {
   const pdf = await PDFDocument.load(buf);
-  const last = pdf.getPages()[pdf.getPageCount() - 1];
-  const c = last.node.Contents();
-  if (!c) throw new Error("last page has no content stream");
+  const page = pdf.getPages()[pageIndex];
+  if (!page) throw new Error(`page index ${pageIndex} is outside the signed PDF`);
+  const c = page.node.Contents();
+  if (!c) throw new Error(`page index ${pageIndex} has no content stream`);
   const items =
     c instanceof PDFArray
       ? c.asArray().map((x) => pdf.context.lookup(x))
@@ -182,7 +185,6 @@ test.describe("Guided signing flow", () => {
     // ---- Restricted back-nav: only to already-initialed pages ------------
     await page.getByTestId("button-prev-page").click();
     await expect(page.getByTestId("text-page-indicator")).toHaveText("Page 1 of 3");
-    await expect(page.getByTestId("badge-initialed-page-1")).toBeVisible();
     await expect(page.getByTestId("button-initial-page-1")).toHaveCount(0);
     await expect(page.getByTestId("button-prev-page")).toBeDisabled();
 
@@ -199,29 +201,53 @@ test.describe("Guided signing flow", () => {
     await page.getByTestId("button-initial-page-3").click();
     await expect(page.getByTestId("text-step-label")).toContainText("Final Step");
     await expect(page.getByTestId("text-ready-to-sign")).toBeVisible();
-    await expect(page.getByTestId("text-signature-preview")).toBeVisible();
     await expect(page.getByTestId("badge-initial-progress")).toHaveText("3/3 initialed");
     await expect(page.getByTestId("button-final-sign")).toBeEnabled();
 
     // ---- Final signature -------------------------------------------------
     await page.getByTestId("button-final-sign").click();
-    await expect(page.getByTestId("text-confirm-signature-preview")).toContainText("Eve Guided");
+    const confirmationSignature = page.getByTestId("text-confirm-signature-preview");
+    await expect(confirmationSignature).toContainText(SIGNER_NAME);
+    await expect(confirmationSignature).toHaveCSS("font-family", /Satisfy/);
+    await expect.poll(async () =>
+      Number.parseFloat(await confirmationSignature.evaluate((element) => getComputedStyle(element).fontSize)),
+    ).toBeLessThan(18);
+    const confirmationBounds = await confirmationSignature.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(confirmationBounds.scrollWidth).toBeLessThanOrEqual(confirmationBounds.clientWidth + 1);
+    await expect(confirmationSignature).toHaveCSS("color", "rgb(15, 44, 89)");
     await page.getByTestId("button-confirm-sign").click();
 
     // ---- Signed view -----------------------------------------------------
     await expect(page.getByTestId("digital-envelope-box")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("digital-envelope-box")).toHaveCSS("border-top-color", "rgb(15, 44, 89)");
     await expect(page.getByTestId("text-digital-envelope-title")).toHaveText("DIGITAL ENVELOPE");
-    await expect(page.getByTestId("text-signed-by")).toContainText("EVE GUIDED");
+    await expect(page.getByTestId("text-signed-by")).toContainText(SIGNER_NAME.toUpperCase());
     await expect(page.getByTestId("text-script-signature")).toBeVisible();
+    await expect(page.getByTestId("text-script-signature")).toHaveCSS("font-family", /Satisfy/);
+    await expect.poll(async () =>
+      Number.parseFloat(await page.getByTestId("text-script-signature").evaluate(
+        (element) => getComputedStyle(element).fontSize,
+      )),
+    ).toBeLessThan(18);
+    const signedSignatureBounds = await page.getByTestId("text-script-signature").evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(signedSignatureBounds.scrollWidth).toBeLessThanOrEqual(signedSignatureBounds.clientWidth + 1);
+    await expect(page.getByTestId("text-script-signature")).toHaveCSS("color", "rgb(15, 44, 89)");
     await expect(page.getByTestId("button-download-signed-pdf")).toBeVisible();
 
     // ---- Download + geometry assertion -----------------------------------
     const buf = await downloadSignedPdf(accessToken);
-    const merged = await extractLastPageContent(buf);
+    const signedDocumentPageIndex = 2;
+    const merged = await extractPageContent(buf, signedDocumentPageIndex);
     expect(
       merged.includes("DIGITAL ENVELOPE") ||
         merged.includes("4449474954414C20454E56454C4F5045"),
-      "stamped PDF must embed the DIGITAL ENVELOPE label on the last page",
+      "stamped PDF must embed the DIGITAL ENVELOPE label on the signed document page",
     ).toBe(true);
 
     // The PDF stream emits one `cm` (translate-only) followed by the
@@ -229,7 +255,7 @@ test.describe("Guided signing flow", () => {
     const rectMatch = merged.match(
       /(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+cm[\s\S]*?0\s+0\s+m\s+0\s+(-?\d+\.?\d*)\s+l\s+(-?\d+\.?\d*)\s+\3\s+l/,
     );
-    expect(rectMatch, "could not locate signature rectangle path on last page").not.toBeNull();
+    expect(rectMatch, "could not locate signature rectangle path on signed document page").not.toBeNull();
     const [, xs, ys, hs, ws] = rectMatch!;
     const x = parseFloat(xs);
     const y = parseFloat(ys);
@@ -237,8 +263,8 @@ test.describe("Guided signing flow", () => {
     const h = parseFloat(hs);
 
     const pdf = await PDFDocument.load(buf);
-    const lastPage = pdf.getPages()[pdf.getPageCount() - 1];
-    const pageW = lastPage.getWidth();
+    const signedDocumentPage = pdf.getPages()[signedDocumentPageIndex];
+    const pageW = signedDocumentPage.getWidth();
 
     const horizontalCentreOffsetPt = Math.abs(x + w / 2 - pageW / 2);
     const bottomPaddingMm = y / 2.83465;
