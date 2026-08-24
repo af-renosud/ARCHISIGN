@@ -29,7 +29,7 @@ async function createEnvelopeWithSigner(email: string, displayName: string) {
     body: JSON.stringify({
       title: `Recent bump ${Date.now()}`,
       pdfBase64,
-      signers: [{ email, displayName, role: "signer" }],
+      signers: [{ email, fullName: displayName }],
       identityVerification: { method: "otp_email" },
     }),
   });
@@ -37,7 +37,7 @@ async function createEnvelopeWithSigner(email: string, displayName: string) {
 }
 
 test.describe("Contacts picker on New Envelope", () => {
-  test("groups Archidoc results, supports inline add-as-new and bumps Recent", async ({ page }) => {
+  test("groups Archidoc results, supports named signer creation and bumps Recent", async ({ page }) => {
     const stamp = Date.now();
     const archidocId = `e2e-archi-${stamp}`;
     const archidocEmail = `picker.archi.${stamp}@example.com`;
@@ -60,7 +60,12 @@ test.describe("Contacts picker on New Envelope", () => {
     await page.getByTestId("additional-signer-0-search").fill(newEmail);
     await expect(page.getByTestId("additional-signer-0-add-new")).toBeVisible();
     await page.getByTestId("additional-signer-0-add-new").click();
+    await expect(page.getByTestId("additional-signer-0-new-signer-dialog")).toBeVisible();
+    await page.getByTestId("additional-signer-0-new-signer-name").fill(`E2E Local ${stamp}`);
+    await expect(page.getByTestId("additional-signer-0-new-signer-email")).toHaveValue(newEmail);
+    await page.getByTestId("additional-signer-0-create-new-signer").click();
     await expect(page.getByTestId("additional-signer-0-trigger")).toContainText(newEmail);
+    await expect(page.getByTestId("additional-signer-0-trigger")).toContainText(`E2E Local ${stamp}`);
 
     // Trigger Recent ordering bump by actually creating an envelope using the picker's email.
     await createEnvelopeWithSigner(archidocEmail, `E2E Archi ${stamp}`);

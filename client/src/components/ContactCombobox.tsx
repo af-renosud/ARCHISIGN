@@ -2,7 +2,17 @@ import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Check, ChevronsUpDown, UserPlus, Loader2, Users as UsersIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Command,
   CommandEmpty,
@@ -71,6 +81,9 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [newSignerOpen, setNewSignerOpen] = useState(false);
+  const [newSignerName, setNewSignerName] = useState("");
+  const [newSignerEmail, setNewSignerEmail] = useState("");
   const debounced = useDebounce(query, 200);
 
   const { data: contacts = [], isFetching } = useQuery<Contact[]>({
@@ -93,6 +106,9 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
       onChange({ contactId: contact.id, fullName: contact.displayName, email: emailOf(contact) });
       setOpen(false);
       setQuery("");
+      setNewSignerOpen(false);
+      setNewSignerName("");
+      setNewSignerEmail("");
       toast({ title: "Contact added", description: `${contact.displayName} (${emailOf(contact)})` });
     },
     onError: (err: Error) => {
@@ -120,7 +136,7 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
   const trimmedQuery = query.trim();
   const isEmail = EMAIL_RE.test(trimmedQuery);
   const exactMatch = contacts.find((c) => (c.email ?? "").toLowerCase() === trimmedQuery.toLowerCase() && !!c.email);
-  const showAddNew = isEmail && !exactMatch && !createMutation.isPending;
+  const showAddNew = !exactMatch && !createMutation.isPending;
 
   function pickContact(c: Contact) {
     onChange({ contactId: c.id, fullName: c.displayName, email: emailOf(c) });
@@ -128,8 +144,18 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
     setQuery("");
   }
 
-  function handleAddNew() {
-    createMutation.mutate({ email: trimmedQuery.toLowerCase(), displayName: trimmedQuery.split("@")[0] });
+  function openNewSignerForm() {
+    setNewSignerName("");
+    setNewSignerEmail(isEmail ? trimmedQuery.toLowerCase() : "");
+    setOpen(false);
+    setNewSignerOpen(true);
+  }
+
+  function handleCreateSigner() {
+    const displayName = newSignerName.trim();
+    const email = newSignerEmail.trim().toLowerCase();
+    if (!displayName || !EMAIL_RE.test(email)) return;
+    createMutation.mutate({ email, displayName });
   }
 
   const triggerLabel = value && value.email
@@ -137,29 +163,30 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
     : (placeholder || "Select contact…");
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          role="combobox"
-          aria-expanded={open}
-          className="w-full justify-between font-normal"
-          data-testid={`${testIdPrefix}-trigger`}
-        >
-          <span className="truncate">{triggerLabel}</span>
-          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[420px] p-0" align="start">
-        <Command shouldFilter={false}>
-          <CommandInput
-            placeholder="Search by name or email…"
-            value={query}
-            onValueChange={setQuery}
-            data-testid={`${testIdPrefix}-search`}
-          />
-          <CommandList>
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="w-full justify-between font-normal"
+            data-testid={`${testIdPrefix}-trigger`}
+          >
+            <span className="truncate">{triggerLabel}</span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[420px] p-0" align="start">
+          <Command shouldFilter={false}>
+            <CommandInput
+              placeholder="Search by name or email…"
+              value={query}
+              onValueChange={setQuery}
+              data-testid={`${testIdPrefix}-search`}
+            />
+            <CommandList>
             {isFetching && (
               <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin mr-2" /> Loading…
@@ -195,25 +222,83 @@ export function ContactCombobox({ value, onChange, placeholder, testIdPrefix = "
                 </CommandGroup>
               </>
             )}
-            {showAddNew && (
-              <>
-                <CommandSeparator />
-                <CommandGroup heading="New">
-                  <CommandItem
-                    value={`__add__${trimmedQuery}`}
-                    onSelect={handleAddNew}
-                    data-testid={`${testIdPrefix}-add-new`}
-                  >
-                    <UserPlus className="mr-2 h-4 w-4" />
-                    <span>Add <strong className="font-medium">{trimmedQuery}</strong> as new contact</span>
-                  </CommandItem>
-                </CommandGroup>
-              </>
-            )}
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+              {showAddNew && (
+                <>
+                  <CommandSeparator />
+                  <CommandGroup heading="New signer">
+                    <CommandItem
+                      value={`__add__${trimmedQuery}`}
+                      onSelect={openNewSignerForm}
+                      data-testid={`${testIdPrefix}-add-new`}
+                    >
+                      <UserPlus className="mr-2 h-4 w-4" />
+                      <span>
+                        {isEmail
+                          ? <>Add a new signer with <strong className="font-medium">{trimmedQuery}</strong></>
+                          : "Add a new signer"}
+                      </span>
+                    </CommandItem>
+                  </CommandGroup>
+                </>
+              )}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
+      <Dialog open={newSignerOpen} onOpenChange={setNewSignerOpen}>
+        <DialogContent data-testid={`${testIdPrefix}-new-signer-dialog`}>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              handleCreateSigner();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>Add a new signer</DialogTitle>
+              <DialogDescription>
+                Enter the signer&apos;s name and email address. They will be added to this envelope and saved to your contacts.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor={`${testIdPrefix}-new-signer-name`}>Full name</Label>
+                <Input
+                  id={`${testIdPrefix}-new-signer-name`}
+                  value={newSignerName}
+                  onChange={(event) => setNewSignerName(event.target.value)}
+                  autoComplete="name"
+                  data-testid={`${testIdPrefix}-new-signer-name`}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor={`${testIdPrefix}-new-signer-email`}>Email address</Label>
+                <Input
+                  id={`${testIdPrefix}-new-signer-email`}
+                  type="email"
+                  value={newSignerEmail}
+                  onChange={(event) => setNewSignerEmail(event.target.value)}
+                  autoComplete="email"
+                  data-testid={`${testIdPrefix}-new-signer-email`}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setNewSignerOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={!newSignerName.trim() || !EMAIL_RE.test(newSignerEmail.trim()) || createMutation.isPending}
+                data-testid={`${testIdPrefix}-create-new-signer`}
+              >
+                {createMutation.isPending ? "Adding…" : "Add signer"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
