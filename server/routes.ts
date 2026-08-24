@@ -958,6 +958,13 @@ export async function registerRoutes(
     });
 
     if (!txResult) {
+      const currentSigner = await storage.getSignerByToken(req.params.token);
+      if (currentSigner?.resendDeliveryClaimId) {
+        return res.status(409).json({
+          message: "A reminder is being delivered. Please try signing again in a moment.",
+          code: "reminder_delivery_in_progress",
+        });
+      }
       return res.status(400).json({ message: "Already signed" });
     }
 

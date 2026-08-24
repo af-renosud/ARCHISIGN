@@ -3,6 +3,8 @@ import { downloadFile } from "../fileStorage";
 import { storage } from "../storage";
 import { buildSigningLink } from "./SecurityService";
 
+export const RESEND_EMAIL_PROVIDER_TIMEOUT_MS = 60 * 1000;
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -171,6 +173,8 @@ export async function sendResendInvitation(
     `[${emailCfg.firmName}] Reminder: ${emailCfg.subjectPrefix} ${envelope.subject}`,
     htmlBody,
     envelope.gmailThreadId || undefined,
+    undefined,
+    { requestTimeoutMs: RESEND_EMAIL_PROVIDER_TIMEOUT_MS },
   );
 }
 

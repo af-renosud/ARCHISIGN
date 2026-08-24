@@ -71,6 +71,8 @@ export const signers = pgTable("signers", {
   signerUserAgent: text("signer_user_agent"),
   lastViewedAt: timestamp("last_viewed_at"),
   signedAt: timestamp("signed_at"),
+  resendDeliveryClaimId: text("resend_delivery_claim_id"),
+  resendDeliveryClaimedAt: timestamp("resend_delivery_claimed_at"),
   accessTokenRotatedAt: timestamp("access_token_rotated_at"),
   previousAccessTokenHash: text("previous_access_token_hash"),
 });

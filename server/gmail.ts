@@ -54,7 +54,18 @@ export async function getUncachableGmailClient() {
   return google.gmail({ version: 'v1', auth: oauth2Client });
 }
 
-export async function sendEmail(to: string, subject: string, body: string, threadId?: string, attachments?: Array<{ filename: string; content: Buffer; mimeType: string }>) {
+export interface SendEmailOptions {
+  requestTimeoutMs?: number;
+}
+
+export async function sendEmail(
+  to: string,
+  subject: string,
+  body: string,
+  threadId?: string,
+  attachments?: Array<{ filename: string; content: Buffer; mimeType: string }>,
+  options: SendEmailOptions = {},
+) {
   const gmail = await getUncachableGmailClient();
 
   const boundary = 'boundary_' + Date.now();
@@ -108,7 +119,10 @@ export async function sendEmail(to: string, subject: string, body: string, threa
     params.requestBody.threadId = threadId;
   }
 
-  const result = await gmail.users.messages.send(params);
+  const result = await gmail.users.messages.send(
+    params,
+    options.requestTimeoutMs ? { timeout: options.requestTimeoutMs } : undefined,
+  );
   return result.data;
 }
 

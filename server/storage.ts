@@ -20,6 +20,8 @@ import type { NodePgTransaction } from "drizzle-orm/node-postgres";
 import * as schema from "@shared/schema";
 
 export type DbExecutor = typeof db | NodePgTransaction<typeof schema, ExtractTablesWithRelations<typeof schema>>;
+export const RESEND_DELIVERY_CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
+export const RESEND_DELIVERY_HEARTBEAT_INTERVAL_MS = 30 * 1000;
 
 export interface IStorage {
   getEnvelopes(): Promise<(Envelope & { signers: Signer[] })[]>;
@@ -32,6 +34,9 @@ export interface IStorage {
   getSignersByEnvelope(envelopeId: number, executor?: DbExecutor): Promise<Signer[]>;
   updateSigner(id: number, data: Partial<Signer>, executor?: DbExecutor): Promise<Signer | undefined>;
   atomicClaimSign(signerId: number, executor?: DbExecutor): Promise<Signer | undefined>;
+  atomicClaimResendDelivery(signerId: number, claimId: string): Promise<Signer | undefined>;
+  refreshResendDeliveryClaim(signerId: number, claimId: string): Promise<boolean>;
+  releaseResendDeliveryClaim(signerId: number, claimId: string): Promise<void>;
   atomicIncrementOtpAttempts(signerId: number, maxAttempts: number): Promise<Signer | undefined>;
 
   createAnnotation(data: InsertAnnotation, executor?: DbExecutor): Promise<Annotation>;
@@ -184,12 +189,72 @@ export class DatabaseStorage implements IStorage {
   }
 
   async atomicClaimSign(signerId: number, executor: DbExecutor = db): Promise<Signer | undefined> {
+    const staleBefore = new Date(Date.now() - RESEND_DELIVERY_CLAIM_TIMEOUT_MS);
     const [updated] = await executor
       .update(signers)
-      .set({ signedAt: new Date() })
-      .where(and(eq(signers.id, signerId), isNull(signers.signedAt)))
+      .set({
+        signedAt: new Date(),
+        resendDeliveryClaimId: null,
+        resendDeliveryClaimedAt: null,
+      })
+      .where(and(
+        eq(signers.id, signerId),
+        isNull(signers.signedAt),
+        or(
+          isNull(signers.resendDeliveryClaimId),
+          isNull(signers.resendDeliveryClaimedAt),
+          lt(signers.resendDeliveryClaimedAt, staleBefore),
+        ),
+      ))
       .returning();
     return updated;
+  }
+
+  async atomicClaimResendDelivery(signerId: number, claimId: string): Promise<Signer | undefined> {
+    const staleBefore = new Date(Date.now() - RESEND_DELIVERY_CLAIM_TIMEOUT_MS);
+    const [updated] = await db
+      .update(signers)
+      .set({
+        resendDeliveryClaimId: claimId,
+        resendDeliveryClaimedAt: new Date(),
+      })
+      .where(and(
+        eq(signers.id, signerId),
+        isNull(signers.signedAt),
+        or(
+          isNull(signers.resendDeliveryClaimId),
+          isNull(signers.resendDeliveryClaimedAt),
+          lt(signers.resendDeliveryClaimedAt, staleBefore),
+        ),
+      ))
+      .returning();
+    return updated;
+  }
+
+  async releaseResendDeliveryClaim(signerId: number, claimId: string): Promise<void> {
+    await db
+      .update(signers)
+      .set({
+        resendDeliveryClaimId: null,
+        resendDeliveryClaimedAt: null,
+      })
+      .where(and(
+        eq(signers.id, signerId),
+        eq(signers.resendDeliveryClaimId, claimId),
+      ));
+  }
+
+  async refreshResendDeliveryClaim(signerId: number, claimId: string): Promise<boolean> {
+    const [refreshed] = await db
+      .update(signers)
+      .set({ resendDeliveryClaimedAt: new Date() })
+      .where(and(
+        eq(signers.id, signerId),
+        eq(signers.resendDeliveryClaimId, claimId),
+        isNull(signers.signedAt),
+      ))
+      .returning({ id: signers.id });
+    return !!refreshed;
   }
 
   async atomicIncrementOtpAttempts(signerId: number, maxAttempts: number): Promise<Signer | undefined> {

@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
@@ -86,6 +87,7 @@ export default function EnvelopeDetail() {
   const [deleteReason, setDeleteReason] = useState("");
   const [resendDialogOpen, setResendDialogOpen] = useState(false);
   const [resendMessage, setResendMessage] = useState("");
+  const [resendRecipientIds, setResendRecipientIds] = useState<number[]>([]);
   const [continueDialogOpen, setContinueDialogOpen] = useState(false);
   const [continueSigners, setContinueSigners] = useState<{ email: string; fullName: string }[]>([
     { email: "", fullName: "" },
@@ -143,13 +145,37 @@ export default function EnvelopeDetail() {
   });
 
   const resendMutation = useMutation({
-    mutationFn: (message: string) =>
-      apiRequest("POST", `/api/envelopes/${id}/resend`, message.trim() ? { message: message.trim() } : {}),
-    onSuccess: () => {
+    mutationFn: async ({ message, signerIds }: { message: string; signerIds: number[] }) => {
+      const response = await apiRequest("POST", `/api/envelopes/${id}/resend`, {
+        ...(message.trim() ? { message: message.trim() } : {}),
+        signerIds,
+      });
+      return response.json() as Promise<{
+        resendResult?: { attempted: number; successful: number; failed: number; skipped?: number };
+      }>;
+    },
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
       setResendDialogOpen(false);
       setResendMessage("");
-      toast({ title: "Invitations resent", description: "Reminder emails have been sent to all pending signers." });
+      setResendRecipientIds([]);
+      const delivery = result.resendResult;
+      if (delivery?.failed || delivery?.skipped) {
+        const skippedText = delivery.skipped
+          ? `; ${delivery.skipped} skipped because signing was complete or another reminder was in progress`
+          : "";
+        toast({
+          title: "Some invitations were not resent",
+          description: `${delivery.successful} sent successfully; ${delivery.failed} failed${skippedText}.`,
+          variant: "destructive",
+        });
+      } else {
+        const count = delivery?.successful ?? 0;
+        toast({
+          title: count === 1 ? "Invitation resent" : "Invitations resent",
+          description: `Reminder ${count === 1 ? "email has" : "emails have"} been sent to ${count} selected ${count === 1 ? "signer" : "signers"}.`,
+        });
+      }
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -223,6 +249,7 @@ export default function EnvelopeDetail() {
 
   const config = statusConfig[envelope.status] || statusConfig.draft;
   const StatusIcon = config.icon;
+  const pendingSigners = envelope.signers.filter((signer) => !signer.signedAt);
 
   const copySigningLink = (token: string) => {
     const url = `${window.location.origin}/sign/${token}`;
@@ -286,7 +313,15 @@ export default function EnvelopeDetail() {
               </Button>
             )}
             {["sent", "viewed", "queried"].includes(envelope.status) && (
-              <Button variant="outline" onClick={() => setResendDialogOpen(true)} disabled={resendMutation.isPending} data-testid="button-resend-envelope">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setResendRecipientIds(pendingSigners.map((signer) => signer.id));
+                  setResendDialogOpen(true);
+                }}
+                disabled={resendMutation.isPending || pendingSigners.length === 0}
+                data-testid="button-resend-envelope"
+              >
                 <RefreshCw className={`h-4 w-4 mr-2 ${resendMutation.isPending ? "animate-spin" : ""}`} />
                 {resendMutation.isPending ? "Resending..." : "Resend Invitations"}
               </Button>
@@ -773,39 +808,129 @@ export default function EnvelopeDetail() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={resendDialogOpen} onOpenChange={(open) => { setResendDialogOpen(open); if (!open) setResendMessage(""); }}>
+      <Dialog
+        open={resendDialogOpen}
+        onOpenChange={(open) => {
+          if (resendMutation.isPending) return;
+          setResendDialogOpen(open);
+          if (!open) {
+            setResendMessage("");
+            setResendRecipientIds([]);
+          }
+        }}
+      >
         <DialogContent
           onPointerDownOutside={(e) => e.preventDefault()}
           onInteractOutside={(e) => e.preventDefault()}
+          data-testid="dialog-resend-invitations"
         >
           <DialogHeader>
             <DialogTitle>Resend Invitations</DialogTitle>
             <DialogDescription>
-              Reminder emails will be sent to all pending signers. You can optionally include a short message that will appear in the reminder email.
+              Choose which pending signers should receive another invitation. All pending signers are selected initially.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2 py-2">
-            <Label htmlFor="resend-message">Optional message</Label>
-            <Textarea
-              id="resend-message"
-              placeholder="e.g. Just a friendly reminder — please sign by Friday."
-              value={resendMessage}
-              onChange={(e) => setResendMessage(e.target.value)}
-              className="min-h-[100px]"
-              data-testid="input-resend-message"
-            />
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <Label>Recipients</Label>
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => setResendRecipientIds(pendingSigners.map((signer) => signer.id))}
+                    disabled={resendMutation.isPending}
+                    data-testid="button-select-all-resend-recipients"
+                  >
+                    Select all
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => setResendRecipientIds([])}
+                    disabled={resendMutation.isPending}
+                    data-testid="button-clear-resend-recipients"
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+              <div className="max-h-52 overflow-y-auto rounded-md border divide-y">
+                {pendingSigners.map((signer) => (
+                  <label
+                    key={signer.id}
+                    className="flex items-start gap-3 p-3 cursor-pointer hover:bg-muted/50"
+                    data-testid={`row-resend-recipient-${signer.id}`}
+                  >
+                    <Checkbox
+                      checked={resendRecipientIds.includes(signer.id)}
+                      onCheckedChange={(checked) => {
+                        setResendRecipientIds((current) => checked
+                          ? Array.from(new Set([...current, signer.id]))
+                          : current.filter((signerId) => signerId !== signer.id));
+                      }}
+                      disabled={resendMutation.isPending}
+                      aria-label={`Resend invitation to ${signer.fullName}`}
+                      data-testid={`checkbox-resend-recipient-${signer.id}`}
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium truncate">{signer.fullName}</span>
+                      <span className="block text-xs text-muted-foreground truncate">{signer.email}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className={`text-xs ${resendRecipientIds.length === 0 ? "text-destructive" : "text-muted-foreground"}`} data-testid="text-resend-selection-count">
+                {resendRecipientIds.length === 0
+                  ? "Select at least one signer."
+                  : `${resendRecipientIds.length} of ${pendingSigners.length} pending ${pendingSigners.length === 1 ? "signer" : "signers"} selected.`}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="resend-message">Optional message</Label>
+              <Textarea
+                id="resend-message"
+                placeholder="e.g. Just a friendly reminder — please sign by Friday."
+                value={resendMessage}
+                onChange={(e) => setResendMessage(e.target.value)}
+                maxLength={5000}
+                className="min-h-[100px]"
+                data-testid="input-resend-message"
+              />
+              <p className="text-xs text-muted-foreground text-right">
+                {resendMessage.length.toLocaleString()} / 5,000
+              </p>
+            </div>
           </div>
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => { setResendDialogOpen(false); setResendMessage(""); }} data-testid="button-cancel-resend">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setResendDialogOpen(false);
+                setResendMessage("");
+                setResendRecipientIds([]);
+              }}
+              disabled={resendMutation.isPending}
+              data-testid="button-cancel-resend"
+            >
               Cancel
             </Button>
             <Button
-              onClick={() => resendMutation.mutate(resendMessage)}
-              disabled={resendMutation.isPending}
+              onClick={() => resendMutation.mutate({
+                message: resendMessage,
+                signerIds: resendRecipientIds,
+              })}
+              disabled={resendMutation.isPending || resendRecipientIds.length === 0}
               data-testid="button-confirm-resend"
             >
               <RefreshCw className={`h-4 w-4 mr-2 ${resendMutation.isPending ? "animate-spin" : ""}`} />
-              {resendMutation.isPending ? "Resending..." : "Resend Invitations"}
+              {resendMutation.isPending
+                ? "Resending..."
+                : `Resend to ${resendRecipientIds.length} ${resendRecipientIds.length === 1 ? "signer" : "signers"}`}
             </Button>
           </DialogFooter>
         </DialogContent>

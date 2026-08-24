@@ -185,7 +185,10 @@ export default function SignerDocument() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
-      if (!res.ok) throw new Error("Failed to sign document");
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => null) as { message?: string } | null;
+        throw new Error(errorBody?.message || "Failed to sign document");
+      }
       return res.json();
     },
     onSuccess: () => {
