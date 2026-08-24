@@ -3,3 +3,4 @@
 - [Playwright e2e on NixOS](e2e-playwright-on-nixos.md) — use system chromium via E2E_CHROMIUM_PATH; run e2e server and playwright in the same shell command or the server dies mid-run.
 - [Custom agent DNS lookup](custom-agent-dns-lookup.md) — agent `lookup` must honor `{all:true}` (Node 20+ autoSelectFamily) or outbound fetches die with "Invalid IP address: undefined".
 - [Reminder delivery fencing](reminder-delivery-fencing.md) — signing and reminder delivery use renewable ownership; provider timeout must stay below abandoned-claim recovery.
+- [Placement-review send fencing](placement-review-send-fencing.md) — field edits must lock the envelope and invalidate review atomically before conditional send claims can proceed.

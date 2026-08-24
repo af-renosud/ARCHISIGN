@@ -64,6 +64,20 @@ interface PlacedField {
   isNew?: boolean;
 }
 
+type PlacementReason = { code: string; message: string };
+
+function parsePlacementReasons(value: string | null | undefined): PlacementReason[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((reason) => reason && typeof reason.message === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 const FIELD_DEFAULTS: Record<FieldType, { width: number; height: number; label: string }> = {
   signature: { width: 0.25, height: 0.08, label: "Signature" },
   initial: { width: 0.08, height: 0.04, label: "Initial" },
@@ -330,6 +344,16 @@ export default function EnvelopeFieldEditor() {
     }
     for (const field of fields) {
       if (field.id && !field.isNew) {
+        const original = (existingAnnotations || []).find((annotation) => annotation.id === field.id);
+        const changed =
+          !original ||
+          original.pageNumber !== field.pageNumber ||
+          Math.abs(original.xPos - field.xPos) > 0.000001 ||
+          Math.abs(original.yPos - field.yPos) > 0.000001 ||
+          Math.abs((original.width ?? FIELD_DEFAULTS[original.type].width) - field.width) > 0.000001 ||
+          Math.abs((original.height ?? FIELD_DEFAULTS[original.type].height) - field.height) > 0.000001 ||
+          (field.type === "text" && (original.value ?? "") !== (field.value ?? ""));
+        if (!changed) continue;
         await apiRequest("PUT", `/api/envelopes/${id}/annotations/${field.id}`, {
           xPos: field.xPos,
           yPos: field.yPos,
@@ -352,6 +376,36 @@ export default function EnvelopeFieldEditor() {
       }
     }
   };
+
+  const approvePlacementMutation = useMutation({
+    mutationFn: async () => {
+      await persistFields();
+      const res = await apiRequest("POST", `/api/envelopes/${id}/placement-review/approve`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id, "annotations"] });
+      setLoaded(false);
+      toast({
+        title: "Signature placement approved",
+        description: "This layout is now cleared for the Archie Doc signing workflow.",
+      });
+    },
+    onError: (err: Error) => {
+      let description = err.message;
+      const jsonStart = err.message.indexOf("{");
+      if (jsonStart !== -1) {
+        try {
+          const body = JSON.parse(err.message.slice(jsonStart));
+          if (body.message) description = body.message;
+        } catch {
+          // keep raw message
+        }
+      }
+      toast({ title: "Approval failed", description, variant: "destructive" });
+    },
+  });
 
   const [autoInitialIds, setAutoInitialIds] = useState<number[]>([]);
 
@@ -914,6 +968,13 @@ export default function EnvelopeFieldEditor() {
     );
   }
 
+  const isArchidocPlacement = envelope.origin === "archidoc" && envelope.placementReviewState !== "not_required";
+  const placementNeedsReview =
+    envelope.placementReviewState === "review_required" ||
+    (envelope.placementReviewState === "approved" &&
+      envelope.placementApprovedRevision !== envelope.placementRevision);
+  const placementReasons = parsePlacementReasons(envelope.placementReasons);
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <div className="border-b bg-background px-4 py-3 flex items-center justify-between gap-3 flex-shrink-0">
@@ -952,10 +1013,20 @@ export default function EnvelopeFieldEditor() {
             <Save className="h-4 w-4 mr-2" />
             {saveMutation.isPending ? "Saving..." : "Save Fields"}
           </Button>
+          {isArchidocPlacement && placementNeedsReview && (
+            <Button
+              onClick={() => approvePlacementMutation.mutate()}
+              disabled={saveMutation.isPending || saveAndSendMutation.isPending || approvePlacementMutation.isPending}
+              data-testid="button-approve-placement"
+            >
+              <CheckCircle2 className="h-4 w-4 mr-2" />
+              {approvePlacementMutation.isPending ? "Approving..." : "Save & Approve"}
+            </Button>
+          )}
           {envelope.status === "draft" && (
             <Button
               onClick={() => handleSaveClick("send")}
-              disabled={saveMutation.isPending || saveAndSendMutation.isPending}
+              disabled={saveMutation.isPending || saveAndSendMutation.isPending || approvePlacementMutation.isPending || placementNeedsReview}
               data-testid="button-send-envelope"
             >
               <SendHorizonal className="h-4 w-4 mr-2" />
@@ -964,6 +1035,37 @@ export default function EnvelopeFieldEditor() {
           )}
         </div>
       </div>
+
+      {isArchidocPlacement && (
+        <div
+          className={`border-b px-4 py-3 flex items-start gap-3 ${
+            placementNeedsReview
+              ? "bg-amber-50 dark:bg-amber-950/20 border-amber-300"
+              : "bg-green-50 dark:bg-green-950/20 border-green-300"
+          }`}
+          data-testid="banner-placement-review"
+        >
+          {placementNeedsReview ? (
+            <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
+          ) : (
+            <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+          )}
+          <div className="min-w-0">
+            <p className="text-sm font-medium">
+              {placementNeedsReview
+                ? "Check every signer’s field, then select Save & Approve."
+                : envelope.placementReviewState === "approved"
+                  ? "This placement has been reviewed and approved."
+                  : "Signer-specific anchors resolved with high confidence."}
+            </p>
+            {placementReasons.length > 0 && (
+              <p className="text-xs text-muted-foreground mt-1">
+                {placementReasons.map((reason) => reason.message).join(" ")}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}

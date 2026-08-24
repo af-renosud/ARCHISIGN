@@ -6,6 +6,7 @@ import {
   sendSigningInvitation as defaultSendSigningInvitation,
 } from "./NotificationService";
 import { emitEvent as defaultEmitEvent } from "./EventDispatcher";
+import { placementReviewBlock } from "./PlacementReviewService";
 
 type MessageEnvelope = Pick<Envelope, "id" | "message">;
 type ClaimStorage = Pick<IStorage, "atomicClaimEnvelopeSend">;
@@ -101,6 +102,10 @@ export async function sendEnvelopeForSigning(
       { code: "pdf_missing" },
     );
   }
+  const placementBlock = placementReviewBlock(storedEnvelope);
+  if (placementBlock) {
+    throw new InitialEnvelopeSendError(409, placementBlock.message, placementBlock);
+  }
 
   // Resolve dependencies before claiming; if settings/profile lookup fails,
   // the envelope remains an untouched draft.
@@ -117,6 +122,15 @@ export async function sendEnvelopeForSigning(
     deps.storage,
   );
   if (!envelope) {
+    const refreshed = await deps.storage.getEnvelope(input.envelopeId);
+    const refreshedPlacementBlock = refreshed ? placementReviewBlock(refreshed) : null;
+    if (refreshedPlacementBlock) {
+      throw new InitialEnvelopeSendError(
+        409,
+        refreshedPlacementBlock.message,
+        refreshedPlacementBlock,
+      );
+    }
     throw new InitialEnvelopeSendError(
       409,
       "Envelope is already being sent or has already been sent",

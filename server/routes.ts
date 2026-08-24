@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { storage, type DbExecutor } from "./storage";
 import { db } from "./db";
 import { setupAuth, registerAuthRoutes, isAuthenticated } from "./replit_integrations/auth";
 import { insertRollbackVersionSchema, insertBackupSchema, createEnvelopeRequestSchema, createSignerRequestSchema, createApiEnvelopeRequestSchema, sendEnvelopeRequestSchema, wishlistCreateRequestSchema, wishlistUpdateRequestSchema } from "@shared/schema";
@@ -25,6 +25,11 @@ import { ContactService } from "./services/ContactService";
 import { autoPlaceFooterInitials } from "./services/InitialPlacementService";
 import { buildContinueHandler, buildLineageHandler } from "./routes/continuation";
 import { emitEvent, uuidv7, type IdentityVerification } from "./services/EventDispatcher";
+import {
+  ARCHIDOC_ORIGIN,
+  invalidatedPlacementPatch,
+  placementReviewBlock,
+} from "./services/PlacementReviewService";
 
 const upload = multer({
   dest: "uploads/",
@@ -108,6 +113,54 @@ async function buildCertificateContext(envelopeId: number): Promise<EnvelopeCert
     parentEnvelopeId: fullEnvelope.parentEnvelopeId,
     parentDocumentHash: fullEnvelope.parentDocumentHash,
   };
+}
+
+function actorEmail(req: any): string | null {
+  return req.user?.claims?.email || null;
+}
+
+async function invalidatePlacementReview(
+  envelope: NonNullable<Awaited<ReturnType<typeof storage.getEnvelopeForUpdate>>>,
+  reason: { code: string; message: string },
+  ipAddress: string | null,
+  executor: DbExecutor = db,
+): Promise<void> {
+  const patch = invalidatedPlacementPatch(envelope, reason);
+  if (!patch) return;
+  const wasSendable = envelope.placementReviewState === "ready" || envelope.placementReviewState === "approved";
+  await storage.updateEnvelope(envelope.id, patch, executor);
+  if (wasSendable) {
+    await storage.createAuditEvent({
+      envelopeId: envelope.id,
+      eventType: "Signature placement approval invalidated",
+      actorEmail: null,
+      ipAddress,
+      metadata: JSON.stringify(reason),
+    }, executor);
+  }
+}
+
+async function mutateDraftPlacement<T>(
+  envelopeId: number,
+  reason: { code: string; message: string },
+  ipAddress: string | null,
+  mutation: (executor: DbExecutor, lockedEnvelope: NonNullable<Awaited<ReturnType<typeof storage.getEnvelopeForUpdate>>>) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    const lockedEnvelope = await storage.getEnvelopeForUpdate(envelopeId, tx);
+    if (!lockedEnvelope) {
+      throw Object.assign(new Error("Envelope not found"), { status: 404, code: "envelope_not_found" });
+    }
+    if (lockedEnvelope.status !== "draft") {
+      throw Object.assign(new Error("Envelope can only be edited while in draft status"), {
+        status: 409,
+        code: "envelope_not_draft",
+      });
+    }
+    const result = await mutation(tx, lockedEnvelope);
+    await invalidatePlacementReview(lockedEnvelope, reason, ipAddress, tx);
+    return result;
+  });
 }
 
 export async function registerRoutes(
@@ -216,7 +269,12 @@ export async function registerRoutes(
         message: "Envelope can only be edited while in draft status",
       });
     }
-    const updated = await storage.updateEnvelope(id, parsed.data);
+    const updated = parsed.data.signaturePlacementMode !== undefined
+      ? await mutateDraftPlacement(id, {
+        code: "placement_mode_changed",
+        message: "The signature placement mode was changed and must be reviewed again.",
+      }, req.ip || null, (executor) => storage.updateEnvelope(id, parsed.data, executor))
+      : await storage.updateEnvelope(id, parsed.data);
     res.json(updated);
   }));
 
@@ -393,12 +451,15 @@ export async function registerRoutes(
     if (!annotationFitsPage(type, xPos, yPos, width, height)) {
       return res.status(400).json({ message: "Annotation must fit entirely within the document page" });
     }
-    const annotation = await storage.createAnnotation({
-      envelopeId: id, signerId, pageNumber, xPos, yPos,
-      width: width ?? null, height: height ?? null, type,
-      value: type === "text" ? value! : null,
-      placed: true,
-    });
+    const annotation = await mutateDraftPlacement(id, {
+      code: "field_layout_changed",
+      message: "A field was added or repositioned and the placement must be approved.",
+    }, req.ip || null, (executor) => storage.createAnnotation({
+        envelopeId: id, signerId, pageNumber, xPos, yPos,
+        width: width ?? null, height: height ?? null, type,
+        value: type === "text" ? value! : null,
+        placed: true,
+      }, executor));
     res.json(annotation);
   }));
 
@@ -407,13 +468,30 @@ export async function registerRoutes(
     const envelope = await storage.getEnvelope(id);
     if (!envelope) return res.status(404).json({ message: "Envelope not found" });
     if (envelope.status !== "draft") return res.status(400).json({ message: "Can only place fields on draft envelopes" });
-    const { created, skipped } = await autoPlaceFooterInitials(envelope);
-    await storage.createAuditEvent({
-      envelopeId: id,
-      eventType: "Footer initials auto-placed",
-      actorEmail: null,
-      ipAddress: req.ip || null,
-      metadata: JSON.stringify({ created: created.length, skipped }),
+    const { created, skipped } = await db.transaction(async (tx) => {
+      const lockedEnvelope = await storage.getEnvelopeForUpdate(id, tx);
+      if (!lockedEnvelope) throw Object.assign(new Error("Envelope not found"), { status: 404 });
+      if (lockedEnvelope.status !== "draft") {
+        throw Object.assign(new Error("Can only place fields on draft envelopes"), { status: 409 });
+      }
+      const result = await (async (executor: DbExecutor) => {
+        const result = await autoPlaceFooterInitials({ ...envelope, ...lockedEnvelope }, executor);
+        if (result.created.length > 0) {
+          await invalidatePlacementReview(lockedEnvelope, {
+            code: "field_layout_changed",
+            message: "Automatic initial fields changed the field layout and it must be approved.",
+          }, req.ip || null, executor);
+        }
+        await storage.createAuditEvent({
+          envelopeId: id,
+          eventType: "Footer initials auto-placed",
+          actorEmail: null,
+          ipAddress: req.ip || null,
+          metadata: JSON.stringify({ created: result.created.length, skipped: result.skipped }),
+        }, executor);
+        return result;
+      })(tx);
+      return result;
     });
     res.json({ created, skipped });
   }));
@@ -446,7 +524,17 @@ export async function registerRoutes(
     )) {
       return res.status(400).json({ message: "Annotation must fit entirely within the document page" });
     }
-    const updated = await storage.updateAnnotation(annotationId, parsed.data);
+    const updated = await mutateDraftPlacement(envelopeId, {
+      code: "field_layout_changed",
+      message: "A field was added or repositioned and the placement must be approved.",
+    }, req.ip || null, async (executor) => {
+      const current = (await storage.getAnnotationsByEnvelope(envelopeId, executor))
+        .find((annotation) => annotation.id === annotationId);
+      if (!current) {
+        throw Object.assign(new Error("Annotation not found"), { status: 404, code: "annotation_not_found" });
+      }
+      return storage.updateAnnotation(annotationId, parsed.data, executor);
+    });
     res.json(updated);
   }));
 
@@ -460,8 +548,90 @@ export async function registerRoutes(
     const existing = (await storage.getAnnotationsByEnvelope(envelopeId))
       .find((annotation) => annotation.id === annotationId);
     if (!existing) return res.status(404).json({ message: "Annotation not found" });
-    await storage.deleteAnnotation(annotationId);
+    await mutateDraftPlacement(envelopeId, {
+      code: "field_layout_changed",
+      message: "A field was removed and the placement must be approved.",
+    }, req.ip || null, async (executor) => {
+      const current = (await storage.getAnnotationsByEnvelope(envelopeId, executor))
+        .find((annotation) => annotation.id === annotationId);
+      if (!current) {
+        throw Object.assign(new Error("Annotation not found"), { status: 404, code: "annotation_not_found" });
+      }
+      await storage.deleteAnnotation(annotationId, executor);
+    });
     res.json({ success: true });
+  }));
+
+  app.post("/api/envelopes/:id/placement-review/approve", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    if (envelope.origin !== ARCHIDOC_ORIGIN) {
+      return res.status(400).json({ code: "placement_review_not_required", message: "Placement review applies only to Archie Doc envelopes." });
+    }
+    if (envelope.status !== "draft") {
+      return res.status(409).json({ code: "envelope_not_draft", message: "Only a draft envelope can have its placement approved." });
+    }
+    const approvedAt = new Date();
+    const reviewer = actorEmail(req);
+    const updated = await db.transaction(async (tx) => {
+      const lockedEnvelope = await storage.getEnvelopeForUpdate(id, tx);
+      if (!lockedEnvelope) throw Object.assign(new Error("Envelope not found"), { status: 404 });
+      if (lockedEnvelope.status !== "draft") {
+        throw Object.assign(new Error("Only a draft envelope can have its placement approved."), { status: 409 });
+      }
+      const [annotations, signers] = await Promise.all([
+        storage.getAnnotationsByEnvelope(id, tx),
+        storage.getSignersByEnvelope(id, tx),
+      ]);
+      const missingSigners = signers.filter((signer) =>
+        !annotations.some((annotation) =>
+          annotation.signerId === signer.id &&
+          annotation.type === "signature" &&
+          annotation.placed));
+      if (missingSigners.length > 0) {
+        throw Object.assign(
+          new Error("Every signer must have at least one placed signature field before approval."),
+          { status: 409, code: "placement_incomplete", missingSignerIds: missingSigners.map((signer) => signer.id) },
+        );
+      }
+      const approved = await storage.updateEnvelope(id, {
+        placementReviewState: "approved",
+        placementApprovedRevision: lockedEnvelope.placementRevision,
+        placementApprovedBy: reviewer,
+        placementApprovedAt: approvedAt,
+      }, tx);
+      await storage.createAuditEvent({
+        envelopeId: id,
+        eventType: "Signature placement approved",
+        actorEmail: reviewer,
+        ipAddress: req.ip || null,
+        metadata: JSON.stringify({
+          revision: lockedEnvelope.placementRevision,
+          priorConfidence: lockedEnvelope.placementConfidence,
+        }),
+      }, tx);
+      return approved;
+    });
+    res.json(updated);
+  }));
+
+  app.post("/api/envelopes/:id/placement-review/request", validateId, asyncHandler(async (req, res) => {
+    const id = (req as any).validatedId;
+    const envelope = await storage.getEnvelope(id);
+    if (!envelope) return res.status(404).json({ message: "Envelope not found" });
+    if (envelope.origin !== ARCHIDOC_ORIGIN) {
+      return res.status(400).json({ code: "placement_review_not_required", message: "Placement review applies only to Archie Doc envelopes." });
+    }
+    if (envelope.status !== "draft") {
+      return res.status(409).json({ code: "envelope_not_draft", message: "Only a draft envelope can be returned to placement review." });
+    }
+    await mutateDraftPlacement(id, {
+      code: "manual_review_requested",
+      message: "An administrator requested a fresh review of the signature placement.",
+    }, req.ip || null, async () => undefined);
+    const updated = await storage.getEnvelope(id);
+    res.json(updated);
   }));
 
   app.post("/api/envelopes/:id/send", asyncHandler(async (req, res) => {
@@ -501,6 +671,15 @@ export async function registerRoutes(
     // Legacy PDF-less rows must not re-enter the signing flow via reply either.
     if (!envelope.originalPdfUrl) {
       return res.status(409).json({ code: "pdf_missing", message: "Envelope has no PDF document and cannot be sent" });
+    }
+    if (envelope.status === "draft") {
+      const placementBlock = placementReviewBlock(envelope);
+      return res.status(409).json(placementBlock
+        ? { ...placementBlock, error: placementBlock.code }
+        : {
+            code: "initial_send_required",
+            message: "Draft envelopes must be sent through the signing invitation flow before replies can be sent.",
+          });
     }
 
     const firmEmail = await getGmailProfile();

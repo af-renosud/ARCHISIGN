@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   resolveAnchorPlacements,
+  resolveExactTextPlacements,
   ANCHOR_MAX_MATCHES_PER_ANCHOR,
 } from "../PdfService";
 
@@ -68,4 +69,14 @@ test("resolveAnchorPlacements: no anchors requested returns empty map", async ()
   const pdf = await buildPdf([[{ text: "hello", x: 50, y: 700 }]]);
   const res = await resolveAnchorPlacements(pdf, []);
   assert.equal(res.size, 0);
+});
+
+test("resolveExactTextPlacements accepts a whole trimmed line but rejects substrings", async () => {
+  const pdf = await buildPdf([[
+    { text: "Client Signatory", x: 50, y: 700 },
+    { text: "Client Signatory Limited", x: 50, y: 650 },
+  ]]);
+  const res = await resolveExactTextPlacements(pdf, ["Client Signatory", "Client"]);
+  assert.equal(res.get("Client Signatory")!.length, 1);
+  assert.equal(res.get("Client")!.length, 0);
 });

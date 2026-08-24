@@ -110,6 +110,11 @@ function makeFullEnvelope(overrides: Record<string, any> = {}) {
     gmailThreadId: null,
     webhookUrl: null,
     origin: null,
+    placementReviewState: "not_required",
+    placementConfidence: null,
+    placementReasons: null,
+    placementRevision: 0,
+    placementApprovedRevision: null,
     signers: [
       {
         id: 91,
@@ -125,8 +130,8 @@ function makeFullEnvelope(overrides: Record<string, any> = {}) {
   };
 }
 
-function makeSendHarness(options: { failEmail?: boolean } = {}) {
-  let envelope = makeFullEnvelope();
+function makeSendHarness(options: { failEmail?: boolean; envelopeOverrides?: Record<string, any> } = {}) {
+  let envelope = makeFullEnvelope(options.envelopeOverrides);
   const invitations: Array<{ message: string | null; email: string }> = [];
   const audits: any[] = [];
   let releases = 0;
@@ -245,4 +250,94 @@ test("all-email-failed releases the claim back to draft and preserves message fo
   assert.equal(harness.getEnvelope().status, "draft");
   assert.equal(harness.getEnvelope().message, "Retry this context");
   assert.equal(harness.audits.at(-1)?.eventType, "Envelope send failed - all emails failed");
+});
+
+test("dashboard send blocks an Archie Doc envelope that still requires placement review", async () => {
+  const harness = makeSendHarness({
+    envelopeOverrides: {
+      origin: "archidoc",
+      placementReviewState: "review_required",
+      placementConfidence: "low",
+      placementReasons: JSON.stringify([
+        { code: "signer_anchor_missing", message: "Signer One has no signer-specific placement anchor." },
+      ]),
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      sendEnvelopeForSigning(
+        {
+          envelopeId: 17,
+          request: sendEnvelopeRequestSchema.parse({}),
+          baseUrl: "https://example.test",
+          ipAddress: "127.0.0.1",
+        },
+        harness.deps as any,
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof InitialEnvelopeSendError);
+      assert.equal(error.status, 409);
+      assert.equal(error.details.code, "placement_review_required");
+      assert.deepEqual(error.details.reasons, [
+        { code: "signer_anchor_missing", message: "Signer One has no signer-specific placement anchor." },
+      ]);
+      return true;
+    },
+  );
+  assert.equal(harness.invitations.length, 0);
+});
+
+test("dashboard send allows a current human-approved Archie Doc placement", async () => {
+  const harness = makeSendHarness({
+    envelopeOverrides: {
+      origin: "archidoc",
+      placementReviewState: "approved",
+      placementConfidence: "medium",
+      placementRevision: 3,
+      placementApprovedRevision: 3,
+    },
+  });
+
+  await sendEnvelopeForSigning(
+    {
+      envelopeId: 17,
+      request: sendEnvelopeRequestSchema.parse({}),
+      baseUrl: "https://example.test",
+      ipAddress: "127.0.0.1",
+    },
+    harness.deps as any,
+  );
+  assert.equal(harness.invitations.length, 1);
+});
+
+test("dashboard send rejects a stale approval whose placement revision changed", async () => {
+  const harness = makeSendHarness({
+    envelopeOverrides: {
+      origin: "archidoc",
+      placementReviewState: "approved",
+      placementConfidence: "medium",
+      placementRevision: 4,
+      placementApprovedRevision: 3,
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      sendEnvelopeForSigning(
+        {
+          envelopeId: 17,
+          request: sendEnvelopeRequestSchema.parse({}),
+          baseUrl: "https://example.test",
+          ipAddress: "127.0.0.1",
+        },
+        harness.deps as any,
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof InitialEnvelopeSendError);
+      assert.equal(error.details.code, "placement_review_required");
+      return true;
+    },
+  );
+  assert.equal(harness.invitations.length, 0);
 });

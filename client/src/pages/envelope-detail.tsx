@@ -39,6 +39,20 @@ type EnvelopeDetail = Envelope & {
   auditEvents: AuditEvent[];
 };
 
+type PlacementReason = { code: string; message: string };
+
+function parsePlacementReasons(value: string | null | undefined): PlacementReason[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((reason) => reason && typeof reason.message === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 interface CredentialRowProps {
   label: string;
   value: string;
@@ -129,6 +143,21 @@ export default function EnvelopeDetail() {
     },
     onError: (err: Error) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const requestPlacementReviewMutation = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", `/api/envelopes/${id}/placement-review/request`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/envelopes", id] });
+      toast({
+        title: "Placement returned to review",
+        description: "The envelope cannot be sent until its field placement is approved again.",
+      });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Could not request review", description: err.message, variant: "destructive" });
     },
   });
 
@@ -250,6 +279,12 @@ export default function EnvelopeDetail() {
   const config = statusConfig[envelope.status] || statusConfig.draft;
   const StatusIcon = config.icon;
   const pendingSigners = envelope.signers.filter((signer) => !signer.signedAt);
+  const isArchidocPlacement = envelope.origin === "archidoc" && envelope.placementReviewState !== "not_required";
+  const placementNeedsReview =
+    envelope.placementReviewState === "review_required" ||
+    (envelope.placementReviewState === "approved" &&
+      envelope.placementApprovedRevision !== envelope.placementRevision);
+  const placementReasons = parsePlacementReasons(envelope.placementReasons);
 
   const copySigningLink = (token: string) => {
     const url = `${window.location.origin}/sign/${token}`;
@@ -291,14 +326,14 @@ export default function EnvelopeDetail() {
               <>
                 <Button variant="outline" onClick={() => navigate(`/envelopes/${id}/fields`)} data-testid="button-place-fields">
                   <PenTool className="h-4 w-4 mr-2" />
-                  Place Fields
+                  {placementNeedsReview ? "Review Placement" : "Place Fields"}
                 </Button>
                 <Button
                   onClick={() => {
                     setSendMessage(envelope.message ?? "");
                     setSendDialogOpen(true);
                   }}
-                  disabled={sendMutation.isPending}
+                  disabled={sendMutation.isPending || placementNeedsReview}
                   data-testid="button-send-envelope"
                 >
                   <Send className="h-4 w-4 mr-2" />
@@ -336,6 +371,76 @@ export default function EnvelopeDetail() {
             </Button>
           </div>
         </div>
+
+        {isArchidocPlacement && (
+          <Card
+            className={placementNeedsReview
+              ? "border-amber-400 bg-amber-50/70 dark:bg-amber-950/20"
+              : "border-green-400 bg-green-50/70 dark:bg-green-950/20"}
+            data-testid="card-placement-review"
+          >
+            <CardContent className="p-5 space-y-3">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="flex items-start gap-3">
+                  {placementNeedsReview ? (
+                    <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5" />
+                  ) : (
+                    <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5" />
+                  )}
+                  <div className="space-y-1">
+                    <h2 className="font-medium" data-testid="text-placement-review-title">
+                      {placementNeedsReview
+                        ? "Signature placement review required"
+                        : envelope.placementReviewState === "approved"
+                          ? "Signature placement approved"
+                          : "Automatic signature placement ready"}
+                    </h2>
+                    <p className="text-sm text-muted-foreground">
+                      {placementNeedsReview
+                        ? "Automatic sending is paused until an administrator checks every signer’s field and approves the layout."
+                        : envelope.placementReviewState === "approved"
+                          ? `A reviewer approved revision ${envelope.placementApprovedRevision ?? envelope.placementRevision}${envelope.placementApprovedBy ? ` as ${envelope.placementApprovedBy}` : ""}.`
+                          : "Every signer-specific anchor resolved exactly once and the envelope can continue automatically."}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant={placementNeedsReview ? "default" : "outline"}
+                    onClick={() => navigate(`/envelopes/${id}/fields`)}
+                    data-testid="button-open-placement-review"
+                  >
+                    <PenTool className="h-4 w-4 mr-2" />
+                    {placementNeedsReview ? "Review Fields" : "Inspect Fields"}
+                  </Button>
+                  {!placementNeedsReview && envelope.status === "draft" && (
+                    <Button
+                      variant="ghost"
+                      onClick={() => requestPlacementReviewMutation.mutate()}
+                      disabled={requestPlacementReviewMutation.isPending}
+                      data-testid="button-request-placement-review"
+                    >
+                      <RefreshCw className={`h-4 w-4 mr-2 ${requestPlacementReviewMutation.isPending ? "animate-spin" : ""}`} />
+                      Review Again
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {placementReasons.length > 0 && (
+                <ul className="text-sm space-y-1 pl-8 list-disc" data-testid="list-placement-reasons">
+                  {placementReasons.map((reason, index) => (
+                    <li key={`${reason.code}-${index}`}>{reason.message}</li>
+                  ))}
+                </ul>
+              )}
+              {placementNeedsReview && (
+                <p className="text-xs font-medium text-amber-800 dark:text-amber-300" data-testid="text-placement-send-blocked">
+                  Invitations cannot be sent from either Archie Sign or the Archie Doc API until this review is approved.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {(lineage?.chain?.length ?? 0) > 1 && (
           <Card data-testid="card-lineage">

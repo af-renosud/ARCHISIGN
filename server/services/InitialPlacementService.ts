@@ -1,4 +1,5 @@
-import { storage } from "../storage";
+import { storage, type DbExecutor } from "../storage";
+import { db } from "../db";
 import { downloadFile } from "../fileStorage";
 import {
   getAllPageSizes,
@@ -15,6 +16,7 @@ import type { Annotation, Envelope, Signer } from "@shared/schema";
  */
 export async function autoPlaceFooterInitials(
   envelope: Envelope & { signers: Signer[] },
+  executor: DbExecutor = db,
 ): Promise<{ created: Annotation[]; skipped: number }> {
   if (!envelope.originalPdfUrl) {
     throw Object.assign(new Error("Envelope has no PDF attached"), {
@@ -46,7 +48,7 @@ export async function autoPlaceFooterInitials(
   const pageSizes = await getAllPageSizes(Buffer.from(downloaded.data));
   const placements = computeFooterInitialPlacements(pageSizes, envelope.signers.length);
 
-  const existing = await storage.getAnnotationsByEnvelope(envelope.id);
+  const existing = await storage.getAnnotationsByEnvelope(envelope.id, executor);
   const hasPlacedInitial = new Set(
     existing
       .filter((a) => a.placed && a.type === "initial")
@@ -74,7 +76,7 @@ export async function autoPlaceFooterInitials(
         type: "initial",
         value: null,
         placed: true,
-      }),
+      }, executor),
     );
   }
   return { created, skipped };

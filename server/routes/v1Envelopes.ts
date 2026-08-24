@@ -10,6 +10,7 @@ import {
   getAllPageSizes,
   computeFooterInitialPlacements,
   resolveAnchorPlacements,
+  resolveExactTextPlacements,
   ANCHOR_DEFAULT_BOX,
   ANCHOR_MAX_MATCHES_PER_ANCHOR,
   ANCHOR_MAX_MATCHES_PER_ENVELOPE,
@@ -23,6 +24,7 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { apiKeyAuth } from "../middleware/apiKeyAuth";
 import { rateLimit } from "../middleware/rateLimit";
 import { safeFetch, assertSafeUrl } from "../utils/ssrfGuard";
+import { placementReviewBlock, type PlacementReviewReason } from "../services/PlacementReviewService";
 
 const PDF_FETCH_TIMEOUT_MS = 60_000;
 const PDF_MAX_BYTES = 25 * 1024 * 1024;
@@ -244,8 +246,8 @@ export function buildV1EnvelopesRouter(): Router {
             message: `Per-anchor cap of ${ANCHOR_MAX_MATCHES_PER_ANCHOR} occurrences reached; extra occurrences ignored`,
           });
         }
-        const w = s.size?.width ?? ANCHOR_DEFAULT_BOX.width;
-        const h = s.size?.height ?? ANCHOR_DEFAULT_BOX.height;
+        const requestedWidth = s.size?.width ?? ANCHOR_DEFAULT_BOX.width;
+        const requestedHeight = s.size?.height ?? ANCHOR_DEFAULT_BOX.height;
         const dx = s.anchorOffset?.x ?? 0;
         const dy = s.anchorOffset?.y ?? 0;
         for (const m of matches) {
@@ -258,8 +260,26 @@ export function buildV1EnvelopesRouter(): Router {
             });
             break;
           }
-          const bx = m.x + dx;
-          const by = m.y + dy;
+          const margin = 10;
+          const w = Math.min(requestedWidth, Math.max(1, m.pageWidth - margin * 2));
+          const h = Math.min(requestedHeight, Math.max(1, m.pageHeight - margin * 2));
+          const requestedX = m.x + dx;
+          const requestedY = m.y + dy;
+          const bx = Math.max(margin, Math.min(requestedX, m.pageWidth - w - margin));
+          const by = Math.max(margin, Math.min(requestedY, m.pageHeight - h - margin));
+          if (
+            Math.abs(bx - requestedX) > 0.01 ||
+            Math.abs(by - requestedY) > 0.01 ||
+            w !== requestedWidth ||
+            h !== requestedHeight
+          ) {
+            warnings.push({
+              code: "anchor_box_clamped",
+              signerEmail: s.email,
+              anchor: s.anchor,
+              message: "Anchor box was adjusted to fit the page margin; placement review is required",
+            });
+          }
           pendingAnnotations.push({
             signerIndex: i,
             pageNumber: m.pageNumber,
@@ -273,19 +293,226 @@ export function buildV1EnvelopesRouter(): Router {
       }
     }
 
-    const anchoredSignerIndexes = new Set(pendingAnnotations.map(p => p.signerIndex));
-    const useAnchoredPlacement = anchoredSignerIndexes.size > 0;
+    const placementReasons: PlacementReviewReason[] = [];
+    const inferredSignerIndexes = new Set<number>();
+    let inferredPlacementCount = 0;
+    const unanchoredNameCounts = new Map<string, number>();
+    for (const signer of signerInputs.filter((candidate) => !candidate.anchor)) {
+      const identityKey = signer.fullName.trim().toLocaleLowerCase();
+      unanchoredNameCounts.set(identityKey, (unanchoredNameCounts.get(identityKey) || 0) + 1);
+    }
+    const duplicatedUnanchoredNames = new Set(
+      Array.from(unanchoredNameCounts.entries())
+        .filter(([, count]) => count > 1)
+        .map(([identityKey]) => identityKey),
+    );
+    for (const identityKey of Array.from(duplicatedUnanchoredNames)) {
+      const signerName = signerInputs.find((signer) =>
+        !signer.anchor && signer.fullName.trim().toLocaleLowerCase() === identityKey)?.fullName;
+      placementReasons.push({
+        code: "duplicate_signer_identity",
+        message: `${signerName || "A signer name"} is shared by multiple unanchored signers, so layout evidence cannot assign their fields safely.`,
+      });
+    }
+
+    // Strict text-layout fallback for digitally generated PDFs without
+    // signer-specific anchors. It only accepts an exact signer-name occurrence
+    // with one nearby Signature caption below it; anything less certain remains
+    // review-required. The anchor route above always takes precedence.
+    if (req.apiKeyAuth!.tenant === "archidoc" && pdfBuf) {
+      const unanchoredSignerIndexes = signerInputs
+        .map((signer, index) => ({ signer, index }))
+        .filter(({ signer }) =>
+          !signer.anchor &&
+          !duplicatedUnanchoredNames.has(signer.fullName.trim().toLocaleLowerCase()));
+      if (unanchoredSignerIndexes.length > 0) {
+        try {
+          const captionVariants = ["Signature", "SIGNATURE", "signature"];
+          const exactNames = await resolveExactTextPlacements(
+            pdfBuf,
+            unanchoredSignerIndexes.map(({ signer }) => signer.fullName),
+          );
+          const evidence = await resolveExactTextPlacements(pdfBuf, captionVariants);
+          const captionMatches = captionVariants
+            .flatMap((caption) => evidence.get(caption) || [])
+            .filter((match, index, matches) =>
+              matches.findIndex((candidate) =>
+                candidate.pageNumber === match.pageNumber &&
+                Math.abs(candidate.x - match.x) < 1 &&
+                Math.abs(candidate.y - match.y) < 1) === index);
+          const usedCaptions = new Set<number>();
+
+          for (const { signer, index: signerIndex } of unanchoredSignerIndexes) {
+            const nameMatches = exactNames.get(signer.fullName) || [];
+            if (nameMatches.length !== 1) {
+              placementReasons.push({
+                code: nameMatches.length === 0 ? "signer_name_not_found" : "signer_name_ambiguous",
+                message: nameMatches.length === 0
+                  ? `${signer.fullName}'s name was not found in the PDF layout.`
+                  : `${signer.fullName}'s name appeared ${nameMatches.length} times in the PDF layout.`,
+              });
+              continue;
+            }
+
+            const nameMatch = nameMatches[0];
+            const candidates = captionMatches
+              .map((caption, captionIndex) => ({ caption, captionIndex }))
+              .filter(({ caption, captionIndex }) => {
+                if (usedCaptions.has(captionIndex) || caption.pageNumber !== nameMatch.pageNumber) return false;
+                const verticalGap = nameMatch.y - caption.y;
+                const horizontalGap = Math.abs(nameMatch.x - caption.x);
+                return verticalGap >= 8 && verticalGap <= 250 && horizontalGap <= 180;
+              });
+            if (candidates.length !== 1) {
+              placementReasons.push({
+                code: candidates.length === 0 ? "signature_caption_not_found" : "signature_caption_ambiguous",
+                message: candidates.length === 0
+                  ? `No unique Signature caption was found below ${signer.fullName}.`
+                  : `More than one Signature caption could belong to ${signer.fullName}.`,
+              });
+              continue;
+            }
+
+            const { caption, captionIndex } = candidates[0];
+            const margin = 10;
+            const requestedWidth = Math.min(220, caption.pageWidth * 0.4);
+            const requestedHeight = 84;
+            const bx = Math.max(margin, Math.min(caption.x, caption.pageWidth - requestedWidth - margin));
+            const by = Math.max(margin, Math.min(caption.y + 14, caption.pageHeight - requestedHeight - margin));
+            if (
+              Math.abs(bx - caption.x) > 0.01 ||
+              Math.abs(by - (caption.y + 14)) > 0.01
+            ) {
+              placementReasons.push({
+                code: "layout_box_clamped",
+                message: `${signer.fullName}'s inferred signature box required a page-boundary adjustment.`,
+              });
+            }
+            pendingAnnotations.push({
+              signerIndex,
+              pageNumber: caption.pageNumber,
+              xPos: bx / caption.pageWidth,
+              yPos: 1 - (by + requestedHeight) / caption.pageHeight,
+              width: requestedWidth / caption.pageWidth,
+              height: requestedHeight / caption.pageHeight,
+            });
+            usedCaptions.add(captionIndex);
+            inferredSignerIndexes.add(signerIndex);
+            inferredPlacementCount += 1;
+          }
+        } catch (err: any) {
+          placementReasons.push({
+            code: "layout_inference_failed",
+            message: `The PDF layout could not be analysed (${err?.message || err}).`,
+          });
+        }
+      }
+    }
+
+    const placedSignerIndexes = new Set(pendingAnnotations.map(p => p.signerIndex));
+    const useAdminPlacement = placedSignerIndexes.size > 0;
+    let placementReviewState: "not_required" | "ready" | "review_required" = "not_required";
+    let placementConfidence: "high" | "low" | null = null;
+    if (req.apiKeyAuth!.tenant === "archidoc") {
+      const anchorOwners = new Map<string, string[]>();
+      for (const signer of signerInputs) {
+        if (!signer.anchor) continue;
+        const owners = anchorOwners.get(signer.anchor) || [];
+        owners.push(signer.fullName);
+        anchorOwners.set(signer.anchor, owners);
+      }
+      anchorOwners.forEach((owners, anchor) => {
+        if (owners.length > 1) {
+          placementReasons.push({
+            code: "signer_anchor_reused",
+            message: `The anchor ${anchor} was assigned to more than one signer.`,
+          });
+        }
+      });
+
+      for (let i = 0; i < signerInputs.length; i++) {
+        const signer = signerInputs[i];
+        if (!signer.anchor) {
+          if (!inferredSignerIndexes.has(i) && !placementReasons.some((reason) => reason.message.includes(signer.fullName))) {
+            placementReasons.push({
+              code: "signer_anchor_missing",
+              message: `${signer.fullName} has no signer-specific placement anchor or unambiguous layout match.`,
+            });
+          }
+          continue;
+        }
+        const matchCount = anchorMatches?.get(signer.anchor)?.length ?? 0;
+        if (matchCount === 0) {
+          placementReasons.push({
+            code: "signer_anchor_unresolved",
+            message: `${signer.fullName}'s placement anchor was not resolved in the final PDF.`,
+          });
+        } else if (matchCount > 1) {
+          placementReasons.push({
+            code: "signer_anchor_ambiguous",
+            message: `${signer.fullName}'s placement anchor matched ${matchCount} locations.`,
+          });
+        }
+      }
+      for (const warning of warnings.filter((warning) => warning.code.startsWith("anchor_"))) {
+        if (!placementReasons.some((reason) => reason.code === warning.code && reason.message === warning.message)) {
+          placementReasons.push({ code: warning.code, message: warning.message });
+        }
+      }
+
+      for (let i = 0; i < pendingAnnotations.length; i++) {
+        for (let j = i + 1; j < pendingAnnotations.length; j++) {
+          const a = pendingAnnotations[i];
+          const b = pendingAnnotations[j];
+          if (a.signerIndex === b.signerIndex || a.pageNumber !== b.pageNumber) continue;
+          const overlapWidth = Math.max(0, Math.min(a.xPos + a.width, b.xPos + b.width) - Math.max(a.xPos, b.xPos));
+          const overlapHeight = Math.max(0, Math.min(a.yPos + a.height, b.yPos + b.height) - Math.max(a.yPos, b.yPos));
+          const overlapArea = overlapWidth * overlapHeight;
+          const smallerArea = Math.min(a.width * a.height, b.width * b.height);
+          if (smallerArea > 0 && overlapArea > 0.000001) {
+            placementReasons.push({
+              code: "signature_fields_overlap",
+              message: "Automatically placed signature fields overlap and must be reviewed.",
+            });
+          }
+        }
+      }
+
+      if (placementReasons.length === 0 && signerInputs.length > 0) {
+        placementReviewState = "ready";
+        placementConfidence = "high";
+        if (inferredPlacementCount > 0) {
+          placementReasons.push({
+            code: "signer_name_and_caption_resolved",
+            message: `${inferredPlacementCount} signer${inferredPlacementCount === 1 ? "" : "s"} matched one printed name and one nearby Signature caption.`,
+          });
+        }
+        if (totalAnchorPlacements > 0) {
+          placementReasons.push({
+            code: "signer_specific_anchors_resolved",
+            message: `${totalAnchorPlacements} signer-specific anchor${totalAnchorPlacements === 1 ? "" : "s"} resolved exactly once.`,
+          });
+        }
+        placementReasons.push({
+          code: "placement_geometry_valid",
+          message: "Every automatic signature box fits inside its PDF page without adjustment or overlap.",
+        });
+      } else {
+        placementReviewState = "review_required";
+        placementConfidence = "low";
+      }
+    }
 
     // Mixed envelopes: signers without a resolved anchor get a synthetic
     // bottom-centred box on the last page so their output matches today's
     // fixed-bottom behaviour even though the envelope runs in admin_placed mode.
-    if (useAnchoredPlacement && pdfBuf) {
+    if (useAdminPlacement && pdfBuf) {
       const MM_TO_PT = 2.83465;
       const { width: pw, height: ph } = await getPageSize(pdfBuf, totalPages);
       const w = ANCHOR_DEFAULT_BOX.width;
       const h = ANCHOR_DEFAULT_BOX.height;
       for (let i = 0; i < signerInputs.length; i++) {
-        if (anchoredSignerIndexes.has(i)) continue;
+        if (placedSignerIndexes.has(i)) continue;
         pendingAnnotations.push({
           signerIndex: i,
           pageNumber: totalPages,
@@ -347,7 +574,11 @@ export function buildV1EnvelopesRouter(): Router {
           expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
           origin: req.apiKeyAuth!.tenant,
           message: senderMessage,
-          signaturePlacementMode: useAnchoredPlacement ? "admin_placed" : "fixed_bottom_centre",
+          signaturePlacementMode: useAdminPlacement ? "admin_placed" : "fixed_bottom_centre",
+          placementReviewState,
+          placementConfidence,
+          placementReasons: placementReasons.length > 0 ? JSON.stringify(placementReasons) : null,
+          placementRevision: 0,
         } as any, tx);
 
         const signers: Array<{ id: number; accessToken: string; email: string }> = [];
@@ -404,6 +635,10 @@ export function buildV1EnvelopesRouter(): Router {
             pdfSource: data.pdfFetchUrl ? "pdfFetchUrl" : data.pdfBase64 ? "pdfBase64" : "pdfUrl",
             externalRef: data.externalRef || null,
             anchoredPlacements: totalAnchorPlacements,
+            inferredPlacements: inferredPlacementCount || undefined,
+            placementReviewState,
+            placementConfidence,
+            placementReasons,
             autoPlacedInitials: pendingInitials.length > 0 ? pendingInitials.length : undefined,
             anchorWarnings: warnings.length > 0 ? warnings : undefined,
           }),
@@ -441,6 +676,14 @@ export function buildV1EnvelopesRouter(): Router {
         subjectApplied: callerSubject.length > 0,
         bodyApplied: senderMessage !== null,
       },
+      ...(req.apiKeyAuth!.tenant === "archidoc" ? {
+        placementReview: {
+          state: placementReviewState,
+          confidence: placementConfidence,
+          reasons: placementReasons,
+          automaticSendAllowed: placementReviewState === "ready",
+        },
+      } : {}),
       // v1.5 additive: anchor resolution warnings (omitted when clean).
       ...(warnings.length > 0 ? { warnings } : {}),
     });
@@ -487,6 +730,11 @@ export function buildV1EnvelopesRouter(): Router {
       });
     }
 
+    const placementBlock = placementReviewBlock(envelope);
+    if (placementBlock) {
+      return res.status(409).json({ error: placementBlock.code, ...placementBlock, envelopeId });
+    }
+
     // Race-tight transition: only one caller transitions draft → sent.
     // Concurrent callers fall through to the idempotent 200 branch with no
     // duplicate emails or webhook emissions.
@@ -495,6 +743,14 @@ export function buildV1EnvelopesRouter(): Router {
     if (!claimed) {
       const refreshed = await storage.getEnvelope(envelopeId);
       const refreshedStatus = refreshed?.status ?? "sent";
+      const refreshedPlacementBlock = refreshed ? placementReviewBlock(refreshed) : null;
+      if (refreshedPlacementBlock) {
+        return res.status(409).json({
+          error: refreshedPlacementBlock.code,
+          ...refreshedPlacementBlock,
+          envelopeId,
+        });
+      }
       if (terminalStates.has(refreshedStatus)) {
         return res.status(409).json({
           error: "envelope_terminal",

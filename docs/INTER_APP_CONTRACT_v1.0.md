@@ -1055,6 +1055,35 @@ rate-limit families, and all other /create semantics are unchanged. Scanned/
 image-only PDFs have no text layer: anchors will not match and clause (d)
 applies (no OCR is performed).
 
+**(g) Archie Doc placement-readiness response.** For requests authenticated as
+the `archidoc` tenant, the 201 response additionally contains:
+
+```json
+"placementReview": {
+  "state": "ready" | "review_required",
+  "confidence": "high" | "low",
+  "reasons": [{ "code": "…", "message": "…" }],
+  "automaticSendAllowed": true | false
+}
+```
+
+`ready` normally requires exactly one resolved, page-fitting signer-specific
+anchor for every signer. If an anchor is absent, Archie Sign may also accept a
+strict digital-PDF layout match: the signer's full name appears exactly once
+and has exactly one nearby `Signature` caption below it, with one-to-one,
+non-overlapping field geometry across all signers. A missing or unresolved
+identity cue, repeated/ambiguous anchor or caption, overlapping box, or box that
+required page-boundary adjustment produces `review_required`. Architrak and
+existing non-ArchiDoc callers are unchanged.
+
+**(h) Send gate and human approval.** `POST /api/v1/envelopes/:envelopeId/send`
+returns `409 placement_review_required` while an Archie Doc envelope needs
+review. An authenticated Archie Sign administrator may inspect and correct the
+fields and approve the current placement revision. Any later field-layout or
+placement-mode change invalidates that approval. A deterministic `ready`
+placement or a current human approval permits sending. Existing envelopes
+created before this policy remain backwards-compatible.
+
 ### §10.2 Countersign table (§7.2-style)
 
 | Party | Countersigned | Date (UTC) | Notes |

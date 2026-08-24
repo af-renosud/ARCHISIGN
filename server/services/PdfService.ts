@@ -293,9 +293,10 @@ export interface AnchorMatch {
  * The returned x is interpolated proportionally inside the run containing
  * the first character of the match.
  */
-export async function resolveAnchorPlacements(
+async function resolveTextPlacements(
   pdfBuffer: Buffer,
   anchors: string[],
+  exactLine: boolean,
 ): Promise<Map<string, AnchorMatch[]>> {
   const results = new Map<string, AnchorMatch[]>();
   const wanted = Array.from(new Set(anchors.filter(a => a && a.length > 0)));
@@ -327,6 +328,27 @@ export async function resolveAnchorPlacements(
           y: item.transform[5],
           width: typeof item.width === "number" ? item.width : 0,
         });
+      }
+
+      if (exactLine) {
+        for (const text of wanted) {
+          const bucket = results.get(text)!;
+          for (const run of runs) {
+            if (bucket.length >= ANCHOR_MAX_MATCHES_PER_ANCHOR) break;
+            if (run.str.trim() !== text) continue;
+            const idx = run.str.indexOf(text);
+            const frac = run.str.length > 0 ? idx / run.str.length : 0;
+            bucket.push({
+              pageNumber: pageNo,
+              x: run.x + frac * run.width - view[0],
+              y: run.y - view[1],
+              pageWidth,
+              pageHeight,
+            });
+          }
+        }
+        page.cleanup();
+        continue;
       }
 
       // Group runs into lines by (rounded) baseline y, then order by x.
@@ -376,6 +398,25 @@ export async function resolveAnchorPlacements(
   }
 
   return results;
+}
+
+export async function resolveAnchorPlacements(
+  pdfBuffer: Buffer,
+  anchors: string[],
+): Promise<Map<string, AnchorMatch[]>> {
+  return resolveTextPlacements(pdfBuffer, anchors, false);
+}
+
+/**
+ * Resolve only individual text runs whose trimmed content exactly equals a
+ * requested string. This safely supports side-by-side columns on one baseline
+ * while rejecting substring identity matches.
+ */
+export async function resolveExactTextPlacements(
+  pdfBuffer: Buffer,
+  texts: string[],
+): Promise<Map<string, AnchorMatch[]>> {
+  return resolveTextPlacements(pdfBuffer, texts, true);
 }
 
 function formatTs(d: Date | string | null | undefined): string {

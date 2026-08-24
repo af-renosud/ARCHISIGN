@@ -21,6 +21,14 @@ export const signaturePlacementModeEnum = pgEnum("signature_placement_mode", [
   "fixed_bottom_centre", "admin_placed"
 ]);
 
+export const placementReviewStateEnum = pgEnum("placement_review_state", [
+  "not_required", "ready", "review_required", "approved"
+]);
+
+export const placementConfidenceEnum = pgEnum("placement_confidence", [
+  "high", "medium", "low"
+]);
+
 export const envelopes = pgTable("envelopes", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   externalRef: text("external_ref"),
@@ -39,6 +47,13 @@ export const envelopes = pgTable("envelopes", {
   retentionIncidentRef: text("retention_incident_ref"),
   retentionDetectedAt: timestamp("retention_detected_at"),
   signaturePlacementMode: signaturePlacementModeEnum("signature_placement_mode").notNull().default("fixed_bottom_centre"),
+  placementReviewState: placementReviewStateEnum("placement_review_state").notNull().default("not_required"),
+  placementConfidence: placementConfidenceEnum("placement_confidence"),
+  placementReasons: text("placement_reasons"),
+  placementRevision: integer("placement_revision").notNull().default(0),
+  placementApprovedRevision: integer("placement_approved_revision"),
+  placementApprovedBy: text("placement_approved_by"),
+  placementApprovedAt: timestamp("placement_approved_at"),
   documentHash: text("document_hash"),
   // Continuation lineage: a "send for further signature" child envelope
   // records its signed parent here. Immutable provenance: parentDocumentHash

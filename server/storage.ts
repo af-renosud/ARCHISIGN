@@ -26,6 +26,7 @@ export const RESEND_DELIVERY_HEARTBEAT_INTERVAL_MS = 30 * 1000;
 export interface IStorage {
   getEnvelopes(): Promise<(Envelope & { signers: Signer[] })[]>;
   getEnvelope(id: number): Promise<(Envelope & { signers: Signer[]; communicationLogs: CommunicationLog[]; auditEvents: AuditEvent[] }) | undefined>;
+  getEnvelopeForUpdate(id: number, executor: DbExecutor): Promise<Envelope | undefined>;
   createEnvelope(data: InsertEnvelope, executor?: DbExecutor): Promise<Envelope>;
   updateEnvelope(id: number, data: Partial<Envelope>, executor?: DbExecutor): Promise<Envelope | undefined>;
 
@@ -41,9 +42,9 @@ export interface IStorage {
 
   createAnnotation(data: InsertAnnotation, executor?: DbExecutor): Promise<Annotation>;
   getAnnotationsByEnvelopeAndSigner(envelopeId: number, signerId: number, executor?: DbExecutor): Promise<Annotation[]>;
-  getAnnotationsByEnvelope(envelopeId: number): Promise<Annotation[]>;
-  updateAnnotation(id: number, data: Partial<Annotation>): Promise<Annotation | undefined>;
-  deleteAnnotation(id: number): Promise<void>;
+  getAnnotationsByEnvelope(envelopeId: number, executor?: DbExecutor): Promise<Annotation[]>;
+  updateAnnotation(id: number, data: Partial<Annotation>, executor?: DbExecutor): Promise<Annotation | undefined>;
+  deleteAnnotation(id: number, executor?: DbExecutor): Promise<void>;
 
   createCommunicationLog(data: InsertCommunicationLog): Promise<CommunicationLog>;
   getCommunicationLogs(envelopeId: number): Promise<CommunicationLog[]>;
@@ -157,6 +158,15 @@ export class DatabaseStorage implements IStorage {
       db.select().from(auditEvents).where(eq(auditEvents.envelopeId, id)).orderBy(desc(auditEvents.timestamp)),
     ]);
     return { ...envelope, signers: envSigners, communicationLogs: logs, auditEvents: events };
+  }
+
+  async getEnvelopeForUpdate(id: number, executor: DbExecutor): Promise<Envelope | undefined> {
+    const [envelope] = await executor
+      .select()
+      .from(envelopes)
+      .where(eq(envelopes.id, id))
+      .for("update");
+    return envelope;
   }
 
   async createEnvelope(data: InsertEnvelope, executor: DbExecutor = db): Promise<Envelope> {
@@ -281,17 +291,17 @@ export class DatabaseStorage implements IStorage {
     );
   }
 
-  async getAnnotationsByEnvelope(envelopeId: number): Promise<Annotation[]> {
-    return db.select().from(annotations).where(eq(annotations.envelopeId, envelopeId));
+  async getAnnotationsByEnvelope(envelopeId: number, executor: DbExecutor = db): Promise<Annotation[]> {
+    return executor.select().from(annotations).where(eq(annotations.envelopeId, envelopeId));
   }
 
-  async updateAnnotation(id: number, data: Partial<Annotation>): Promise<Annotation | undefined> {
-    const [updated] = await db.update(annotations).set(data).where(eq(annotations.id, id)).returning();
+  async updateAnnotation(id: number, data: Partial<Annotation>, executor: DbExecutor = db): Promise<Annotation | undefined> {
+    const [updated] = await executor.update(annotations).set(data).where(eq(annotations.id, id)).returning();
     return updated;
   }
 
-  async deleteAnnotation(id: number): Promise<void> {
-    await db.delete(annotations).where(eq(annotations.id, id));
+  async deleteAnnotation(id: number, executor: DbExecutor = db): Promise<void> {
+    await executor.delete(annotations).where(eq(annotations.id, id));
   }
 
   async createCommunicationLog(data: InsertCommunicationLog): Promise<CommunicationLog> {
@@ -511,6 +521,14 @@ export class DatabaseStorage implements IStorage {
         eq(envelopes.id, envelopeId),
         eq(envelopes.status, "draft"),
         isNull(envelopes.deletedAt),
+        sql`(
+          ${envelopes.origin} IS DISTINCT FROM 'archidoc'
+          OR ${envelopes.placementReviewState} IN ('not_required', 'ready')
+          OR (
+            ${envelopes.placementReviewState} = 'approved'
+            AND ${envelopes.placementApprovedRevision} = ${envelopes.placementRevision}
+          )
+        )`,
       ))
       .returning();
     return updated ?? null;

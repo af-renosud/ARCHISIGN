@@ -98,3 +98,39 @@ test("admin reply: envelope with no originalPdfUrl -> 409 pdf_missing", () =>
     assert.equal(res.status, 409);
     assert.equal((await res.json()).code, "pdf_missing");
   }));
+
+test("admin reply cannot bypass placement review for an Archie Doc draft", async () => {
+  originals.getEnvelope = (storage as any).getEnvelope;
+  (storage as any).getEnvelope = async (id: number) =>
+    id === 434343
+      ? {
+          id,
+          status: "draft",
+          originalPdfUrl: "/uploads/review-required.pdf",
+          signers: [{ id: 1, email: "s1@example.com", fullName: "Signer One" }],
+          externalRef: null,
+          origin: "archidoc",
+          webhookUrl: null,
+          gmailThreadId: null,
+          placementReviewState: "review_required",
+          placementConfidence: "low",
+          placementReasons: JSON.stringify([
+            { code: "signer_anchor_missing", message: "Signer One needs placement review." },
+          ]),
+          placementRevision: 1,
+          placementApprovedRevision: null,
+        }
+      : originals.getEnvelope.call(storage, id);
+  try {
+    const res = await fetch(`${baseUrl}/api/envelopes/434343/reply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hello" }),
+    });
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "placement_review_required");
+  } finally {
+    (storage as any).getEnvelope = originals.getEnvelope;
+    delete originals.getEnvelope;
+  }
+});
