@@ -256,14 +256,83 @@ interface CompletionSigner {
   accessToken: string;
 }
 
+type FirmNotificationDependencies = {
+  getRecipient: typeof getGmailProfile;
+  send: typeof sendEmail;
+  record: (event: Parameters<typeof storage.createAuditEvent>[0]) => Promise<unknown>;
+};
+
+// Office notifications are separate messages, not replies in signer invitation
+// threads, so each signature and final completion can be identified separately.
+export async function sendFirmSigningNotification(
+  envelope: EnvelopeInfo,
+  signers: Array<{ fullName: string; signedAt?: Date | null }>,
+  baseUrl: string,
+  emailCfg: EmailSettings,
+  signedBy?: { fullName: string; email: string },
+  attachments?: Array<{ filename: string; content: Buffer; mimeType: string }>,
+  deps: FirmNotificationDependencies = {
+    getRecipient: getGmailProfile,
+    send: sendEmail,
+    record: (event) => storage.createAuditEvent(event),
+  },
+): Promise<void> {
+  const kind = signedBy ? "Signature confirmation" : "Completion confirmation";
+  let recipient: string | null | undefined;
+  let delivered = false;
+  let failure: string | undefined;
+  try {
+    recipient = await deps.getRecipient();
+    if (!recipient) throw new Error("Connected Gmail address could not be resolved");
+    const signedCount = signers.filter(s => s.signedAt != null).length;
+    await deps.send(
+      recipient,
+      `[${emailCfg.firmName}] ${signedBy ? "Signature received" : "All signatures complete"}: ${envelope.subject}`,
+      wrapEmail(`
+        <h2 style="color: #16a34a; margin-top: 0;">${signedBy ? "Signature Received" : "All Signatures Collected"}</h2>
+        <p><strong>Document:</strong> ${escapeHtml(envelope.subject)}</p>
+        <p><strong>Envelope:</strong> #${envelope.id}</p>
+        ${envelope.externalRef ? `<p><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
+        ${signedBy
+          ? `<p><strong>Signed by:</strong> ${escapeHtml(signedBy.fullName)} (${escapeHtml(signedBy.email)})</p>
+             <p>${signedCount} of ${signers.length} signers have signed.${signedCount < signers.length ? " Waiting for the remaining signatures." : " All signatures have now been collected; a separate completion confirmation will follow."}</p>`
+          : `<p>${emailCfg.completionBody}</p><p>Signers: ${signers.map(s => escapeHtml(s.fullName)).join(", ")}</p>
+             ${attachments?.length ? "<p>The signed document is attached.</p>" : ""}`}
+        <p><a href="${escapeHtml(`${baseUrl}/envelopes/${envelope.id}`)}">View envelope in ArchiSign</a> (admin sign-in required)</p>
+      `, baseUrl, emailCfg),
+      undefined,
+      attachments,
+      { requestTimeoutMs: RESEND_EMAIL_PROVIDER_TIMEOUT_MS },
+    );
+    delivered = true;
+  } catch (err) {
+    failure = err instanceof Error ? err.message : "Email delivery failed";
+    console.error(`${kind} failed for envelope ${envelope.id}:`, err);
+  }
+  // A mail failure must not undo a committed signature, but it must be visible
+  // in the envelope's audit trail instead of being silently skipped.
+  try {
+    await deps.record({
+      envelopeId: envelope.id,
+      eventType: `${kind} email ${delivered ? "sent" : "failed"}`,
+      actorEmail: recipient || null,
+      ipAddress: null,
+      metadata: JSON.stringify({
+        signerEmail: signedBy?.email,
+        error: failure,
+      }),
+    });
+  } catch (err) {
+    console.error(`Failed to record ${kind.toLowerCase()} outcome:`, err);
+  }
+}
+
 export async function sendCompletionNotifications(
   envelope: EnvelopeInfo & { signedPdfUrl: string | null },
   signers: CompletionSigner[],
   baseUrl: string,
   emailCfg: EmailSettings,
 ): Promise<void> {
-  const firmEmail = await getGmailProfile();
-
   let signedPdfAttachment: { filename: string; content: Buffer; mimeType: string } | null = null;
   if (envelope.signedPdfUrl) {
     try {
@@ -280,6 +349,11 @@ export async function sendCompletionNotifications(
     }
   }
 
+  await sendFirmSigningNotification(
+    envelope, signers, baseUrl, emailCfg, undefined,
+    signedPdfAttachment ? [signedPdfAttachment] : undefined,
+  );
+
   for (const s of signers) {
     try {
       const downloadUrl = `${baseUrl}/api/sign/${s.accessToken}/download`;
@@ -291,7 +365,7 @@ export async function sendCompletionNotifications(
           <p>Dear ${escapeHtml(s.fullName)},</p>
           <p>${emailCfg.completionBody}</p>
           ${envelope.externalRef ? `<p><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
-          <p>A signed copy of the document is attached to this email. You can also download it using the link below:</p>
+          <p>${signedPdfAttachment ? "A signed copy of the document is attached to this email. You can also download it using the link below:" : "You can download the document using the link below:"}</p>
           <p style="margin: 16px 0;"><a href="${downloadUrl}" style="display: inline-block; padding: 10px 24px; background-color: #16a34a; color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 600;">Download Signed Document</a></p>
         `, baseUrl, emailCfg),
         envelope.gmailThreadId || undefined,
@@ -302,23 +376,6 @@ export async function sendCompletionNotifications(
     }
   }
 
-  if (firmEmail) {
-    try {
-      await sendEmail(
-        firmEmail,
-        `[${emailCfg.firmName}] All signatures complete: ${envelope.subject}`,
-        wrapEmail(`
-          <h2 style="color: #16a34a; margin-top: 0;">All Signatures Collected</h2>
-          <p>${emailCfg.completionBody}</p>
-          ${envelope.externalRef ? `<p><strong>Reference:</strong> ${escapeHtml(envelope.externalRef)}</p>` : ""}
-          <p>Signers: ${signers.map(s => escapeHtml(s.fullName)).join(", ")}</p>
-        `, baseUrl, emailCfg),
-        envelope.gmailThreadId || undefined,
-      );
-    } catch (err) {
-      console.error("Failed to send completion notification:", err);
-    }
-  }
 }
 
 export { getGmailProfile };

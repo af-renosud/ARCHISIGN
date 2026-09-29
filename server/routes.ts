@@ -12,7 +12,7 @@ import fsPromises from "fs/promises";
 import { uploadFile, downloadFile, streamFileToResponse, fileExists, deleteFile, uploadBackup, downloadBackup, deleteBackupFile } from "./fileStorage";
 import { getPageCount, stampSignedPdf, renderCertificatePdf, type EnvelopeCertificateContext } from "./services/PdfService";
 import { generateToken, generateOtp, hashOtp, verifyOtp, buildSigningLink, generateAuthenticationId } from "./services/SecurityService";
-import { sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
+import { sendReplyNotification, sendOtpEmail, sendQueryNotification, sendCompletionNotifications, sendFirmSigningNotification, loadEmailSettings, getGmailProfile } from "./services/NotificationService";
 import { InitialEnvelopeSendError, sendEnvelopeForSigning } from "./services/EnvelopeSendService";
 import { asyncHandler } from "./middleware/asyncHandler";
 import { validateId } from "./middleware/validators";
@@ -1148,6 +1148,20 @@ export async function registerRoutes(
     }
 
     const { allSigned, allSigners } = txResult;
+
+    try {
+      await sendFirmSigningNotification(
+        envelope,
+        allSigners,
+        `${req.protocol}://${req.get("host")}`,
+        await loadEmailSettings(),
+        signer,
+      );
+    } catch (notificationError) {
+      // The signature is already committed; a settings/email error must not
+      // prevent PDF generation or the final completion notification.
+      console.error(`Signature notification failed for envelope ${envelope.id}:`, notificationError);
+    }
 
     if (allSigned && envelope.originalPdfUrl) {
       try {
